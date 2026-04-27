@@ -124,7 +124,7 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
 
   const refreshIntelCore = useCallback(async () => {
-    const [dashboardData, summaryData, streamData, eventData, alertData, sourceData, candidateData] = await Promise.all([
+    const [dashboardData, summaryData, streamData, eventData, alertData, sourceData, candidateData, logData] = await Promise.all([
       api.getDashboard(),
       api.getIntelSummary(),
       api.getDiscoveryItems(),
@@ -132,6 +132,7 @@ export default function App() {
       api.getIntelAlerts(),
       api.getIntelSources(),
       api.getCandidates(),
+      api.getLogs(),
     ]);
     setDashboard(dashboardData);
     setSummary(summaryData.item);
@@ -140,6 +141,7 @@ export default function App() {
     setAlerts(alertData.items);
     setSources(sourceData.items);
     setCandidates(candidateData.items);
+    setLogs(logData.items);
     setBrowserSession(dashboardData.browser_session);
   }, []);
 
