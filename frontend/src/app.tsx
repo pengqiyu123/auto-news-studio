@@ -456,6 +456,20 @@ export default function App() {
     }
   }
 
+  // 独立的 runtime 状态快速轮询，3 秒一次，用于进度条实时更新
+  useEffect(() => {
+    if (!dashboard?.runtime_status?.running) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const res = await api.getRuntimeStatus();
+        setDashboard((cur) => cur ? { ...cur, runtime_status: res.item } : cur);
+      } catch {
+        // silent
+      }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [dashboard?.runtime_status?.running]);
+
   function showToast(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(null), 3000);
