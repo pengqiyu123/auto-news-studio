@@ -509,6 +509,188 @@ a {
   color: #4338ca;
 }
 
+.llm-key-field {
+  grid-column: 1 / -1;
+}
+
+.llm-key-input-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.llm-key-input-row input {
+  flex: 1;
+}
+
+.llm-test-result {
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.llm-test-ok {
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.llm-test-error {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.llm-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.llm-profile-grid-stacked {
+  grid-template-columns: 1fr;
+}
+
+.llm-profile-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.llm-profile-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.llm-profile-card-selected {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.15);
+}
+
+.llm-profile-card-current {
+  background: #f8fbff;
+}
+
+.llm-profile-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.llm-profile-head strong {
+  display: block;
+  font-size: 14px;
+}
+
+.llm-profile-head p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.llm-profile-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.llm-profile-model {
+  margin: 0;
+  color: #0f172a;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  word-break: break-all;
+}
+
+.llm-profile-actions {
+  margin-top: auto;
+}
+
+.llm-profile-actions-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.status-chip-ok {
+  background: #ecfdf5;
+  color: #166534;
+}
+
+.status-chip-warn {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.status-chip-muted {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.llm-profile-description-field {
+  grid-column: 1 / -1;
+}
+
+.llm-profile-description-field textarea {
+  width: 100%;
+  margin-top: 6px;
+  resize: vertical;
+}
+
+.llm-workbench {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.llm-library,
+.llm-editor {
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #fcfdff;
+  padding: 14px;
+}
+
+.llm-library-head,
+.llm-editor-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.llm-library-head strong {
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.llm-editor-note {
+  margin-top: 12px;
+}
+
 .mode-visibility-checkpoints {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1901,6 +2083,15 @@ a {
 .source-action-row {
   margin-top: 14px;
   flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ghost-button.danger {
+  color: #dc2626;
+  border-color: #fecaca;
+}
+.ghost-button.danger:hover {
+  background: #fef2f2;
 }
 
 .summary-chevron {
@@ -2088,6 +2279,276 @@ a {
   color: #6b7280;
 }
 
+.intel-hero-panel,
+.intel-priority-panel,
+.intel-alert-stack,
+.intel-event-stack,
+.intel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.intel-hero-actions,
+.intel-inline-actions,
+.intel-plan-status,
+.intel-plan-actions,
+.intel-card-topline,
+.intel-score-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.intel-plan-grid,
+.intel-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.intel-plan-grid label,
+.intel-alert-card,
+.intel-event-card,
+.intel-row-card,
+.intel-stat-card {
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.intel-plan-grid label {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.intel-plan-grid span,
+.intel-stat-card span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.intel-plan-footer,
+.intel-runtime-list {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.intel-runtime-list {
+  flex-direction: column;
+}
+
+.intel-runtime-list > div {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.intel-runtime-list p,
+.intel-alert-card p,
+.intel-event-card p,
+.intel-row-card p,
+.intel-stat-card p {
+  margin: 0;
+  color: #4b5563;
+}
+
+.intel-overview-grid,
+.intel-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.intel-alert-card,
+.intel-event-card,
+.intel-row-card,
+.intel-stat-card {
+  padding: 14px;
+}
+
+.intel-alert-card strong,
+.intel-event-card strong,
+.intel-row-card strong,
+.intel-stat-card strong {
+  display: block;
+  margin: 4px 0 8px;
+}
+
+.intel-score-row {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.intel-inline-actions {
+  margin-top: 10px;
+}
+
+.intel-stat-card strong {
+  font-size: 24px;
+  margin-bottom: 4px;
+}
+
+/* Compact plan bar */
+.intel-plan-compact-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.intel-plan-compact-status {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.dirty-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  margin-left: 2px;
+}
+
+/* Filter bar */
+.intel-filter-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.intel-filter-bar input {
+  flex: 1;
+  min-width: 200px;
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #f9fafb;
+}
+
+.intel-filter-bar input:focus {
+  outline: none;
+  border-color: #6366f1;
+  background: #fff;
+}
+
+.filter-chip {
+  padding: 4px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 20px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.filter-chip:hover {
+  border-color: #6366f1;
+  color: #6366f1;
+}
+
+.filter-chip-active {
+  background: #6366f1;
+  color: #fff;
+  border-color: #6366f1;
+}
+
+.filter-chip-active:hover {
+  background: #4f46e5;
+  color: #fff;
+}
+
+/* Load more */
+.intel-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0 4px;
+}
+
+.intel-load-more button {
+  font-size: 13px;
+}
+
+/* Cycle progress indicator */
+.intel-cycle-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 13px;
+  color: #475569;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 6px;
+}
+
+.intel-cycle-stage {
+  font-weight: 500;
+  color: #6366f1;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Toast */
+.toast-banner {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: #065f46;
+  color: #fff;
+  border-radius: 8px;
+  font-size: 13px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  z-index: 1000;
+  animation: toast-in 0.2s ease-out;
+}
+
+.toast-dismiss {
+  opacity: 0.6;
+  margin-left: 4px;
+}
+
+.toast-dismiss:hover {
+  opacity: 1;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 1200px) {
   .overview-grid,
   .jobs-layout,
@@ -2095,7 +2556,9 @@ a {
   .cockpit-summary-grid-tight,
   .cockpit-focus-grid,
   .cockpit-main-grid,
-  .logs-split-layout {
+  .logs-split-layout,
+  .intel-overview-grid,
+  .intel-summary-grid {
     grid-template-columns: 1fr;
   }
 
@@ -2121,7 +2584,8 @@ a {
   .mode-visibility-checkpoints,
   .mode-config-explainer,
   .runtime-plan-brief,
-  .channel-wizard-steps {
+  .channel-wizard-steps,
+  .llm-workbench {
     grid-template-columns: 1fr;
   }
 }
@@ -2143,7 +2607,10 @@ a {
   .page-header,
   .browser-session-card,
   .channel-wizard-head,
-  .mode-summary {
+  .mode-summary,
+  .intel-hero-actions,
+  .intel-plan-footer,
+  .intel-runtime-list {
     flex-direction: column;
   }
 

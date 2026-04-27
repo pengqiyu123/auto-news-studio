@@ -1,34 +1,38 @@
 import {
   AlertCircle,
+  CheckCircle,
   LayoutDashboard,
-  Newspaper,
   RadioTower,
+  SearchCheck,
   Settings,
+  Siren,
   StickyNote,
   WavesLadder,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { CandidatesPanel } from "./components/CandidatesPanel";
 import { DraftEditorModal } from "./components/DraftEditorModal";
 import { DraftTable } from "./components/DraftTable";
-import { GlobalControlBar } from "./components/GlobalControlBar";
-import { IntelPanel } from "./components/IntelPanel";
+import { IntelAlertsPage } from "./components/IntelAlertsPage";
+import { IntelEventsPage } from "./components/IntelEventsPage";
+import { IntelOverviewPage } from "./components/IntelOverviewPage";
+import { IntelStreamPage } from "./components/IntelStreamPage";
 import { JobsPanel } from "./components/JobsPanel";
 import { LogsPanel } from "./components/LogsPanel";
-import { OverviewPanel } from "./components/OverviewPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { SourceHealthPage } from "./components/SourceHealthPage";
+import { WatchlistPanel } from "./components/WatchlistPanel";
 import { api } from "./lib/api";
 import type {
-  AutomationMode,
-  AutomationModeDefinition,
-  AutomationModeProfile,
-  BatchDraftResult,
   BrowserSessionState,
   CandidateTopic,
   DashboardResponse,
+  DiscoveryItem,
   DraftItem,
-  IntelSnapshot,
+  IntelAlert,
+  IntelEvent,
+  IntelOverviewSummary,
   JobItem,
   LLMConfig,
   LogItem,
@@ -40,64 +44,57 @@ import type {
   WeChatChannelConfig,
 } from "./types";
 
-type TabKey = "overview" | "intel" | "candidates" | "drafts" | "jobs" | "settings" | "logs";
+type TabKey =
+  | "overview"
+  | "stream"
+  | "events"
+  | "alerts"
+  | "source-health"
+  | "watchlist"
+  | "drafts"
+  | "jobs"
+  | "settings"
+  | "logs";
 
-const primaryTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }> = [
-  { key: "overview", label: "驾驶舱", icon: LayoutDashboard },
-  { key: "intel", label: "情报", icon: Newspaper },
-  { key: "candidates", label: "候选", icon: WavesLadder },
+const intelTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }> = [
+  { key: "overview", label: "总览", icon: LayoutDashboard },
+  { key: "stream", label: "实时流", icon: RadioTower },
+  { key: "events", label: "热点簇", icon: SearchCheck },
+  { key: "alerts", label: "预警台", icon: Siren },
+  { key: "source-health", label: "来源健康", icon: AlertCircle },
+];
+
+const draftTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }> = [
+  { key: "watchlist", label: "重点观察", icon: WavesLadder },
   { key: "drafts", label: "稿件", icon: StickyNote },
 ];
 
-const secondaryTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }> = [
+const systemTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }> = [
+  { key: "jobs", label: "任务", icon: RadioTower },
   { key: "settings", label: "设置", icon: Settings },
   { key: "logs", label: "日志", icon: AlertCircle },
 ];
 
-const pageMeta: Record<TabKey, { eyebrow: string; title: string; description: string }> = {
-  overview: {
-    eyebrow: "驾驶舱",
-    title: "系统状态与全局主控",
-    description: "这里只看系统有没有在跑、哪里卡住，以及下一步更适合去哪一页处理。",
-  },
-  intel: {
-    eyebrow: "情报中心",
-    title: "最新发现、热点簇与来源健康",
-    description: "集中查看最新流入的信息、热点主题、GitHub 技术动态和来源健康状态。",
-  },
-  candidates: {
-    eyebrow: "候选池",
-    title: "最近同步后的可写主题池",
-    description: "这里不是全网原始流，而是经过去重聚类后，已经值得写的候选主题。",
-  },
-  drafts: {
-    eyebrow: "稿件工作台",
-    title: "正式稿、编辑信息与微信状态",
-    description: "先把正式稿打磨稳定，再决定何时同步微信草稿箱或推进下一步。",
-  },
-  jobs: {
-    eyebrow: "手动任务中心",
-    title: "补跑、重建和强制重试入口",
-    description: "自动运行归驾驶舱总控，任务页只保留手动补刀和排障动作。",
-  },
-  settings: {
-    eyebrow: "设置",
-    title: "发布渠道、AI 模型、信息源与系统偏好",
-    description: "所有配置型功能集中收纳，不打断主工作流。",
-  },
-  logs: {
-    eyebrow: "运行日志",
-    title: "系统痕迹与异常线索",
-    description: "区分系统运行日志和业务动作日志，直接判断后台是否持续在工作。",
-  },
+const pageMeta: Record<TabKey, { eyebrow: string; title: string }> = {
+  overview: { eyebrow: "总览", title: "情报总览" },
+  stream: { eyebrow: "实时流", title: "实时流" },
+  events: { eyebrow: "热点簇", title: "热点簇" },
+  alerts: { eyebrow: "预警台", title: "预警台" },
+  "source-health": { eyebrow: "来源健康", title: "来源健康" },
+  watchlist: { eyebrow: "重点观察", title: "重点观察" },
+  drafts: { eyebrow: "稿件", title: "稿件" },
+  jobs: { eyebrow: "任务", title: "任务" },
+  settings: { eyebrow: "设置", title: "设置" },
+  logs: { eyebrow: "日志", title: "日志" },
 };
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
-  const [intel, setIntel] = useState<IntelSnapshot | null>(null);
-  const [automationModes, setAutomationModes] = useState<AutomationModeDefinition[]>([]);
-  const [automationProfiles, setAutomationProfiles] = useState<AutomationModeProfile[]>([]);
+  const [summary, setSummary] = useState<IntelOverviewSummary | null>(null);
+  const [streamItems, setStreamItems] = useState<DiscoveryItem[]>([]);
+  const [events, setEvents] = useState<IntelEvent[]>([]);
+  const [alerts, setAlerts] = useState<IntelAlert[]>([]);
   const [sources, setSources] = useState<SourceConnector[]>([]);
   const [candidates, setCandidates] = useState<CandidateTopic[]>([]);
   const [drafts, setDrafts] = useState<DraftItem[]>([]);
@@ -108,11 +105,10 @@ export default function App() {
   const [browserSession, setBrowserSession] = useState<BrowserSessionState | null>(null);
   const [referenceProjects, setReferenceProjects] = useState<ReferenceProject[]>([]);
   const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
+  const [appSettings, setAppSettings] = useState<Record<string, unknown>>({});
   const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [pendingMode, setPendingMode] = useState<AutomationMode | null>(null);
-  const [savingAutomationProfile, setSavingAutomationProfile] = useState<AutomationMode | null>(null);
   const [busyDraftId, setBusyDraftId] = useState<string | null>(null);
   const [busyJobAction, setBusyJobAction] = useState<string | null>(null);
   const [savingChannel, setSavingChannel] = useState(false);
@@ -121,34 +117,30 @@ export default function App() {
   const [savingSourceKey, setSavingSourceKey] = useState<string | null>(null);
   const [syncingSourceKey, setSyncingSourceKey] = useState<string | null>(null);
   const [busyCandidateId, setBusyCandidateId] = useState<string | null>(null);
-  const [batchingDrafts, setBatchingDrafts] = useState(false);
-  const [batchDraftResult, setBatchDraftResult] = useState<BatchDraftResult | null>(null);
   const [refreshingBrowser, setRefreshingBrowser] = useState(false);
   const [openingBrowser, setOpeningBrowser] = useState(false);
-  const [highlightCandidateId, setHighlightCandidateId] = useState<string | null>(null);
-  const [highlightDraftId, setHighlightDraftId] = useState<string | null>(null);
   const [busyRuntimeAction, setBusyRuntimeAction] = useState<"start" | "stop" | null>(null);
   const [savingRuntimePlan, setSavingRuntimePlan] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
 
-  const refreshDashboard = useCallback(async () => {
-    try {
-      const dashboardData = await api.getDashboard();
-      setDashboard(dashboardData);
-      setBrowserSession(dashboardData.browser_session);
-      setSources(dashboardData.sources);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "驾驶舱刷新失败");
-    }
-  }, []);
-
-  const refreshIntel = useCallback(async () => {
-    try {
-      const intelData = await api.getIntel();
-      setIntel(intelData.item);
-      setSources(intelData.item.source_health);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "情报刷新失败");
-    }
+  const refreshIntelCore = useCallback(async () => {
+    const [dashboardData, summaryData, streamData, eventData, alertData, sourceData, candidateData] = await Promise.all([
+      api.getDashboard(),
+      api.getIntelSummary(),
+      api.getDiscoveryItems(),
+      api.getIntelEvents(),
+      api.getIntelAlerts(),
+      api.getIntelSources(),
+      api.getCandidates(),
+    ]);
+    setDashboard(dashboardData);
+    setSummary(summaryData.item);
+    setStreamItems(streamData.items);
+    setEvents(eventData.items);
+    setAlerts(alertData.items);
+    setSources(sourceData.items);
+    setCandidates(candidateData.items);
+    setBrowserSession(dashboardData.browser_session);
   }, []);
 
   const refreshAll = useCallback(async () => {
@@ -157,9 +149,11 @@ export default function App() {
     try {
       const [
         dashboardData,
-        intelData,
-        automationModeData,
-        automationProfileData,
+        summaryData,
+        streamData,
+        eventData,
+        alertData,
+        sourceData,
         candidateData,
         draftData,
         publishTaskData,
@@ -169,11 +163,14 @@ export default function App() {
         browserData,
         referenceData,
         llmConfigData,
+        settingsData,
       ] = await Promise.all([
         api.getDashboard(),
-        api.getIntel(),
-        api.getAutomationModes(),
-        api.getAutomationProfiles(),
+        api.getIntelSummary(),
+        api.getDiscoveryItems(),
+        api.getIntelEvents(),
+        api.getIntelAlerts(),
+        api.getIntelSources(),
         api.getCandidates(),
         api.getDrafts(),
         api.getPublishTasks(),
@@ -183,12 +180,14 @@ export default function App() {
         api.getBrowserSession(),
         api.getReferenceProjects(),
         api.getLLMConfig(),
+        api.getSettings(),
       ]);
       setDashboard(dashboardData);
-      setIntel(intelData.item);
-      setAutomationModes(automationModeData.items);
-      setAutomationProfiles(automationProfileData.items);
-      setSources(intelData.item.source_health);
+      setSummary(summaryData.item);
+      setStreamItems(streamData.items);
+      setEvents(eventData.items);
+      setAlerts(alertData.items);
+      setSources(sourceData.items);
       setCandidates(candidateData.items);
       setDrafts(draftData.items);
       setPublishTasks(publishTaskData.items);
@@ -198,6 +197,7 @@ export default function App() {
       setBrowserSession(browserData.item);
       setReferenceProjects(referenceData.items);
       setLlmConfig(llmConfigData.item);
+      setAppSettings(settingsData.item);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
     } finally {
@@ -210,79 +210,32 @@ export default function App() {
   }, [refreshAll]);
 
   useEffect(() => {
-    if (!dashboard || activeTab !== "overview") {
+    const intelFocusedTabs: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist"];
+    if (!intelFocusedTabs.includes(activeTab)) {
       return;
     }
-    const hasRunningWork = dashboard.execution_chain.stages.some((item) => item.status === "running");
-    const intervalMs = hasRunningWork ? 15000 : 60000;
+    const isRunning = dashboard?.runtime_status.running;
+    const isActiveCycle = dashboard?.runtime_status ? (
+      dashboard.runtime_status.control_state === "running" ||
+      dashboard.runtime_status.current_cycle === "starting" ||
+      dashboard.runtime_status.current_cycle === "collecting" ||
+      dashboard.runtime_status.current_cycle === "drafting" ||
+      dashboard.runtime_status.current_cycle === "wechat_sync"
+    ) : false;
+    const intervalMs = isActiveCycle ? 3000 : isRunning ? 10000 : 60000;
     const timer = window.setInterval(() => {
-      void refreshDashboard();
+      void refreshIntelCore().catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "自动刷新失败");
+      });
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [activeTab, dashboard, refreshDashboard]);
-
-  useEffect(() => {
-    if (activeTab !== "intel" || !dashboard?.runtime_status.running) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void refreshIntel();
-    }, 30000);
-    return () => window.clearInterval(timer);
-  }, [activeTab, dashboard?.runtime_status.running, refreshIntel]);
-
-  useEffect(() => {
-    if (activeTab !== "candidates" || !dashboard?.runtime_status.running) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void Promise.all([api.getCandidates(), api.getDashboard()])
-        .then(([candidateData, dashboardData]) => {
-          setCandidates(candidateData.items);
-          setDashboard(dashboardData);
-          setBrowserSession(dashboardData.browser_session);
-          setSources(dashboardData.sources);
-        })
-        .catch((err: unknown) => {
-          setError(err instanceof Error ? err.message : "候选池自动刷新失败");
-        });
-    }, 30000);
-    return () => window.clearInterval(timer);
-  }, [activeTab, dashboard?.runtime_status.running]);
-
-  const currentMode = useMemo(() => dashboard?.current_mode.key ?? "draft_only", [dashboard]);
-  const currentPageMeta = useMemo(() => pageMeta[activeTab], [activeTab]);
-
-  async function handleModeChange(mode: AutomationMode) {
-    setPendingMode(mode);
-    try {
-      await api.setAutomationMode(mode);
-      await refreshAll();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "模式切换失败");
-    } finally {
-      setPendingMode(null);
-    }
-  }
-
-  async function handleAutomationProfileSave(mode: AutomationMode, profile: AutomationModeProfile) {
-    setSavingAutomationProfile(mode);
-    try {
-      const response = await api.updateAutomationProfile(mode, profile);
-      setAutomationProfiles(response.items);
-      await refreshAll();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "运行参数保存失败");
-    } finally {
-      setSavingAutomationProfile(null);
-    }
-  }
+  }, [activeTab, dashboard?.runtime_status, refreshIntelCore]);
 
   async function handleSourceSync() {
     setRefreshingSources(true);
     try {
       await api.syncSources();
-      await refreshAll();
+      await refreshIntelCore();
     } catch (err) {
       setError(err instanceof Error ? err.message : "来源同步失败");
     } finally {
@@ -294,7 +247,7 @@ export default function App() {
     setSyncingSourceKey(sourceKey);
     try {
       await api.syncSource(sourceKey);
-      await refreshAll();
+      await refreshIntelCore();
     } catch (err) {
       setError(err instanceof Error ? err.message : "单来源重抓失败");
     } finally {
@@ -309,7 +262,7 @@ export default function App() {
     setSavingSourceKey(sourceKey);
     try {
       await api.updateSource(sourceKey, payload);
-      await refreshAll();
+      await refreshIntelCore();
     } catch (err) {
       setError(err instanceof Error ? err.message : "来源保存失败");
     } finally {
@@ -317,34 +270,56 @@ export default function App() {
     }
   }
 
-  async function handleCreateDraft(candidateId: string, mode: PublishMode) {
-    setBusyCandidateId(candidateId);
+  async function handleSourceCreate(payload: Parameters<typeof api.createSource>[0]) {
     try {
-      const response = await api.createDraftFromCandidate(candidateId, mode);
-      await refreshAll();
-      setHighlightCandidateId(null);
-      setHighlightDraftId(response.item.id);
-      setActiveTab("drafts");
+      await api.createSource(payload);
+      await refreshIntelCore();
+      showToast("来源已添加");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "生成初稿失败");
-    } finally {
-      setBusyCandidateId(null);
+      setError(err instanceof Error ? err.message : "来源添加失败");
     }
   }
 
-  async function handleBatchCreateDrafts() {
-    setBatchingDrafts(true);
+  async function handleSourceDelete(sourceKey: string) {
     try {
-      const result = await api.batchCreateDrafts();
-      setBatchDraftResult(result);
-      await refreshAll();
-      if (result.draft_ids.length) {
-        setHighlightDraftId(result.draft_ids[0]);
-      }
+      await api.deleteSource(sourceKey);
+      await refreshIntelCore();
+      showToast("来源已删除");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "批量生成初稿失败");
+      setError(err instanceof Error ? err.message : "来源删除失败");
+    }
+  }
+
+  async function handleWatchEvent(eventId: string) {
+    try {
+      await api.watchlistEvent(eventId);
+      await refreshIntelCore();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加入重点观察失败");
+    }
+  }
+
+  async function handleIgnoreEvent(eventId: string) {
+    try {
+      await api.ignoreEvent(eventId);
+      await refreshIntelCore();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "忽略事件失败");
+    }
+  }
+
+  async function handleCreateDraft(candidateId: string, mode: PublishMode) {
+    setBusyCandidateId(candidateId);
+    try {
+      await api.createDraftFromCandidate(candidateId, mode);
+      const [candidateData, draftData] = await Promise.all([api.getCandidates(), api.getDrafts()]);
+      setCandidates(candidateData.items);
+      setDrafts(draftData.items);
+      setActiveTab("drafts");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "生成稿件失败");
     } finally {
-      setBatchingDrafts(false);
+      setBusyCandidateId(null);
     }
   }
 
@@ -362,7 +337,11 @@ export default function App() {
       } else {
         await api.publishDraft(draftId);
       }
-      await refreshAll();
+      const draftData = await api.getDrafts();
+      setDrafts(draftData.items);
+      const dashboardData = await api.getDashboard();
+      setDashboard(dashboardData);
+      setBrowserSession(dashboardData.browser_session);
     } catch (err) {
       setError(err instanceof Error ? err.message : "稿件动作执行失败");
     } finally {
@@ -374,7 +353,10 @@ export default function App() {
     setBusyJobAction(action);
     try {
       await api.runJob(action);
-      await refreshAll();
+      const [jobData, logData, dashboardData] = await Promise.all([api.getJobs(), api.getLogs(), api.getDashboard()]);
+      setJobs(jobData.items);
+      setLogs(logData.items);
+      setDashboard(dashboardData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "任务执行失败");
     } finally {
@@ -406,12 +388,22 @@ export default function App() {
     }
   }
 
+  async function handleSaveSettings(payload: Record<string, unknown>) {
+    try {
+      const result = await api.updateSettings(payload);
+      setAppSettings(result.item);
+      showToast("设置已保存");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "设置保存失败");
+    }
+  }
+
   function handleEditDraft(draftId: string) {
     setEditingDraftId(draftId);
   }
 
   function handleDraftContentSaved(draftId: string, updated: DraftItem) {
-    setDrafts((prev) => prev.map((d) => (d.id === draftId ? updated : d)));
+    setDrafts((prev) => prev.map((draft) => (draft.id === draftId ? updated : draft)));
   }
 
   async function handleRefreshBrowser(payload: Pick<BrowserSessionState, "browser_name" | "user_data_dir">) {
@@ -443,8 +435,20 @@ export default function App() {
   async function handleStartRuntime() {
     setBusyRuntimeAction("start");
     try {
-      await api.startRuntime();
-      await refreshAll();
+      const response = await api.startRuntime();
+      setDashboard((current) => current ? { ...current, runtime_status: response.item } : current);
+      setSummary((current) =>
+        current
+          ? {
+              ...current,
+              running: response.item.running,
+              next_run_at: response.item.next_collect_at ?? current.next_run_at,
+              work_scope: response.item.work_scope,
+            }
+          : current
+      );
+      await refreshIntelCore();
+      showToast("已启动");
     } catch (err) {
       setError(err instanceof Error ? err.message : "启动自动运行失败");
     } finally {
@@ -452,11 +456,28 @@ export default function App() {
     }
   }
 
+  function showToast(message: string) {
+    setToast(message);
+    window.setTimeout(() => setToast(null), 3000);
+  }
+
   async function handleStopRuntime() {
     setBusyRuntimeAction("stop");
     try {
-      await api.stopRuntime();
-      await refreshAll();
+      const response = await api.stopRuntime();
+      setDashboard((current) => current ? { ...current, runtime_status: response.item } : current);
+      setSummary((current) =>
+        current
+          ? {
+              ...current,
+              running: response.item.running,
+              next_run_at: response.item.next_collect_at ?? null,
+              work_scope: response.item.work_scope,
+            }
+          : current
+      );
+      await refreshIntelCore();
+      showToast("已停止");
     } catch (err) {
       setError(err instanceof Error ? err.message : "停止自动运行失败");
     } finally {
@@ -467,37 +488,23 @@ export default function App() {
   async function handleSaveRuntimePlan(payload: Omit<RuntimePlan, "effective_mode">) {
     setSavingRuntimePlan(true);
     try {
-      await api.updateRuntimePlan(payload);
-      await refreshAll();
+      const response = await api.updateRuntimePlan(payload);
+      setDashboard((current) => current ? { ...current, runtime_plan: response.item } : current);
+      const dashboardData = await api.getDashboard();
+      setDashboard(dashboardData);
+      const summaryData = await api.getIntelSummary();
+      setSummary(summaryData.item);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "自动运行计划保存失败");
+      setError(err instanceof Error ? err.message : "工作计划保存失败");
     } finally {
       setSavingRuntimePlan(false);
     }
   }
 
-  async function handleOpenCandidate(candidateId: string) {
-    setHighlightCandidateId(candidateId);
-    setHighlightDraftId(null);
-    setActiveTab("candidates");
-    try {
-      const candidateData = await api.getCandidates();
-      setCandidates(candidateData.items);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "候选池刷新失败");
-    }
-  }
+  const currentPageMeta = useMemo(() => pageMeta[activeTab], [activeTab]);
 
-  async function handleOpenDraft(draftId: string) {
-    setHighlightDraftId(draftId);
-    setHighlightCandidateId(null);
-    setActiveTab("drafts");
-    try {
-      const draftData = await api.getDrafts();
-      setDrafts(draftData.items);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "稿件列表刷新失败");
-    }
+  function dismissToast() {
+    setToast(null);
   }
 
   function renderNavGroup(items: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }>) {
@@ -526,38 +533,43 @@ export default function App() {
           </div>
           <div>
             <strong>Auto News Studio</strong>
-            <p>信息优先、草稿优先</p>
+            <p>情报优先，人在首页控节奏</p>
           </div>
         </div>
 
         <div className="nav-group">
-          <p className="nav-group-label">主流程</p>
-          <nav className="nav-list">{renderNavGroup(primaryTabs)}</nav>
+          <p className="nav-group-label">信息</p>
+          <nav className="nav-list">{renderNavGroup(intelTabs)}</nav>
+        </div>
+
+        <div className="nav-group">
+          <p className="nav-group-label">稿件</p>
+          <nav className="nav-list">{renderNavGroup(draftTabs)}</nav>
         </div>
 
         <div className="nav-group nav-group-secondary">
           <p className="nav-group-label">系统与排障</p>
-          <nav className="nav-list">{renderNavGroup(secondaryTabs)}</nav>
+          <nav className="nav-list">{renderNavGroup(systemTabs)}</nav>
         </div>
 
         <div className="sidebar-footer">
           <div className="sidebar-footer-stats">
             <div>
-              <span>候选</span>
-              <strong>{candidates.length}</strong>
+              <span>预警</span>
+              <strong>{summary?.alert_count ?? 0}</strong>
             </div>
             <div>
-              <span>稿件</span>
-              <strong>{drafts.length}</strong>
+              <span>事件</span>
+              <strong>{summary?.event_count ?? 0}</strong>
             </div>
             <div>
               <span>来源</span>
-              <strong>{dashboard?.top_bar.healthy_sources ?? 0}/{dashboard?.top_bar.total_sources ?? 0}</strong>
+              <strong>{summary ? `${summary.healthy_sources}/${summary.total_sources}` : "0/0"}</strong>
             </div>
           </div>
           <div className="sidebar-footer-mode">
-            <p>{dashboard?.runtime_status.running ? "运行中" : "已停止"}</p>
-            <strong>{dashboard?.current_automation_mode.label ?? "雷达捕获"}</strong>
+            <p>{dashboard?.runtime_status.running ? "工作中" : "已停止"}</p>
+            <strong>{summary ? summary.work_scope.replace(/_/g, " ") : "collect_events_alerts"}</strong>
           </div>
         </div>
       </aside>
@@ -567,7 +579,6 @@ export default function App() {
           <div>
             <p className="eyebrow">{currentPageMeta.eyebrow}</p>
             <h1>{currentPageMeta.title}</h1>
-            <p className="subtle">{currentPageMeta.description}</p>
           </div>
           <button type="button" className="ghost-button" onClick={() => void refreshAll()}>
             {loading ? "刷新中..." : "刷新面板"}
@@ -576,81 +587,75 @@ export default function App() {
 
         {error ? <div className="error-banner">{error}</div> : null}
 
-        {dashboard && llmConfig && llmConfig.providers.length > 0 && llmConfig.providers.every((p) => !p.enabled || !p.api_key) && activeTab !== "settings" ? (
+        {toast ? (
+          <div className="toast-banner" onClick={dismissToast}>
+            <CheckCircle size={14} />
+            <span>{toast}</span>
+            <X size={14} className="toast-dismiss" />
+          </div>
+        ) : null}
+
+        {llmConfig &&
+        llmConfig.profiles.length > 0 &&
+        llmConfig.profiles.every((profile) => !profile.enabled || !profile.api_key) &&
+        activeTab !== "settings" ? (
           <div className="setup-banner" onClick={() => setActiveTab("settings")}>
             <strong>AI 模型未配置</strong>
-            <p>填入 API Key 后才能使用 AI 生成文章。点击前往设置。</p>
+            <p>填入 API Key 后，稿件生成和情报辅助判断才会启用。</p>
           </div>
         ) : null}
 
         {loading && !dashboard ? (
           <section className="panel">
-            <p className="empty-state">正在加载控制台数据...</p>
+            <p className="empty-state">正在加载情报控制台...</p>
           </section>
         ) : null}
 
-        {dashboard ? (
+        {dashboard && summary ? (
           <div className="page-content">
             {activeTab === "overview" ? (
-              <>
-                <GlobalControlBar
-                  runtime={dashboard.runtime_status}
-                  runtimePlan={dashboard.runtime_plan}
-                  currentMode={dashboard.current_automation_mode.key}
-                  modes={automationModes}
-                  profiles={automationProfiles}
-                  pendingMode={pendingMode}
-                  savingProfileMode={savingAutomationProfile}
-                  savingRuntimePlan={savingRuntimePlan}
-                  busyRuntimeAction={busyRuntimeAction}
-                  refreshing={loading}
-                  onModeChange={handleModeChange}
-                  onSaveProfile={handleAutomationProfileSave}
-                  onSaveRuntimePlan={handleSaveRuntimePlan}
-                  onStart={handleStartRuntime}
-                  onStop={handleStopRuntime}
-                  onRefresh={refreshAll}
-                />
-                <OverviewPanel dashboard={dashboard} onNavigate={(tab) => setActiveTab(tab)} />
-              </>
+              <IntelOverviewPage
+                summary={summary}
+                runtime={dashboard.runtime_status}
+                runtimePlan={dashboard.runtime_plan}
+                savingRuntimePlan={savingRuntimePlan}
+                busyRuntimeAction={busyRuntimeAction}
+                refreshing={loading}
+                onSaveRuntimePlan={handleSaveRuntimePlan}
+                onStart={handleStartRuntime}
+                onStop={handleStopRuntime}
+                onSyncNow={handleSourceSync}
+                onRefresh={refreshAll}
+                onNavigate={(tab) => setActiveTab(tab)}
+                onWatchEvent={handleWatchEvent}
+                onIgnoreEvent={handleIgnoreEvent}
+              />
             ) : null}
 
-            {activeTab === "intel" && intel ? (
-              <IntelPanel
-                intel={intel}
-                currentMode={currentMode}
+            {activeTab === "stream" ? <IntelStreamPage items={streamItems} /> : null}
+            {activeTab === "events" ? <IntelEventsPage items={events} onWatchEvent={handleWatchEvent} onIgnoreEvent={handleIgnoreEvent} /> : null}
+            {activeTab === "alerts" ? <IntelAlertsPage items={alerts} /> : null}
+            {activeTab === "source-health" ? (
+              <SourceHealthPage
+                sources={sources}
                 syncing={refreshingSources}
                 savingSourceKey={savingSourceKey}
                 syncingSourceKey={syncingSourceKey}
-                busyCandidateId={busyCandidateId}
                 onSyncSources={handleSourceSync}
                 onSyncSource={handleSourceSyncOne}
                 onSaveSource={handleSourceSave}
-                onCreateDraft={handleCreateDraft}
-                onOpenCandidate={(candidateId) => void handleOpenCandidate(candidateId)}
-                onOpenDraft={(draftId) => void handleOpenDraft(draftId)}
               />
             ) : null}
 
-            {activeTab === "candidates" ? (
-              <CandidatesPanel
-                candidates={candidates}
-                busyCandidateId={busyCandidateId}
-                highlightCandidateId={highlightCandidateId}
-                dashboard={dashboard}
-                currentMode={currentMode}
-                batchingDrafts={batchingDrafts}
-                batchResult={batchDraftResult}
-                onCreateDraft={handleCreateDraft}
-                onBatchCreateDrafts={handleBatchCreateDrafts}
-              />
+            {activeTab === "watchlist" ? (
+              <WatchlistPanel candidates={candidates} busyCandidateId={busyCandidateId} onCreateDraft={handleCreateDraft} />
             ) : null}
 
             {activeTab === "drafts" ? (
               <DraftTable
                 drafts={drafts}
                 busyDraftId={busyDraftId}
-                highlightDraftId={highlightDraftId}
+                highlightDraftId={null}
                 onRegenerate={(draftId) => handleDraftAction("regenerate", draftId)}
                 onApprove={(draftId) => handleDraftAction("approve", draftId)}
                 onSyncDraft={(draftId) => handleDraftAction("sync", draftId)}
@@ -694,6 +699,10 @@ export default function App() {
                 onSyncSources={handleSourceSync}
                 onSyncSource={handleSourceSyncOne}
                 onSaveSource={handleSourceSave}
+                onCreateSource={handleSourceCreate}
+                onDeleteSource={handleSourceDelete}
+                onSaveSettings={handleSaveSettings}
+                settings={appSettings}
               />
             ) : null}
 
@@ -703,7 +712,7 @@ export default function App() {
       </main>
 
       {editingDraftId ? (() => {
-        const editingDraft = drafts.find((d) => d.id === editingDraftId);
+        const editingDraft = drafts.find((draft) => draft.id === editingDraftId);
         return editingDraft ? (
           <DraftEditorModal
             draft={editingDraft}

@@ -19,6 +19,19 @@ interface IntelPanelProps {
     sourceKey: string,
     payload: Pick<SourceConnector, "enabled" | "schedule" | "priority" | "url" | "tags">
   ) => Promise<void>;
+  onCreateSource: (payload: {
+    key: string;
+    name: string;
+    kind: string;
+    driver: string;
+    url?: string;
+    enabled?: boolean;
+    schedule?: string;
+    priority?: number;
+    weight?: number;
+    tags?: string[];
+  }) => Promise<void>;
+  onDeleteSource: (sourceKey: string) => Promise<void>;
   onCreateDraft: (candidateId: string, mode: PublishMode) => Promise<void>;
   onOpenCandidate: (candidateId: string) => void;
   onOpenDraft: (draftId: string) => void;
@@ -88,6 +101,8 @@ export function IntelPanel({
   onSyncSources,
   onSyncSource,
   onSaveSource,
+  onCreateSource,
+  onDeleteSource,
   onCreateDraft,
   onOpenCandidate,
   onOpenDraft,
@@ -398,6 +413,8 @@ export function IntelPanel({
             onSync={onSyncSources}
             onSyncOne={onSyncSource}
             onSave={onSaveSource}
+            onCreate={onCreateSource}
+            onDelete={onDeleteSource}
           />
         </div>
       ) : null}

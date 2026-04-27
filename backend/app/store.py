@@ -6,12 +6,13 @@ from email.utils import parsedate_to_datetime
 import json
 from pathlib import Path
 import re
-from threading import RLock
+from threading import RLock, Thread
 from typing import Any
 from uuid import uuid4
 
 from .composer import _markdown_to_html, _wechat_html, compose_draft
 from .connectors import collect_enabled_sources, collect_from_source
+from .intel_pipeline import build_intel_state
 from .llm import LLMService
 from .legacy_sources import build_legacy_rss_sources
 from .models import (
@@ -28,9 +29,17 @@ from .models import (
     DashboardStats,
     DashboardTopBar,
     DraftItem,
+    DiscoveryItem,
     ExecutionChainSnapshot,
     FreshnessSnapshot,
     GithubSignalItem,
+    IntelAlert,
+    IntelAlertsResponse,
+    IntelEvent,
+    IntelEventResponse,
+    IntelEventsResponse,
+    IntelOverviewSummary,
+    IntelSummaryResponse,
     HotClusterCard,
     IntelSnapshot,
     IntelStreamItem,
@@ -46,6 +55,7 @@ from .models import (
     RuntimePlanPayload,
     SourceConnector,
     SourceConnectorPayload,
+    CreateSourcePayload,
     SourceSyncResponse,
     WeChatChannelConfig,
 )
@@ -64,12 +74,26 @@ from .publishers import (
     run_browser_action,
 )
 from .reference_projects import write_reference_baseline
+from .sources import discover_sources
 
 
 DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "state.json"
 UTC = timezone.utc
 LOCAL_TZ = timezone(timedelta(hours=8))
 MAX_RAW_ITEMS = 480
+SYNTHETIC_MARKERS = (
+    "example.com/",
+    "当前为回退样例",
+    "已回退到样例素材",
+    "可用样例素材",
+    "样例数据",
+)
+UNSUPPORTED_SOURCE_DRIVERS = {
+    "legacy_bilibili",
+    "legacy_toutiao",
+    "legacy_youtube",
+    "newsnow_pool",
+}
 
 
 def now_iso() -> str:
@@ -140,6 +164,49 @@ def freshness_bucket(collected_at: str | None) -> str:
     if delta_minutes <= 360:
         return "aging"
     return "stale"
+
+
+def _contains_synthetic_marker(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (dict, list, tuple, set)):
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except TypeError:
+            text = str(value)
+    else:
+        text = str(value)
+    return any(marker in text for marker in SYNTHETIC_MARKERS)
+
+
+def _is_synthetic_raw_item(item: dict[str, Any]) -> bool:
+    metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
+    return bool(
+        metadata.get("fallback")
+        or _contains_synthetic_marker(item.get("link"))
+        or _contains_synthetic_marker(item.get("summary"))
+        or _contains_synthetic_marker(item.get("content"))
+        or _contains_synthetic_marker(metadata)
+    )
+
+
+def _extract_json_payload(text: str) -> Any | None:
+    compact = str(text or "").strip()
+    if not compact:
+        return None
+    if compact.startswith("```"):
+        compact = re.sub(r"^```(?:json)?\s*", "", compact)
+        compact = re.sub(r"\s*```$", "", compact)
+    try:
+        return json.loads(compact)
+    except json.JSONDecodeError:
+        match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", compact)
+        if not match:
+            return None
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return None
 
 
 def default_image_slots(draft: dict[str, Any]) -> list[dict[str, Any]]:
@@ -366,6 +433,166 @@ DEFAULT_AUTOMATION_PROFILES: list[dict[str, Any]] = [
     },
 ]
 
+DEFAULT_LLM_PROFILES: list[dict[str, Any]] = [
+    {
+        "id": "nvidia-qwen35-122b",
+        "label": "NVIDIA Qwen 122B",
+        "description": "主力强模型，实测连通快，适合优先做正式稿。",
+        "provider_key": "nvidia",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "api_key": "",
+        "model_id": "qwen/qwen3.5-122b-a10b",
+        "enabled": False,
+    },
+    {
+        "id": "nvidia-glm47",
+        "label": "NVIDIA GLM 4.7",
+        "description": "NVIDIA 通道下的 GLM 备选，实测可用且响应很快。",
+        "provider_key": "nvidia",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "api_key": "",
+        "model_id": "z-ai/glm4.7",
+        "enabled": False,
+    },
+    {
+        "id": "nvidia-minimax-m27",
+        "label": "NVIDIA MiniMax M2.7",
+        "description": "实测可用，但接近 10 秒边界，适合作为额外备选。",
+        "provider_key": "nvidia",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "api_key": "",
+        "model_id": "minimaxai/minimax-m2.7",
+        "enabled": False,
+    },
+    {
+        "id": "siliconflow-glm4-9b",
+        "label": "SiliconFlow GLM 4 9B",
+        "description": "免费且快，适合做稳态兜底。",
+        "provider_key": "siliconflow",
+        "base_url": "https://api.siliconflow.cn/v1",
+        "api_key": "",
+        "model_id": "THUDM/GLM-4-9B-0414",
+        "enabled": False,
+    },
+    {
+        "id": "siliconflow-glmz1-9b",
+        "label": "SiliconFlow GLM Z1 9B",
+        "description": "免费备选，实测连通和速度都不错。",
+        "provider_key": "siliconflow",
+        "base_url": "https://api.siliconflow.cn/v1",
+        "api_key": "",
+        "model_id": "THUDM/GLM-Z1-9B-0414",
+        "enabled": False,
+    },
+    {
+        "id": "siliconflow-deepseek-r1-qwen3-8b",
+        "label": "SiliconFlow DeepSeek R1 Qwen3 8B",
+        "description": "免费推理型备选，适合做判断和摘要。",
+        "provider_key": "siliconflow",
+        "base_url": "https://api.siliconflow.cn/v1",
+        "api_key": "",
+        "model_id": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+        "enabled": False,
+    },
+    {
+        "id": "siliconflow-qwen3-8b",
+        "label": "SiliconFlow Qwen3 8B",
+        "description": "免费通用备选，适合快速切换测试。",
+        "provider_key": "siliconflow",
+        "base_url": "https://api.siliconflow.cn/v1",
+        "api_key": "",
+        "model_id": "Qwen/Qwen3-8B",
+        "enabled": False,
+    },
+]
+
+DEFAULT_LLM_TASK_TEMPLATE: list[dict[str, Any]] = [
+    {"task_key": "judgement", "label": "初步判断", "temperature": 0.2, "max_tokens": 2048},
+    {"task_key": "outline", "label": "写作提纲", "temperature": 0.4, "max_tokens": 2048},
+    {"task_key": "article", "label": "正文生成", "temperature": 0.7, "max_tokens": 4096},
+    {"task_key": "title", "label": "标题润色", "temperature": 0.8, "max_tokens": 512},
+    {"task_key": "summary", "label": "摘要生成", "temperature": 0.5, "max_tokens": 1024},
+]
+
+
+def build_provider_from_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "key": str(profile.get("provider_key") or "").strip(),
+        "label": str(profile.get("label") or "").strip(),
+        "base_url": str(profile.get("base_url") or "").strip(),
+        "api_key": str(profile.get("api_key") or "").strip(),
+        "model_id": str(profile.get("model_id") or "").strip(),
+        "enabled": bool(profile.get("enabled")) and bool(str(profile.get("api_key") or "").strip()),
+        "last_tested_at": profile.get("last_tested_at"),
+        "last_test_result": profile.get("last_test_result"),
+    }
+
+
+def build_tasks_from_profile(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    provider_key = str(profile.get("provider_key") or "").strip()
+    model_id = str(profile.get("model_id") or "").strip()
+    return [
+        {
+            **task,
+            "provider_key": provider_key if bool(profile.get("enabled")) and model_id else "",
+            "model_id": model_id if bool(profile.get("enabled")) else "",
+        }
+        for task in deepcopy(DEFAULT_LLM_TASK_TEMPLATE)
+    ]
+
+
+def default_llm_state() -> dict[str, Any]:
+    profiles = deepcopy(DEFAULT_LLM_PROFILES)
+    current_profile_id = profiles[0]["id"] if profiles else ""
+    active_profile = next((item for item in profiles if item["id"] == current_profile_id), {})
+    return {
+        "current_profile_id": current_profile_id,
+        "profiles": profiles,
+        "providers": [build_provider_from_profile(active_profile)] if active_profile else [],
+        "tasks": build_tasks_from_profile(active_profile) if active_profile else [],
+        "usage_today": {},
+    }
+
+
+def merge_llm_profiles(
+    incoming_profiles: list[dict[str, Any]],
+    existing_profiles: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    existing_by_id = {
+        str(item.get("id")): deepcopy(item)
+        for item in (existing_profiles or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    merged_by_id: dict[str, dict[str, Any]] = {
+        item["id"]: {**item, **existing_by_id.get(item["id"], {})}
+        for item in deepcopy(DEFAULT_LLM_PROFILES)
+    }
+    for item in incoming_profiles:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        profile_id = str(item["id"])
+        profile = {**merged_by_id.get(profile_id, {}), **deepcopy(item)}
+        existing = existing_by_id.get(profile_id, {})
+        api_key = str(profile.get("api_key") or "").strip()
+        if "****" in api_key and existing:
+            profile["api_key"] = str(existing.get("api_key") or "")
+        merged_by_id[profile_id] = profile
+
+    provider_keys: dict[str, str] = {}
+    for profile in list(merged_by_id.values()) + list(existing_by_id.values()):
+        provider_key = str(profile.get("provider_key") or "").strip()
+        api_key = str(profile.get("api_key") or "").strip()
+        if provider_key and api_key and "****" not in api_key:
+            provider_keys[provider_key] = api_key
+
+    for profile in merged_by_id.values():
+        provider_key = str(profile.get("provider_key") or "").strip()
+        if provider_key and not str(profile.get("api_key") or "").strip():
+            profile["api_key"] = provider_keys.get(provider_key, "")
+        profile["enabled"] = bool(profile.get("enabled")) and bool(str(profile.get("api_key") or "").strip())
+
+    return list(merged_by_id.values())
+
 
 def _rss(
     key: str,
@@ -483,10 +710,6 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
     _rss("rsshub-juejin-trend", "掘金前端趋势 (RSSHub)", "https://rsshub.app/juejin/trending/frontend/monthly", priority=6, schedule="0 */4 * * *", tags=["cn", "dev"], language="zh"),
     _rss("rsshub-github-trending", "GitHub Trending (RSSHub)", "https://rsshub.app/github/trending/daily", priority=7, tags=["oss", "github"]),
     _rss("rsshub-producthunt", "Product Hunt (RSSHub)", "https://rsshub.app/producthunt/daily", priority=6, tags=["startup", "product"]),
-    # ── 占位/降级源（未适配的国内平台，保留入口） ──
-    _api_source("bilibili-tech", "B站科技区", "legacy_bilibili", priority=5, enabled=False, tags=["cn", "video"]),
-    _api_source("toutiao-tech", "今日头条科技", "legacy_toutiao", priority=5, enabled=False, tags=["cn", "headline"]),
-    _api_source("youtube-ml", "YouTube ML 频道", "legacy_youtube", priority=4, enabled=False, schedule="0 */4 * * *", tags=["video"]),
 ]
 
 
@@ -535,12 +758,25 @@ class StudioStore:
             "mode_definitions": deepcopy(MODE_DEFINITIONS),
             "sources": sources,
             "raw_items": [],
+            "discovery_items": [],
+            "intel_events": [],
+            "event_snapshots": [],
+            "intel_alerts": [],
             "normalized_items": [],
             "candidates": [],
             "drafts": [],
             "publish_tasks": [],
             "jobs": [],
             "logs": [],
+            "notifications": {
+                "webhook": {
+                    "enabled": False,
+                    "url": "",
+                    "secret": "",
+                    "events": ["breakout"],
+                },
+                "delivery_log": [],
+            },
             "channels": {
                 "wechat": {
                     "app_id": "",
@@ -575,24 +811,9 @@ class StudioStore:
                     "sidecar_health": "offline",
                 }
             },
-            "llm": {
-                "providers": [
-                    {
-                        "key": "glm",
-                        "label": "智谱 GLM",
-                        "base_url": "https://open.bigmodel.cn/api/paas/v4",
-                        "api_key": "",
-                        "model_id": "glm-4.7-flash",
-                        "enabled": True,
-                    },
-                ],
-                "tasks": [
-                    {"task_key": "outline", "provider_key": "glm", "model_id": "glm-4.7-flash", "temperature": 0.4, "max_tokens": 2048},
-                    {"task_key": "article", "provider_key": "glm", "model_id": "glm-4.7-flash", "temperature": 0.7, "max_tokens": 4096},
-                    {"task_key": "title", "provider_key": "glm", "model_id": "glm-4.7-flash", "temperature": 0.8, "max_tokens": 512},
-                    {"task_key": "summary", "provider_key": "glm", "model_id": "glm-4.7-flash", "temperature": 0.5, "max_tokens": 1024},
-                ],
-                "usage_today": {},
+            "llm": default_llm_state(),
+            "settings": {
+                "max_workers": 8,
             },
             "reference_projects": reference_projects,
             "runtime_plan": {
@@ -600,12 +821,14 @@ class StudioStore:
                 "start_at": None,
                 "interval_minutes": 30,
                 "timezone": "Asia/Shanghai",
+                "work_scope": "collect_events_alerts",
             },
             "runtime": {
                 "scheduler_running": False,
                 "control_state": "stopped",
                 "launch_mode": "interval_now",
                 "current_mode": "radar_only",
+                "work_scope": "collect_events_alerts",
                 "last_collect_at": None,
                 "last_candidate_at": None,
                 "last_draft_at": None,
@@ -624,24 +847,138 @@ class StudioStore:
                 "last_successful_sync_at": None,
             },
         }
-        self._sync_sources_internal(state, triggered_by="bootstrap")
-        self._build_digest_internal(state, triggered_by="bootstrap", limit=3)
-        self._refresh_browser_session(state)
-        self._append_log(state, "info", "system", "已完成 Auto News Studio 信息层优先版状态初始化。", stream="system_runtime")
+        self._append_log(
+            state,
+            "info",
+            "system",
+            "已完成 Auto News Studio 初始化，当前未自动抓取素材，也未自动生成稿件。",
+            stream="system_runtime",
+        )
         return state
 
     def _build_source_registry(self) -> list[dict[str, Any]]:
-        merged: list[dict[str, Any]] = deepcopy(DEFAULT_SOURCES)
+        merged: list[dict[str, Any]] = deepcopy(discover_sources())
         seen_keys = {item["key"] for item in merged}
         seen_urls = {item["url"] for item in merged if item.get("url")}
         for source in build_legacy_rss_sources():
             if source["key"] in seen_keys or source.get("url") in seen_urls:
                 continue
+            source.setdefault("platform", source.get("kind", "rss"))
+            source.setdefault("interval_minutes", schedule_to_minutes(source.get("schedule")) or 30)
+            source.setdefault("weight", 0.7)
             merged.append(source)
             seen_keys.add(source["key"])
             if source.get("url"):
                 seen_urls.add(source["url"])
         return merged
+
+    def _prune_unsupported_sources(self, state: dict[str, Any]) -> None:
+        state.setdefault("logs", [])
+        state.setdefault("sources", [])
+        sources_before = list(state.get("sources", []))
+        supported_sources = [
+            source
+            for source in sources_before
+            if str(source.get("driver") or "") not in UNSUPPORTED_SOURCE_DRIVERS
+        ]
+        if len(supported_sources) == len(sources_before):
+            return
+        removed_names = [str(source.get("name") or source.get("key") or "unknown") for source in sources_before if str(source.get("driver") or "") in UNSUPPORTED_SOURCE_DRIVERS]
+        state["sources"] = supported_sources
+        if removed_names:
+            self._append_log(
+                state,
+                "warning",
+                "cleanup",
+                f"已移除未适配来源：{'、'.join(removed_names)}。",
+                stream="system_runtime",
+                actor="system",
+            )
+
+    def _purge_synthetic_state(self, state: dict[str, Any]) -> None:
+        raw_items = [item for item in state.get("raw_items", []) if not _is_synthetic_raw_item(item)]
+        raw_items = sorted(
+            raw_items,
+            key=lambda item: parse_time(item.get("collected_at")) or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )[:MAX_RAW_ITEMS]
+
+        removed_raw = len(state.get("raw_items", [])) - len(raw_items)
+        raw_lookup = {item["id"]: item for item in raw_items}
+        normalized = normalize_raw_items(raw_items, self._sources_by_key(state))
+        for item in normalized:
+            collected_at = self._latest_collected_at(raw_lookup, item.get("raw_item_ids", []))
+            item["collected_at"] = collected_at
+            item["freshness_bucket"] = freshness_bucket(collected_at)
+
+        candidates = build_candidates(normalized, state.get("current_mode", "draft_only"))
+        candidate_ids = {item["id"] for item in candidates}
+
+        drafts_before = list(state.get("drafts", []))
+        drafts: list[dict[str, Any]] = []
+        for draft in drafts_before:
+            if draft.get("candidate_topic_id") not in candidate_ids:
+                continue
+            if (
+                _contains_synthetic_marker(draft.get("evidence_links"))
+                or _contains_synthetic_marker(draft.get("markdown"))
+                or _contains_synthetic_marker(draft.get("brief"))
+                or _contains_synthetic_marker(draft.get("composition_trace"))
+            ):
+                continue
+            drafts.append(draft)
+
+        draft_candidate_ids = {draft["candidate_topic_id"] for draft in drafts}
+        for candidate in candidates:
+            candidate["draft_exists"] = candidate["id"] in draft_candidate_ids
+            if candidate["draft_exists"]:
+                candidate["status"] = "drafted"
+
+        kept_draft_ids = {draft["id"] for draft in drafts}
+        publish_tasks = [task for task in state.get("publish_tasks", []) if task.get("draft_id") in kept_draft_ids]
+        logs = [
+            log
+            for log in state.get("logs", [])
+            if not _contains_synthetic_marker(log.get("message")) and not _contains_synthetic_marker(log.get("detail"))
+        ]
+        jobs = [job for job in state.get("jobs", []) if not _contains_synthetic_marker(job.get("message"))]
+
+        removed_drafts = len(drafts_before) - len(drafts)
+        removed_logs = len(state.get("logs", [])) - len(logs)
+
+        source_counts: dict[str, int] = {}
+        for item in raw_items:
+            key = str(item.get("source_key") or "")
+            source_counts[key] = source_counts.get(key, 0) + 1
+        for source in state.get("sources", []):
+            count = source_counts.get(str(source.get("key") or ""), 0)
+            source["item_count"] = count
+            if _contains_synthetic_marker(source.get("health_detail")) or _contains_synthetic_marker(source.get("last_error")):
+                source["last_error"] = None
+                if count > 0:
+                    source["health_status"] = "healthy"
+                    source["health_detail"] = f"历史伪造数据已清理，当前保留 {count} 条真实素材。"
+                else:
+                    source["health_status"] = "idle"
+                    source["health_detail"] = "历史伪造数据已清理，请重新同步验证。"
+
+        state["raw_items"] = raw_items
+        state["normalized_items"] = normalized
+        state["candidates"] = candidates
+        state["drafts"] = drafts
+        state["publish_tasks"] = publish_tasks
+        state["logs"] = logs
+        state["jobs"] = jobs
+
+        if removed_raw or removed_drafts or removed_logs:
+            self._append_log(
+                state,
+                "warning",
+                "cleanup",
+                f"已清理历史伪造数据：删除 {removed_raw} 条伪素材、{removed_drafts} 篇关联稿件。",
+                stream="system_runtime",
+                actor="system",
+            )
 
     def _read(self) -> dict[str, Any]:
         with self._lock:
@@ -654,30 +991,82 @@ class StudioStore:
             temp_file.replace(self.data_file)
 
     def _upgrade_state(self, state: dict[str, Any]) -> dict[str, Any]:
-        state.setdefault("llm", {"providers": [], "tasks": [], "usage_today": {}})
+        self._prune_unsupported_sources(state)
+        state.setdefault("llm", default_llm_state())
         llm = state["llm"]
-        if not llm.get("providers"):
-            llm["providers"] = [
-                {
-                    "key": "glm",
-                    "label": "智谱 GLM",
-                    "base_url": "https://open.bigmodel.cn/api/paas/v4",
-                    "api_key": "",
-                    "model_id": "glm-4.7-flash",
-                    "enabled": True,
-                },
-            ]
-        if not llm.get("tasks"):
-            llm["tasks"] = [
-                {"task_key": "outline", "provider_key": "glm", "model_id": "glm-4.7-flash", "temperature": 0.4, "max_tokens": 2048},
-                {"task_key": "article", "provider_key": "glm", "model_id": "glm-4.7-flash", "temperature": 0.7, "max_tokens": 4096},
-                {"task_key": "title", "provider_key": "glm", "model_id": "glm-4.7-flash", "temperature": 0.8, "max_tokens": 512},
-                {"task_key": "summary", "provider_key": "glm", "model_id": "glm-4.7-flash", "temperature": 0.5, "max_tokens": 1024},
-            ]
+        existing_profiles = llm.get("profiles", [])
+        if not existing_profiles:
+            migrated_profiles = merge_llm_profiles([], [])
+            providers = [item for item in llm.get("providers", []) if isinstance(item, dict)]
+            active_provider = next((item for item in providers if item.get("enabled")), providers[0] if providers else None)
+            if active_provider:
+                matched = next(
+                    (
+                        item for item in migrated_profiles
+                        if item.get("provider_key") == active_provider.get("key")
+                        and item.get("model_id") == active_provider.get("model_id")
+                    ),
+                    None,
+                )
+                if matched:
+                    matched["api_key"] = str(active_provider.get("api_key") or "")
+                    matched["base_url"] = str(active_provider.get("base_url") or matched.get("base_url") or "")
+                    matched["enabled"] = bool(str(active_provider.get("api_key") or "").strip())
+                    llm["current_profile_id"] = matched["id"]
+                else:
+                    migrated_profiles.insert(
+                        0,
+                        {
+                            "id": "custom-active",
+                            "label": "当前自定义模型",
+                            "description": "从旧版单模型配置迁移而来。",
+                            "provider_key": str(active_provider.get("key") or ""),
+                            "api_key": str(active_provider.get("api_key") or ""),
+                            "base_url": str(active_provider.get("base_url") or ""),
+                            "model_id": str(active_provider.get("model_id") or ""),
+                            "enabled": bool(str(active_provider.get("api_key") or "").strip()),
+                            "last_tested_at": active_provider.get("last_tested_at"),
+                            "last_test_result": active_provider.get("last_test_result"),
+                        },
+                    )
+                    llm["current_profile_id"] = "custom-active"
+            llm["profiles"] = migrated_profiles
+        else:
+            llm["profiles"] = merge_llm_profiles([item for item in existing_profiles if isinstance(item, dict)], existing_profiles)
+
+        current_profile_id = str(llm.get("current_profile_id") or "").strip() or (
+            llm["profiles"][0]["id"] if llm.get("profiles") else ""
+        )
+        active_profile = next((item for item in llm.get("profiles", []) if item.get("id") == current_profile_id), None)
+        if not active_profile and llm.get("profiles"):
+            active_profile = llm["profiles"][0]
+            current_profile_id = active_profile["id"]
+        llm["current_profile_id"] = current_profile_id
+        if active_profile:
+            active_profile["enabled"] = bool(str(active_profile.get("api_key") or "").strip()) and bool(active_profile.get("enabled"))
+            llm["providers"] = [build_provider_from_profile(active_profile)]
+            llm["tasks"] = build_tasks_from_profile(active_profile)
+        else:
+            llm["providers"] = []
+            llm["tasks"] = []
+        llm.setdefault("usage_today", {})
         state.setdefault("automation_mode", "radar_only")
         state.setdefault("automation_mode_definitions", deepcopy(AUTOMATION_MODE_DEFINITIONS))
         state.setdefault("automation_profiles", deepcopy(DEFAULT_AUTOMATION_PROFILES))
+        state.setdefault("discovery_items", [])
+        state.setdefault("intel_events", [])
+        state.setdefault("event_snapshots", [])
+        state.setdefault("intel_alerts", [])
         state.setdefault("runtime_plan", {})
+        state.setdefault("notifications", {
+            "webhook": {
+                "enabled": False,
+                "url": "",
+                "secret": "",
+                "events": ["breakout"],
+            },
+            "delivery_log": [],
+        })
         channels = state.setdefault("channels", {})
         raw_wechat_channel = dict(channels.setdefault("wechat", {}))
         raw_browser_name = str(raw_wechat_channel.get("browser_name") or "").strip().lower()
@@ -709,6 +1098,7 @@ class StudioStore:
         runtime.setdefault("control_state", "stopped")
         runtime.setdefault("launch_mode", "interval_now")
         runtime.setdefault("current_mode", state.get("automation_mode", "radar_only"))
+        runtime.setdefault("work_scope", state.get("runtime_plan", {}).get("work_scope", "collect_events_alerts"))
         runtime.setdefault("last_collect_at", None)
         runtime.setdefault("last_candidate_at", None)
         runtime.setdefault("last_draft_at", None)
@@ -725,6 +1115,7 @@ class StudioStore:
         runtime.setdefault("counters_date", local_now().date().isoformat())
         runtime.setdefault("last_error", None)
         runtime.setdefault("last_successful_sync_at", None)
+        self._purge_synthetic_state(state)
         for log in state.get("logs", []):
             log.setdefault("stream", "business_event")
             log.setdefault("actor", "system")
@@ -824,6 +1215,7 @@ class StudioStore:
             "start_at": None,
             "interval_minutes": interval_minutes,
             "timezone": "Asia/Shanghai",
+            "work_scope": "collect_events_alerts",
         }
 
     def _runtime_plan(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -833,6 +1225,7 @@ class StudioStore:
             runtime_plan.setdefault(key, value)
         runtime_plan["timezone"] = str(runtime_plan.get("timezone") or "Asia/Shanghai")
         runtime_plan["launch_mode"] = str(runtime_plan.get("launch_mode") or "interval_now")
+        runtime_plan["work_scope"] = str(runtime_plan.get("work_scope") or defaults["work_scope"])
         launch_mode = runtime_plan["launch_mode"]
         if launch_mode in {"once_now", "interval_now"}:
             runtime_plan["start_at"] = None
@@ -853,6 +1246,7 @@ class StudioStore:
             interval_minutes=plan.get("interval_minutes"),
             timezone=str(plan.get("timezone") or "Asia/Shanghai"),
             effective_mode=state.get("automation_mode", "radar_only"),
+            work_scope=str(plan.get("work_scope") or "collect_events_alerts"),
         )
 
     def _sync_runtime_counters(self, runtime: dict[str, Any]) -> None:
@@ -1040,21 +1434,134 @@ class StudioStore:
             return None
         return min(due_times).replace(microsecond=0).isoformat()
 
-    def _rebuild_candidates_for_state(self, state: dict[str, Any]) -> list[dict[str, Any]]:
-        raw_lookup = {item["id"]: item for item in state["raw_items"]}
-        normalized = normalize_raw_items(state["raw_items"], self._sources_by_key(state))
-        for item in normalized:
-            collected_at = self._latest_collected_at(raw_lookup, item.get("raw_item_ids", []))
-            item["collected_at"] = collected_at
-            item["freshness_bucket"] = freshness_bucket(collected_at)
-        candidates = build_candidates(normalized, state["current_mode"])
+    def _work_scope(self, state: dict[str, Any]) -> str:
+        return str(self._runtime_plan(state).get("work_scope") or "collect_events_alerts")
+
+    def _project_normalized_items_from_events(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for event in state.get("intel_events", []):
+            normalized.append(
+                {
+                    "id": f"norm-{event['id']}",
+                    "raw_item_ids": list(event.get("discovery_item_ids", [])),
+                    "title": event.get("title", ""),
+                    "link": event.get("representative_link", ""),
+                    "summary": event.get("summary", ""),
+                    "published_at": event.get("published_at"),
+                    "cluster_id": event.get("id"),
+                    "cluster_members": list(event.get("discovery_item_ids", [])),
+                    "dedupe_key": str(event.get("id")),
+                    "source_names": list(event.get("source_names", [])),
+                    "origin_sources": list(event.get("source_keys", [])),
+                    "source_weight": round(min(float(event.get("coverage_score", 0) or 0) / 100.0, 1.0), 2),
+                    "trend_score": float(event.get("velocity_score", 0) or 0),
+                    "final_score": float(event.get("composite_score", 0) or 0),
+                    "signals": [str(event.get("alert_reason") or "多平台聚合事件")],
+                    "score_breakdown": {
+                        "velocity": float(event.get("velocity_score", 0) or 0),
+                        "coverage": float(event.get("coverage_score", 0) or 0),
+                        "freshness": float(event.get("freshness_score", 0) or 0),
+                    },
+                    "collected_at": event.get("latest_collected_at"),
+                    "freshness_bucket": freshness_bucket(event.get("latest_collected_at")),
+                }
+            )
+        normalized.sort(key=lambda item: item.get("final_score", 0), reverse=True)
+        return normalized
+
+    def _project_candidates_from_events(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        normalized_by_event = {item.get("cluster_id"): item for item in state.get("normalized_items", [])}
+        watched_events = [
+            event for event in state.get("intel_events", [])
+            if event.get("watchlisted") and not event.get("ignored")
+        ]
         draft_candidate_ids = {draft["candidate_topic_id"] for draft in state["drafts"]}
-        for candidate in candidates:
-            candidate["draft_exists"] = candidate["id"] in draft_candidate_ids
-        state["normalized_items"] = normalized
-        state["candidates"] = candidates
+        candidates: list[dict[str, Any]] = []
+        for event in watched_events:
+            normalized = normalized_by_event.get(event["id"])
+            if not normalized:
+                continue
+            candidate_id = f"cand-{event['id']}"
+            candidates.append(
+                {
+                    "id": candidate_id,
+                    "normalized_item_id": normalized["id"],
+                    "title": event["title"],
+                    "summary": event.get("summary", ""),
+                    "recommended_angle": "持续追踪事件变化、平台扩散和下一步影响。",
+                    "article_type": "专题" if float(event.get("composite_score", 0) or 0) >= 75 else "快讯",
+                    "rationale": event.get("alert_reason") or "已人工加入重点观察。",
+                    "evidence_links": [event.get("representative_link", "")],
+                    "source_names": list(event.get("source_names", [])),
+                    "source_count": int(event.get("source_count", 0) or 0),
+                    "score": float(event.get("composite_score", 0) or 0),
+                    "status": "new",
+                    "recommended_mode": state["current_mode"],
+                    "facts": [
+                        f"30 分钟速度分 {event.get('velocity_score', 0)}",
+                        f"覆盖 {event.get('platform_count', 0)} 个平台 / {event.get('source_count', 0)} 个来源",
+                        str(event.get("alert_reason") or ""),
+                    ],
+                    "angles": [
+                        {
+                            "name": "热点快评",
+                            "tone": "克制",
+                            "focus": "先说事件本身，再说它为什么值得继续跟。",
+                            "why": "适合公众号运营做持续观察。",
+                        }
+                    ],
+                    "selected_angle": "先说事件本身，再说它为什么值得继续跟。",
+                    "score_breakdown": {
+                        "velocity": float(event.get("velocity_score", 0) or 0),
+                        "coverage": float(event.get("coverage_score", 0) or 0),
+                        "freshness": float(event.get("freshness_score", 0) or 0),
+                    },
+                    "published_at": event.get("published_at"),
+                    "collected_at": event.get("latest_collected_at"),
+                    "freshness_bucket": freshness_bucket(event.get("latest_collected_at")),
+                    "draft_exists": candidate_id in draft_candidate_ids,
+                    "normalized_score": float(event.get("composite_score", 0) or 0),
+                    "updated_at": now_iso(),
+                }
+            )
+        candidates.sort(key=lambda item: item.get("score", 0), reverse=True)
+        return candidates
+
+    def _rebuild_intel_for_state(self, state: dict[str, Any], stamp: str | None = None) -> None:
+        work_scope = self._work_scope(state)
+        intel = build_intel_state(
+            state.get("raw_items", []),
+            self._sources_by_key(state),
+            previous_events=state.get("intel_events", []),
+            previous_snapshots=state.get("event_snapshots", []),
+            captured_at=stamp or now_iso(),
+        )
+        state["discovery_items"] = intel["discovery_items"]
+        if work_scope == "collect_only":
+            state["intel_events"] = []
+            state["intel_alerts"] = []
+            state["event_snapshots"] = []
+            state["normalized_items"] = []
+            state["candidates"] = []
+            return
+        state["event_snapshots"] = intel["event_snapshots"]
+        state["intel_events"] = intel["intel_events"]
+        if work_scope == "collect_events":
+            state["intel_alerts"] = []
+        elif work_scope == "collect_events_alerts":
+            state["intel_alerts"] = intel["intel_alerts"]
+        else:
+            state["intel_alerts"] = []
+        state["normalized_items"] = self._project_normalized_items_from_events(state)
+        state["candidates"] = self._project_candidates_from_events(state)
         runtime = self._runtime(state)
         runtime["last_candidate_at"] = now_iso()
+
+    def _rebuild_candidates_for_state(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        self._rebuild_intel_for_state(state)
+        candidates = state.get("candidates", [])
+        if candidates:
+            self._apply_llm_candidate_judgement(state, candidates)
         return candidates
 
     def _sync_due_sources(self, state: dict[str, Any], triggered_by: str, minimum_interval_minutes: int | None = None) -> SourceSyncResponse:
@@ -1112,13 +1619,22 @@ class StudioStore:
         state["raw_items"] = merged[:MAX_RAW_ITEMS]
         candidates = self._rebuild_candidates_for_state(state)
         runtime["last_collect_at"] = stamp
-        runtime["last_successful_sync_at"] = stamp
+        if collected:
+            runtime["last_successful_sync_at"] = stamp
         runtime["next_collect_at"] = self._calculate_next_collect_at(state, minimum_interval_minutes=self._collect_interval_for_profile(state))
+        level = "success"
+        message = f"自动同步 {len(due_sources)} 个来源，新增 {len(collected)} 条素材，候选池现有 {len(candidates)} 条。"
+        if not collected and warnings:
+            level = "warning"
+            message = f"自动同步执行完成，但本轮未获取到任何真实素材；涉及 {len(due_sources)} 个到期来源。"
+        elif not collected:
+            level = "warning"
+            message = f"自动同步执行完成，但本轮没有新增素材；已检查 {len(due_sources)} 个到期来源。"
         self._append_log(
             state,
-            "success",
+            level,
             "collection",
-            f"自动同步 {len(due_sources)} 个来源，新增 {len(collected)} 条素材，候选池现有 {len(candidates)} 条。",
+            message,
             stream="system_runtime" if triggered_by == "scheduler" else "business_event",
             actor=triggered_by,
         )
@@ -1134,7 +1650,8 @@ class StudioStore:
         )
 
     def _sync_sources_internal(self, state: dict[str, Any], triggered_by: str) -> SourceSyncResponse:
-        raw_items, warnings = collect_enabled_sources(state["sources"])
+        max_workers = state.get("settings", {}).get("max_workers", 8)
+        raw_items, warnings = collect_enabled_sources(state["sources"], max_workers=max_workers)
         sources_by_key = self._sources_by_key(state)
         normalized = normalize_raw_items(raw_items, sources_by_key)
         stamp = now_iso()
@@ -1163,13 +1680,22 @@ class StudioStore:
         state["reference_projects"] = write_reference_baseline()
         runtime = self._runtime(state)
         runtime["last_collect_at"] = stamp
-        runtime["last_successful_sync_at"] = stamp
+        if raw_items:
+            runtime["last_successful_sync_at"] = stamp
         runtime["next_collect_at"] = self._calculate_next_collect_at(state, minimum_interval_minutes=self._collect_interval_for_profile(state))
+        level = "success"
+        message = f"已同步 {len(raw_items)} 条素材，形成 {len(normalized)} 个标准化事件和 {len(candidates)} 个候选选题。"
+        if not raw_items and warnings:
+            level = "warning"
+            message = "已执行来源同步，但本轮没有获取到任何真实素材。"
+        elif not raw_items:
+            level = "warning"
+            message = "已执行来源同步，但本轮没有新增素材。"
         self._append_log(
             state,
-            "success",
+            level,
             "collection",
-            f"已同步 {len(raw_items)} 条素材，形成 {len(normalized)} 个标准化事件和 {len(candidates)} 个候选选题。",
+            message,
             stream="system_runtime" if triggered_by == "scheduler" else "business_event",
             actor=triggered_by,
         )
@@ -1194,6 +1720,7 @@ class StudioStore:
             self._sync_sources_internal(state, triggered_by=triggered_by)
         publish_mode = automation_to_publish_mode(state.get("automation_mode", "radar_only"))
         risk_keywords = state["channels"]["wechat"]["risk_keywords"]
+        llm_service = self._make_llm_service(state)
         normalized_map = {item["id"]: item for item in state["normalized_items"]}
         existing_candidate_ids = {draft["candidate_topic_id"] for draft in state["drafts"]}
         drafted: list[dict[str, Any]] = []
@@ -1212,7 +1739,7 @@ class StudioStore:
             normalized_item = normalized_map.get(candidate["normalized_item_id"])
             if not normalized_item:
                 continue
-            draft = compose_draft(candidate, normalized_item, publish_mode, risk_keywords)
+            draft = compose_draft(candidate, normalized_item, publish_mode, risk_keywords, llm_service=llm_service)
             state["drafts"].insert(0, draft)
             candidate["status"] = "drafted"
             candidate["draft_exists"] = True
@@ -1221,6 +1748,7 @@ class StudioStore:
             existing_candidate_ids.add(candidate["id"])
             if limit is not None and len(drafted) >= limit:
                 break
+        self._sync_llm_usage(state, llm_service)
         if drafted:
             runtime = self._runtime(state)
             runtime["last_draft_at"] = now_iso()
@@ -1379,6 +1907,7 @@ class StudioStore:
             plan.update(payload.model_dump())
             runtime = self._runtime(state)
             runtime["launch_mode"] = plan["launch_mode"]
+            runtime["work_scope"] = plan.get("work_scope", "collect_events_alerts")
             if runtime.get("control_state") != "running":
                 runtime["scheduled_start_at"] = plan.get("start_at") if plan["launch_mode"] in {"once_at", "interval_at"} else None
             runtime["next_collect_at"] = self._calculate_next_collect_at(state)
@@ -1408,6 +1937,7 @@ class StudioStore:
             control_state=control_state,
             launch_mode=str(runtime.get("launch_mode") or self._runtime_plan(state).get("launch_mode") or "interval_now"),
             current_mode=state["automation_mode"],
+            work_scope=str(runtime.get("work_scope") or self._runtime_plan(state).get("work_scope") or "collect_events_alerts"),
             last_collect_at=runtime.get("last_collect_at"),
             last_candidate_at=runtime.get("last_candidate_at"),
             last_draft_at=runtime.get("last_draft_at"),
@@ -1455,6 +1985,7 @@ class StudioStore:
             runtime["current_cycle_started_at"] = None
             runtime["next_collect_at"] = None
             runtime["launch_mode"] = self._runtime_plan(state).get("launch_mode", "interval_now")
+            runtime["work_scope"] = self._runtime_plan(state).get("work_scope", "collect_events_alerts")
             runtime["active_interval_minutes"] = None
             runtime["last_error"] = None
             self._append_log(
@@ -1477,6 +2008,7 @@ class StudioStore:
             runtime["scheduler_running"] = True
             runtime["current_mode"] = state["automation_mode"]
             runtime["launch_mode"] = plan["launch_mode"]
+            runtime["work_scope"] = plan.get("work_scope", "collect_events_alerts")
             runtime["last_error"] = None
             runtime["enabled_at"] = now.replace(microsecond=0).isoformat()
             runtime["scheduled_start_at"] = plan.get("start_at") if plan["launch_mode"] in {"once_at", "interval_at"} else None
@@ -1491,16 +2023,18 @@ class StudioStore:
                     self._append_log(state, "info", "runtime", "已从前端启用自动运行计划。", stream="business_event", actor=actor)
                     self._write(state)
                     return self._scheduler_status_from_state(state)
-            runtime["control_state"] = "waiting"
-            runtime["next_collect_at"] = self._calculate_next_collect_at(state)
+            immediate_launch = plan["launch_mode"] in {"once_now", "interval_now"}
+            runtime["control_state"] = "running" if immediate_launch else "waiting"
+            runtime["current_cycle"] = "starting" if immediate_launch else "idle"
+            runtime["current_cycle_started_at"] = now.replace(microsecond=0).isoformat() if immediate_launch else None
+            runtime["next_collect_at"] = now.replace(microsecond=0).isoformat() if immediate_launch else self._calculate_next_collect_at(state)
             self._append_log(state, "info", "runtime", "后台自动调度器已启动。", stream="system_runtime", actor=actor)
             self._append_log(state, "info", "runtime", "已从前端恢复自动运行。", stream="business_event", actor=actor)
-            result = None
-            if plan["launch_mode"] in {"once_now", "interval_now"}:
-                result = self._run_automation_cycle_locked(state, triggered_by="runtime_start", force=True)
-            else:
-                self._write(state)
-            return self._scheduler_status_from_state(state if result is not None else self._upgrade_state(self._read()))
+            self._write(state)
+            if immediate_launch:
+                self._launch_runtime_cycle_async(triggered_by="runtime_start", force=True)
+                return self._scheduler_status_from_state(state)
+            return self._scheduler_status_from_state(self._upgrade_state(self._read()))
 
     def stop_runtime(self, actor: str = "dashboard") -> SchedulerStatus:
         with self._lock:
@@ -1521,6 +2055,10 @@ class StudioStore:
 
     def _run_automation_cycle_locked(self, state: dict[str, Any], triggered_by: str, force: bool = False) -> dict[str, Any]:
         runtime = self._runtime(state)
+        current_cycle = str(runtime.get("current_cycle", "idle"))
+        if not force and current_cycle not in ("idle",):
+            self._write(state)
+            return {"status": "busy", "current_cycle": current_cycle}
         plan = self._runtime_plan(state)
         mode = self._current_automation_mode_def(state)
         profile = self._current_automation_profile(state)
@@ -1650,6 +2188,22 @@ class StudioStore:
             state = self._upgrade_state(self._read())
             return self._run_automation_cycle_locked(state, triggered_by="scheduler")
 
+    def _launch_runtime_cycle_async(self, triggered_by: str, force: bool = False) -> None:
+        def runner() -> None:
+            try:
+                with self._lock:
+                    state = self._upgrade_state(self._read())
+                    self._run_automation_cycle_locked(state, triggered_by=triggered_by, force=force)
+            except Exception:
+                # _run_automation_cycle_locked already writes runtime/log state on failure.
+                return
+
+        Thread(
+            target=runner,
+            name=f"studio-{triggered_by}",
+            daemon=True,
+        ).start()
+
     def list_sources(self) -> list[SourceConnector]:
         state = self._upgrade_state(self._read())
         return [SourceConnector(**item) for item in state["sources"]]
@@ -1657,13 +2211,54 @@ class StudioStore:
     def update_source(self, source_key: str, payload: SourceConnectorPayload) -> SourceConnector:
         state = self._upgrade_state(self._read())
         source = self._find_source(state, source_key)
-        source.update(payload.model_dump())
+        source.update(payload.model_dump(exclude_none=True))
         source["updated_at"] = now_iso()
         self._append_log(state, "success", "source", f"已更新来源配置：{source['name']}")
         runtime = self._runtime(state)
         runtime["next_collect_at"] = self._calculate_next_collect_at(state, minimum_interval_minutes=self._collect_interval_for_profile(state))
         self._write(state)
         return SourceConnector(**source)
+
+    def create_source(self, payload: CreateSourcePayload) -> SourceConnector:
+        state = self._upgrade_state(self._read())
+        existing = [s for s in state["sources"] if s["key"] == payload.key]
+        if existing:
+            raise ValueError(f"来源 key 已存在: {payload.key}")
+        new_source = {
+            "key": payload.key,
+            "name": payload.name,
+            "kind": payload.kind,
+            "driver": payload.driver,
+            "platform": "rss" if payload.kind in ("rss", "rsshub") else "api",
+            "enabled": payload.enabled,
+            "schedule": payload.schedule,
+            "interval_minutes": None,
+            "priority": payload.priority,
+            "weight": payload.weight,
+            "auth": payload.auth,
+            "url": payload.url,
+            "tags": payload.tags,
+            "capabilities": [],
+            "origin_repo": "user-defined",
+            "origin_license": "",
+            "health_status": "idle",
+            "health_detail": "",
+            "item_count": 0,
+            "last_synced_at": None,
+            "last_error": None,
+            "updated_at": now_iso(),
+        }
+        state["sources"].append(new_source)
+        self._append_log(state, "success", "source", f"已添加来源：{payload.name}")
+        self._write(state)
+        return SourceConnector(**new_source)
+
+    def delete_source(self, source_key: str) -> None:
+        state = self._upgrade_state(self._read())
+        self._find_source(state, source_key)
+        state["sources"] = [s for s in state["sources"] if s["key"] != source_key]
+        self._append_log(state, "success", "source", f"已删除来源：{source_key}")
+        self._write(state)
 
     def sync_sources(self) -> SourceSyncResponse:
         state = self._upgrade_state(self._read())
@@ -1707,13 +2302,21 @@ class StudioStore:
         candidates = self._rebuild_candidates_for_state(state)
         runtime = self._runtime(state)
         runtime["last_collect_at"] = stamp
-        runtime["last_successful_sync_at"] = stamp
+        if items:
+            runtime["last_successful_sync_at"] = stamp
         runtime["next_collect_at"] = self._calculate_next_collect_at(state, minimum_interval_minutes=self._collect_interval_for_profile(state))
+        message = f"已重抓来源 {source['name']}，新增 {len(items)} 条素材，候选池现有 {len(candidates)} 条。"
+        level = "success" if not warning_text else "warning"
+        if not items and warning_text:
+            message = f"已执行来源重抓，但 {source['name']} 本轮没有返回任何真实素材。"
+        elif not items:
+            level = "warning"
+            message = f"已执行来源重抓，但 {source['name']} 本轮没有新增素材。"
         self._append_log(
             state,
-            "success" if not warning_text else "warning",
+            level,
             "collection",
-            f"已重抓来源 {source['name']}，新增 {len(items)} 条素材，候选池现有 {len(candidates)} 条。",
+            message,
             stream="business_event",
             actor="dashboard",
         )
@@ -1729,6 +2332,22 @@ class StudioStore:
             warnings=warnings,
         )
 
+    def get_settings(self) -> dict[str, Any]:
+        state = self._upgrade_state(self._read())
+        return state.get("settings", {})
+
+    def update_settings(self, updates: dict[str, Any]) -> dict[str, Any]:
+        state = self._upgrade_state(self._read())
+        settings = state.setdefault("settings", {})
+        if "max_workers" in updates:
+            value = int(updates["max_workers"])
+            if not 1 <= value <= 20:
+                raise ValueError("max_workers 必须在 1-20 之间")
+            settings["max_workers"] = value
+        self._append_log(state, "success", "settings", f"已更新设置: {list(updates.keys())}")
+        self._write(state)
+        return settings
+
     def list_candidates(self) -> list[CandidateTopic]:
         state = self._upgrade_state(self._read())
         return [CandidateTopic(**item) for item in state["candidates"]]
@@ -1737,10 +2356,104 @@ class StudioStore:
         llm_config = state.get("llm", {})
         if not llm_config or not llm_config.get("providers"):
             return None
-        enabled = [p for p in llm_config.get("providers", []) if p.get("enabled")]
+        enabled = [
+            p
+            for p in llm_config.get("providers", [])
+            if p.get("enabled") and str(p.get("api_key", "")).strip() and "****" not in str(p.get("api_key", ""))
+        ]
         if not enabled:
             return None
-        return LLMService(llm_config)
+        config = deepcopy(llm_config)
+        config["providers"] = enabled
+        return LLMService(config)
+
+    def _sync_llm_usage(self, state: dict[str, Any], llm_service: LLMService | None) -> None:
+        if not llm_service:
+            return
+        state.setdefault("llm", {}).setdefault("usage_today", {})
+        state["llm"]["usage_today"] = llm_service.get_usage()
+
+    def _apply_llm_candidate_judgement(self, state: dict[str, Any], candidates: list[dict[str, Any]]) -> None:
+        if not candidates:
+            return
+        llm_service = self._make_llm_service(state)
+        if not llm_service or "judgement" not in getattr(llm_service, "_tasks", {}):
+            return
+
+        payload = {
+            "items": [
+                {
+                    "id": candidate["id"],
+                    "title": candidate["title"],
+                    "summary": candidate.get("summary", ""),
+                    "source_names": candidate.get("source_names", []),
+                    "source_count": candidate.get("source_count", 0),
+                    "score": candidate.get("score", 0),
+                    "published_at": candidate.get("published_at"),
+                    "collected_at": candidate.get("collected_at"),
+                    "existing_facts": candidate.get("facts", []),
+                    "existing_angle": candidate.get("recommended_angle", ""),
+                }
+                for candidate in candidates[:16]
+            ]
+        }
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是 Auto News Studio 的中文技术编辑。"
+                    "请只基于给定素材做初步判断，不要编造事实。"
+                    "输出纯 JSON 对象，格式为 {\"items\":[...] }。"
+                    "每个 items 元素必须包含：id, summary, recommended_angle, rationale, facts, article_type。"
+                    "facts 只能是 2 到 4 条中文事实句。"
+                    "如果证据不足，要在 rationale 或 facts 中明确写出“信息仍待进一步确认”。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(payload, ensure_ascii=False, indent=2),
+            },
+        ]
+        try:
+            response = llm_service.generate("judgement", messages, temperature=0.2, max_tokens=2400)
+            parsed = _extract_json_payload(response.get("content", ""))
+            items = parsed.get("items", []) if isinstance(parsed, dict) else []
+            updates = {
+                item.get("id"): item
+                for item in items
+                if isinstance(item, dict) and item.get("id")
+            }
+            for candidate in candidates:
+                update = updates.get(candidate["id"])
+                if not update:
+                    continue
+                summary = str(update.get("summary", "") or "").strip()
+                recommended_angle = str(update.get("recommended_angle", "") or "").strip()
+                rationale = str(update.get("rationale", "") or "").strip()
+                facts = [str(item).strip() for item in update.get("facts", []) if str(item).strip()]
+                article_type = str(update.get("article_type", "") or "").strip()
+                if summary:
+                    candidate["summary"] = summary
+                if recommended_angle:
+                    candidate["recommended_angle"] = recommended_angle
+                    candidate["selected_angle"] = recommended_angle
+                if rationale:
+                    candidate["rationale"] = rationale
+                if facts:
+                    candidate["facts"] = facts[:4]
+                if article_type in {"快讯", "专题", "深度"}:
+                    candidate["article_type"] = article_type
+            self._sync_llm_usage(state, llm_service)
+        except Exception as exc:
+            self._append_log(
+                state,
+                "warning",
+                "llm",
+                "GLM 初步判断未执行，已回退到规则判断。",
+                detail=str(exc),
+                stream="system_runtime",
+                actor="system",
+            )
 
     def create_draft_from_candidate(self, candidate_id: str, publish_mode: PublishMode | None = None) -> DraftItem:
         state = self._upgrade_state(self._read())
@@ -1752,6 +2465,7 @@ class StudioStore:
         mode = publish_mode or state["current_mode"]
         llm_service = self._make_llm_service(state)
         draft = compose_draft(candidate, normalized_item, mode, state["channels"]["wechat"]["risk_keywords"], llm_service=llm_service)
+        self._sync_llm_usage(state, llm_service)
         candidate["status"] = "drafted"
         candidate["draft_exists"] = True
         candidate["updated_at"] = now_iso()
@@ -1768,6 +2482,7 @@ class StudioStore:
             self._sync_sources_internal(state, triggered_by="dashboard")
         publish_mode = automation_to_publish_mode(state.get("automation_mode", "radar_only"))
         risk_keywords = state["channels"]["wechat"]["risk_keywords"]
+        llm_service = self._make_llm_service(state)
         normalized_map = {item["id"]: item for item in state["normalized_items"]}
         existing_candidate_ids = {draft["candidate_topic_id"] for draft in state["drafts"]}
         pending_candidates = [item for item in state["candidates"] if item["id"] not in existing_candidate_ids]
@@ -1780,7 +2495,7 @@ class StudioStore:
                 failed_count += 1
                 continue
             try:
-                draft = compose_draft(candidate, normalized_item, publish_mode, risk_keywords)
+                draft = compose_draft(candidate, normalized_item, publish_mode, risk_keywords, llm_service=llm_service)
             except Exception:  # pragma: no cover - defensive
                 failed_count += 1
                 continue
@@ -1789,6 +2504,7 @@ class StudioStore:
             candidate["draft_exists"] = True
             candidate["updated_at"] = now_iso()
             created.append(draft)
+        self._sync_llm_usage(state, llm_service)
 
         if created:
             runtime = self._runtime(state)
@@ -1820,6 +2536,7 @@ class StudioStore:
             raise ValueError("Candidate evidence is missing.")
         llm_service = self._make_llm_service(state)
         regenerated = compose_draft(candidate, normalized_item, draft["publish_mode"], state["channels"]["wechat"]["risk_keywords"], llm_service=llm_service)
+        self._sync_llm_usage(state, llm_service)
         regenerated["id"] = draft["id"]
         regenerated["wechat_draft_id"] = None
         regenerated["wechat_editor_url"] = None
@@ -2470,33 +3187,120 @@ class StudioStore:
             source_health=source_health,
         )
 
+    def _find_event(self, state: dict[str, Any], event_id: str) -> dict[str, Any]:
+        for event in state.get("intel_events", []):
+            if event.get("id") == event_id:
+                return event
+        raise ValueError(f"未找到事件：{event_id}")
+
+    def get_intel_summary(self) -> IntelOverviewSummary:
+        state = self._upgrade_state(self._read())
+        runtime = self._runtime(state)
+        alerts = [IntelAlert(**item) for item in state.get("intel_alerts", [])]
+        events = [IntelEvent(**item) for item in state.get("intel_events", [])]
+        healthy_sources = len([item for item in state["sources"] if item.get("enabled") and item.get("health_status") == "healthy"])
+        total_sources = len([item for item in state["sources"] if item.get("enabled")])
+        source_alerts = [
+            f"{item['name']}：{item['health_detail']}"
+            for item in state["sources"]
+            if item.get("enabled") and item.get("health_status") in {"warning", "error"}
+        ]
+        if not source_alerts:
+            source_alerts = ["暂无来源异常，信息获取链路正常。"]
+        return IntelOverviewSummary(
+            alert_count=len(alerts),
+            breakout_count=len([item for item in alerts if item.level == "breakout"]),
+            rising_count=len([item for item in alerts if item.level == "rising"]),
+            watch_count=len([item for item in alerts if item.level == "watch"]),
+            event_count=len(events),
+            discovery_count=len(state.get("discovery_items", [])),
+            healthy_sources=healthy_sources,
+            total_sources=total_sources,
+            last_sync_at=runtime.get("last_successful_sync_at") or runtime.get("last_collect_at"),
+            next_run_at=self._calculate_next_collect_at(state),
+            running=runtime.get("control_state") != "stopped",
+            work_scope=self._work_scope(state),
+            top_alerts=alerts[:6],
+            top_events=events[:8],
+            source_alerts=source_alerts[:6],
+        )
+
+    def list_discovery_items(self) -> list[DiscoveryItem]:
+        state = self._upgrade_state(self._read())
+        return [DiscoveryItem(**item) for item in state.get("discovery_items", [])[:120]]
+
+    def list_intel_events(self) -> list[IntelEvent]:
+        state = self._upgrade_state(self._read())
+        return [IntelEvent(**item) for item in state.get("intel_events", [])]
+
+    def get_intel_event(self, event_id: str) -> IntelEvent:
+        state = self._upgrade_state(self._read())
+        return IntelEvent(**self._find_event(state, event_id))
+
+    def list_intel_alerts(self) -> list[IntelAlert]:
+        state = self._upgrade_state(self._read())
+        return [IntelAlert(**item) for item in state.get("intel_alerts", [])]
+
+    def list_intel_sources(self) -> list[SourceConnector]:
+        state = self._upgrade_state(self._read())
+        return [SourceConnector(**item) for item in state.get("sources", [])]
+
+    def watchlist_event(self, event_id: str) -> IntelEvent:
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            event = self._find_event(state, event_id)
+            event["watchlisted"] = True
+            event["ignored"] = False
+            state["normalized_items"] = self._project_normalized_items_from_events(state)
+            state["candidates"] = self._project_candidates_from_events(state)
+            self._append_log(state, "success", "intel", f"已加入重点观察：{event['title']}", actor="dashboard")
+            self._write(state)
+            return IntelEvent(**event)
+
+    def ignore_event(self, event_id: str) -> IntelEvent:
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            event = self._find_event(state, event_id)
+            event["ignored"] = True
+            event["watchlisted"] = False
+            state["intel_alerts"] = [item for item in state.get("intel_alerts", []) if item.get("event_id") != event_id]
+            state["normalized_items"] = self._project_normalized_items_from_events(state)
+            state["candidates"] = self._project_candidates_from_events(state)
+            self._append_log(state, "warning", "intel", f"已忽略事件：{event['title']}", actor="dashboard")
+            self._write(state)
+            return IntelEvent(**event)
+
     # ── LLM config ────────────────────────────────────────────────
 
     def get_llm_config(self) -> dict[str, Any]:
         state = self._upgrade_state(self._read())
-        cfg = state.get("llm", {})
-        providers = cfg.get("providers", [])
-        for p in providers:
-            key = p.get("api_key", "")
-            if key:
-                p["api_key"] = key[:4] + "****" + key[-4:] if len(key) > 8 else "****"
+        cfg = deepcopy(state.get("llm", {}))
+        for collection_key in ("profiles", "providers"):
+            for item in cfg.get(collection_key, []):
+                key = item.get("api_key", "")
+                if key:
+                    item["api_key"] = key[:4] + "****" + key[-4:] if len(key) > 8 else "****"
         return cfg
 
     def update_llm_config(self, config: dict[str, Any]) -> dict[str, Any]:
         state = self._upgrade_state(self._read())
         existing = state.get("llm", {})
-        existing_providers = {p["key"]: p for p in existing.get("providers", [])}
-
-        for provider in config.get("providers", []):
-            key = provider["key"]
-            api_key = provider.get("api_key", "")
-            if api_key.endswith("****") and key in existing_providers:
-                provider["api_key"] = existing_providers[key].get("api_key", "")
-            existing_providers[key] = provider
-
+        profiles = merge_llm_profiles(
+            [item for item in config.get("profiles", []) if isinstance(item, dict)],
+            [item for item in existing.get("profiles", []) if isinstance(item, dict)],
+        )
+        current_profile_id = str(config.get("current_profile_id") or existing.get("current_profile_id") or "").strip()
+        active_profile = next((item for item in profiles if item.get("id") == current_profile_id), None)
+        if not active_profile and profiles:
+            active_profile = profiles[0]
+            current_profile_id = str(active_profile.get("id") or "")
+        if active_profile:
+            active_profile["enabled"] = bool(str(active_profile.get("api_key") or "").strip())
         state["llm"] = {
-            "providers": list(existing_providers.values()),
-            "tasks": config.get("tasks", existing.get("tasks", [])),
+            "current_profile_id": current_profile_id,
+            "profiles": profiles,
+            "providers": [build_provider_from_profile(active_profile)] if active_profile else [],
+            "tasks": build_tasks_from_profile(active_profile) if active_profile else [],
             "usage_today": existing.get("usage_today", {}),
         }
         self._write(state)
@@ -2505,11 +3309,22 @@ class StudioStore:
 
     def test_llm_provider(self, provider_key: str) -> dict[str, Any]:
         state = self._upgrade_state(self._read())
-        llm_service = self._make_llm_service(state)
-        if not llm_service:
-            raise ValueError("没有可用的 LLM 服务商配置")
-        result = llm_service.test_connection(provider_key)
         providers = state.get("llm", {}).get("providers", [])
+        provider = next((item for item in providers if item.get("key") == provider_key), None)
+        if not provider:
+            raise ValueError(f"未找到服务商配置：{provider_key}")
+        if not str(provider.get("api_key", "")).strip() or "****" in str(provider.get("api_key", "")):
+            raise ValueError(f"Provider {provider_key} has no API key configured")
+        llm_config = deepcopy(state.get("llm", {}))
+        llm_config["providers"] = [{**provider, "enabled": True}]
+        llm_service = LLMService(llm_config)
+        result = llm_service.test_connection(provider_key)
+        current_profile_id = str(state.get("llm", {}).get("current_profile_id") or "")
+        for profile in state.get("llm", {}).get("profiles", []):
+            if profile.get("id") == current_profile_id:
+                profile["last_tested_at"] = now_iso()
+                profile["last_test_result"] = "ok" if result.get("ok") else result.get("error", "failed")
+                break
         for p in providers:
             if p["key"] == provider_key:
                 p["last_tested_at"] = now_iso()

@@ -1,3 +1,8 @@
+# DEPRECATED: This module is superseded by intel_pipeline.py.
+# Kept only for backward-compatible candidate/draft projection.
+# Do NOT add new logic here. All scoring, clustering, and alert
+# functionality now lives in intel_pipeline.py.
+
 from __future__ import annotations
 
 from collections import defaultdict

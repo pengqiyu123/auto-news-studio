@@ -20,11 +20,17 @@ from .models import (
     CandidateDraftPayload,
     CandidatesResponse,
     ChannelConfigPayload,
+    CreateSourcePayload,
+    DiscoveryItemsResponse,
     DictEnvelope,
     DraftApprovalPayload,
     DraftContentPayload,
     DraftsResponse,
+    IntelAlertsResponse,
+    IntelEventResponse,
+    IntelEventsResponse,
     IntelSnapshotResponse,
+    IntelSummaryResponse,
     JobRunPayload,
     JobsResponse,
     LLMConfigResponse,
@@ -90,6 +96,55 @@ def get_dashboard():
 @app.get("/api/admin/intel", response_model=IntelSnapshotResponse)
 def get_intel_snapshot():
     return IntelSnapshotResponse(item=store.get_intel_snapshot())
+
+
+@app.get("/api/admin/intel/summary", response_model=IntelSummaryResponse)
+def get_intel_summary():
+    return IntelSummaryResponse(item=store.get_intel_summary())
+
+
+@app.get("/api/admin/intel/stream", response_model=DiscoveryItemsResponse)
+def get_intel_stream():
+    return DiscoveryItemsResponse(items=store.list_discovery_items())
+
+
+@app.get("/api/admin/intel/events", response_model=IntelEventsResponse)
+def get_intel_events():
+    return IntelEventsResponse(items=store.list_intel_events())
+
+
+@app.get("/api/admin/intel/events/{event_id}", response_model=IntelEventResponse)
+def get_intel_event(event_id: str):
+    try:
+        return IntelEventResponse(item=store.get_intel_event(event_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/intel/alerts", response_model=IntelAlertsResponse)
+def get_intel_alerts():
+    return IntelAlertsResponse(items=store.list_intel_alerts())
+
+
+@app.get("/api/admin/intel/sources", response_model=SourcesResponse)
+def get_intel_sources():
+    return SourcesResponse(items=store.list_intel_sources())
+
+
+@app.post("/api/admin/intel/watchlist/{event_id}", response_model=IntelEventResponse)
+def add_watchlist_event(event_id: str):
+    try:
+        return IntelEventResponse(item=store.watchlist_event(event_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/intel/ignore/{event_id}", response_model=IntelEventResponse)
+def ignore_event(event_id: str):
+    try:
+        return IntelEventResponse(item=store.ignore_event(event_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.on_event("startup")
@@ -215,6 +270,36 @@ def update_source(source_key: str, payload: SourceConnectorPayload):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.post("/api/admin/sources")
+def create_source(payload: CreateSourcePayload):
+    try:
+        return {"item": store.create_source(payload)}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/api/admin/sources/{source_key}")
+def delete_source(source_key: str):
+    try:
+        store.delete_source(source_key)
+        return {"ok": True}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/settings")
+def get_settings():
+    return {"item": store.get_settings()}
+
+
+@app.put("/api/admin/settings")
+def update_settings(payload: dict[str, Any]):
+    try:
+        return {"item": store.update_settings(payload)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/admin/sources/sync", response_model=SourceSyncResponse)
 def sync_sources():
     return store.sync_sources()
@@ -302,6 +387,7 @@ def update_draft_content(draft_id: str, payload: DraftContentPayload):
 
 IMAGES_DIR = Path(__file__).resolve().parents[1] / "data" / "images"
 MAX_UPLOAD_SIZE = 5 * 1024 * 1024
+ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 
 @app.post("/api/admin/images/upload")
@@ -309,8 +395,10 @@ async def upload_image(file: UploadFile = File(...)):
     content = await file.read()
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="Image too large (max 5MB)")
+    suffix = Path(file.filename or "image.png").suffix.lower() or ".png"
+    if suffix not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix}")
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    suffix = Path(file.filename or "image.png").suffix or ".png"
     filename = f"{uuid4().hex[:12]}{suffix}"
     (IMAGES_DIR / filename).write_bytes(content)
     return {"url": f"/api/admin/images/{filename}"}

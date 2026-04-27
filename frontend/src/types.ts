@@ -29,6 +29,7 @@ export type LogLevel = "info" | "warning" | "error" | "success";
 export type SourceKind =
   | "rss"
   | "rsshub"
+  | "api"
   | "newsnow"
   | "bilibili"
   | "toutiao"
@@ -48,6 +49,9 @@ export type LogStream = "system_runtime" | "business_event";
 export type ArticleVariant = "flash_explainer";
 export type RuntimeControlState = "stopped" | "armed" | "running" | "waiting";
 export type RuntimeLaunchMode = "once_now" | "once_at" | "interval_now" | "interval_at";
+export type IntelWorkScope = "collect_only" | "collect_events" | "collect_events_alerts";
+export type IntelEventState = "new" | "watch" | "rising" | "breakout" | "cooling";
+export type IntelAlertLevel = "watch" | "rising" | "breakout" | "cooling";
 
 export interface ModeDefinition {
   key: PublishMode;
@@ -93,6 +97,7 @@ export interface RuntimePlan {
   interval_minutes?: number | null;
   timezone: string;
   effective_mode: AutomationMode;
+  work_scope: IntelWorkScope;
 }
 
 export interface SourceConnector {
@@ -100,9 +105,12 @@ export interface SourceConnector {
   name: string;
   kind: SourceKind;
   driver: string;
+  platform: string;
   enabled: boolean;
   schedule: string;
+  interval_minutes?: number | null;
   priority: number;
+  weight: number;
   auth: Record<string, string>;
   url?: string | null;
   tags: string[];
@@ -361,6 +369,93 @@ export interface IntelStreamItem {
   draft_id?: string | null;
 }
 
+export interface DiscoveryItem {
+  id: string;
+  raw_item_id: string;
+  source_key: string;
+  source_name: string;
+  source_kind: string;
+  platform: string;
+  title: string;
+  summary: string;
+  content: string;
+  link: string;
+  canonical_link: string;
+  dedupe_key: string;
+  title_tokens: string[];
+  anchor_tokens: string[];
+  published_at?: string | null;
+  collected_at: string;
+  tags: string[];
+  engagement_score: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface IntelEvent {
+  id: string;
+  title: string;
+  summary: string;
+  representative_link: string;
+  representative_source_name: string;
+  representative_discovery_item_id: string;
+  discovery_item_ids: string[];
+  source_keys: string[];
+  source_names: string[];
+  platforms: string[];
+  platform_count: number;
+  source_count: number;
+  member_count: number;
+  published_at?: string | null;
+  latest_collected_at?: string | null;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  tags: string[];
+  anchor_tokens: string[];
+  velocity_score: number;
+  coverage_score: number;
+  freshness_score: number;
+  composite_score: number;
+  velocity_details: Record<string, number>;
+  alert_state: IntelEventState;
+  alert_reason: string;
+  watchlisted: boolean;
+  ignored: boolean;
+}
+
+export interface IntelAlert {
+  id: string;
+  event_id: string;
+  title: string;
+  level: IntelAlertLevel;
+  reason: string;
+  velocity_score: number;
+  coverage_score: number;
+  freshness_score: number;
+  composite_score: number;
+  platform_count: number;
+  source_count: number;
+  representative_link: string;
+  triggered_at: string;
+}
+
+export interface IntelOverviewSummary {
+  alert_count: number;
+  breakout_count: number;
+  rising_count: number;
+  watch_count: number;
+  event_count: number;
+  discovery_count: number;
+  healthy_sources: number;
+  total_sources: number;
+  last_sync_at?: string | null;
+  next_run_at?: string | null;
+  running: boolean;
+  work_scope: IntelWorkScope;
+  top_alerts: IntelAlert[];
+  top_events: IntelEvent[];
+  source_alerts: string[];
+}
+
 export interface HotClusterCard {
   cluster_id: string;
   title: string;
@@ -423,6 +518,7 @@ export interface SchedulerStatus {
   control_state: RuntimeControlState;
   launch_mode: RuntimeLaunchMode;
   current_mode: AutomationMode;
+  work_scope: IntelWorkScope;
   last_collect_at?: string | null;
   last_candidate_at?: string | null;
   last_draft_at?: string | null;
@@ -455,6 +551,20 @@ export interface LLMProviderConfig {
   key: string;
   api_key: string;
   base_url: string;
+  model_id: string;
+  enabled: boolean;
+  last_tested_at?: string | null;
+  last_test_result?: string | null;
+}
+
+export interface LLMProfileConfig {
+  id: string;
+  label: string;
+  description: string;
+  provider_key: string;
+  api_key: string;
+  base_url: string;
+  model_id: string;
   enabled: boolean;
   last_tested_at?: string | null;
   last_test_result?: string | null;
@@ -471,6 +581,8 @@ export interface LLMTaskConfig {
 }
 
 export interface LLMConfig {
+  current_profile_id: string;
+  profiles: LLMProfileConfig[];
   providers: LLMProviderConfig[];
   tasks: LLMTaskConfig[];
   usage_today: Record<string, Record<string, number>>;

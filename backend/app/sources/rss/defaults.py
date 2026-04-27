@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+def _rss(
+    key: str,
+    name: str,
+    url: str,
+    *,
+    priority: int,
+    schedule: str = "*/30 * * * *",
+    tags: list[str] | None = None,
+    weight: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "name": name,
+        "platform": "rss",
+        "kind": "rss",
+        "driver": "rss_feed",
+        "enabled": True,
+        "schedule": schedule,
+        "interval_minutes": 30,
+        "priority": priority,
+        "weight": weight if weight is not None else 0.7,
+        "auth": {},
+        "url": url,
+        "tags": tags or [],
+        "capabilities": ["pull", "dedupe", "score"],
+        "origin_repo": "auto-news-studio",
+        "origin_license": "MIT",
+        "health_status": "idle",
+        "health_detail": "",
+        "item_count": 0,
+        "last_synced_at": None,
+        "last_error": None,
+        "updated_at": None,
+    }
+
+
+def register() -> list[dict[str, Any]]:
+    return [
+        _rss("rss-openai", "OpenAI Blog", "https://openai.com/blog/rss.xml", priority=9, tags=["ai", "official"], weight=0.9),
+        _rss("rss-anthropic", "Anthropic News", "https://www.anthropic.com/news/rss.xml", priority=9, tags=["ai", "official"], weight=0.9),
+        _rss("rss-google-ai", "Google AI Blog", "https://blog.google/technology/ai/rss/", priority=9, tags=["ai", "official"], weight=0.9),
+        _rss("rss-deepmind", "DeepMind Blog", "https://deepmind.google/blog/rss.xml", priority=9, tags=["ai", "official"], weight=0.9),
+        _rss("rss-huggingface", "Hugging Face Blog", "https://huggingface.co/blog/feed.xml", priority=8, tags=["ai", "oss"], weight=0.85),
+        _rss("rss-openai-cookbook", "OpenAI Cookbook", "https://cookbook.openai.com/rss.xml", priority=8, tags=["ai", "dev"], weight=0.85),
+        _rss("rss-meta-ai", "Meta AI Blog", "https://ai.meta.com/blog/rss/", priority=8, tags=["ai", "official"], weight=0.9),
+        _rss("rss-nvidia-ai", "NVIDIA AI Blog", "https://blogs.nvidia.com/feed/", priority=8, tags=["ai", "chip"], weight=0.85),
+        _rss("rss-mistral", "Mistral AI Blog", "https://mistral.ai/news/feed.xml", priority=8, tags=["ai", "official"], weight=0.85),
+        _rss("rss-techcrunch", "TechCrunch", "https://techcrunch.com/feed/", priority=8, schedule="*/20 * * * *", tags=["media", "tech"], weight=0.85),
+        _rss("rss-theverge", "The Verge", "https://www.theverge.com/rss/index.xml", priority=8, tags=["media", "tech"], weight=0.85),
+        _rss("rss-arstechnica", "Ars Technica", "https://feeds.arstechnica.com/arstechnica/features", priority=8, tags=["media", "tech"], weight=0.85),
+        _rss("rss-wired", "Wired", "https://www.wired.com/feed/rss", priority=7, tags=["media", "tech"], weight=0.85),
+        _rss("rss-mit-tech", "MIT Technology Review", "https://www.technologyreview.com/feed/", priority=8, tags=["media", "research"], weight=0.85),
+        _rss("rss-github-blog", "GitHub Blog", "https://github.blog/feed/", priority=7, tags=["github", "oss"], weight=0.8),
+        _rss("rss-hn-front", "Hacker News (RSS)", "https://hnrss.org/frontpage", priority=8, tags=["hn", "community"], weight=0.8),
+        _rss("rss-36kr", "36氪", "https://36kr.com/feed", priority=8, tags=["cn", "startup"], weight=0.85),
+        _rss("rss-sspai", "少数派", "https://sspai.com/feed", priority=7, tags=["cn", "digital"], weight=0.7),
+        _rss("rss-jiqizhixin", "机器之心", "https://www.jiqizhixin.com/rss", priority=8, tags=["cn", "ai"], weight=0.85),
+        _rss("rss-ithome", "IT之家", "https://www.ithome.com/rss/", priority=7, tags=["cn", "tech"], weight=0.85),
+        _rss("rss-ifanr", "爱范儿", "https://www.ifanr.com/feed", priority=7, tags=["cn", "digital"], weight=0.7),
+        _rss("rss-ruanyifeng", "阮一峰的网络日志", "https://www.ruanyifeng.com/blog/atom.xml", priority=6, tags=["cn", "dev"], weight=0.7),
+        _rss("rss-arxiv-cs-ai", "arXiv CS.AI", "http://export.arxiv.org/rss/cs.AI", priority=7, tags=["research", "arxiv"], weight=0.7),
+        _rss("rss-arxiv-cs-cl", "arXiv CS.CL (NLP)", "http://export.arxiv.org/rss/cs.CL", priority=7, tags=["research", "nlp"], weight=0.7),
+        _rss("rss-arxiv-cs-cv", "arXiv CS.CV", "http://export.arxiv.org/rss/cs.CV", priority=7, tags=["research", "vision"], weight=0.7),
+        _rss("rss-distill", "Distill.pub", "https://distill.pub/feed.xml", priority=7, tags=["research", "viz"], weight=0.7),
+        _rss("rsshub-weibo-hot", "微博热搜 (RSSHub)", "https://rsshub.app/weibo/hot", priority=7, schedule="*/15 * * * *", tags=["cn", "weibo"], weight=0.6),
+        _rss("rsshub-zhihu-hot", "知乎热榜 (RSSHub)", "https://rsshub.app/zhihu/hotlist", priority=7, schedule="*/15 * * * *", tags=["cn", "zhihu"], weight=0.6),
+        _rss("rsshub-juejin-trend", "掘金前端趋势 (RSSHub)", "https://rsshub.app/juejin/trending/frontend/monthly", priority=6, schedule="0 */4 * * *", tags=["cn", "dev"], weight=0.7),
+        _rss("rsshub-github-trending", "GitHub Trending (RSSHub)", "https://rsshub.app/github/trending/daily", priority=7, tags=["github", "oss"], weight=0.8),
+        _rss("rsshub-producthunt", "Product Hunt (RSSHub)", "https://rsshub.app/producthunt/daily", priority=6, tags=["startup", "product"], weight=0.7),
+    ]

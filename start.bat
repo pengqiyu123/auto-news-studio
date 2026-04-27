@@ -69,31 +69,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 timeout /t 3 /nobreak >nul
 
 set "STARTED_PID="
-if exist "%PID_FILE%" set /p STARTED_PID=<"%PID_FILE%"
+for /f %%P in ('powershell -NoProfile -Command "$line = netstat -ano ^| Select-String '':8000\\s+.*LISTENING\\s+\\d+$'' ^| Select-Object -First 1; if ($line) { (($line.ToString() -split ''\\s+'')[-1]) }"') do (
+  set "STARTED_PID=%%P"
+)
 
-if "%STARTED_PID%"=="" (
-  echo [ERROR] Failed to capture backend PID.
+if not defined STARTED_PID if exist "%PID_FILE%" (
+  set /p STARTED_PID=<"%PID_FILE%"
+)
+
+if not defined STARTED_PID (
+  echo [ERROR] Failed to detect backend listener on port 8000.
   pause
   exit /b 1
 )
 
-tasklist /FI "PID eq %STARTED_PID%" | find "%STARTED_PID%" >nul 2>nul
-if errorlevel 1 (
-  echo [ERROR] Backend process failed to start.
-  if exist "%ERR_LOG%" (
-    echo.
-    echo ===== backend.err.log (last 20 lines) =====
-    powershell -NoProfile -Command "Get-Content '%ERR_LOG%' -Tail 20"
-  )
-  pause
-  exit /b 1
-)
+>"%PID_FILE%" echo !STARTED_PID!
 
 echo.
 echo ========================================
 echo   Auto News Studio started successfully
 echo ========================================
-echo   PID:  %STARTED_PID%
+echo   PID:  !STARTED_PID!
 echo   URL:  http://127.0.0.1:8000
 echo   Logs: %RUNTIME_DIR%\
 echo ========================================

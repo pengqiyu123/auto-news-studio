@@ -1,3 +1,4 @@
+import { Save } from "lucide-react";
 import { useState } from "react";
 
 import type {
@@ -28,6 +29,7 @@ interface SettingsPanelProps {
   isSavingLLM: boolean;
   isRefreshingBrowser: boolean;
   isOpeningBrowser: boolean;
+  settings: Record<string, unknown>;
   onSaveChannel: (payload: WeChatChannelConfig) => Promise<void>;
   onSaveLLMConfig: (config: LLMConfig) => Promise<void>;
   onRefreshBrowser: (payload: Pick<BrowserSessionState, "browser_name" | "user_data_dir">) => Promise<void>;
@@ -35,6 +37,20 @@ interface SettingsPanelProps {
   onSyncSources: () => Promise<void>;
   onSyncSource: (sourceKey: string) => Promise<void>;
   onSaveSource: (sourceKey: string, payload: Pick<SourceConnector, "enabled" | "schedule" | "priority" | "url" | "tags">) => Promise<void>;
+  onCreateSource: (payload: {
+    key: string;
+    name: string;
+    kind: string;
+    driver: string;
+    url?: string;
+    enabled?: boolean;
+    schedule?: string;
+    priority?: number;
+    weight?: number;
+    tags?: string[];
+  }) => Promise<void>;
+  onDeleteSource: (sourceKey: string) => Promise<void>;
+  onSaveSettings: (payload: Record<string, unknown>) => Promise<void>;
 }
 
 export function SettingsPanel({
@@ -58,7 +74,15 @@ export function SettingsPanel({
   onSyncSources,
   onSyncSource,
   onSaveSource,
+  onCreateSource,
+  onDeleteSource,
+  onSaveSettings,
+  settings,
 }: SettingsPanelProps) {
+  const [maxWorkers, setMaxWorkers] = useState(Number(settings?.max_workers ?? 8));
+  const [savingSettings, setSavingSettings] = useState(false);
+
+  const maxWorkersDirty = maxWorkers !== Number(settings?.max_workers ?? 8);
   const [section, setSection] = useState<SettingsSectionKey>("channels");
 
   return (
@@ -118,6 +142,8 @@ export function SettingsPanel({
           onSync={onSyncSources}
           onSyncOne={onSyncSource}
           onSave={onSaveSource}
+          onCreate={onCreateSource}
+          onDelete={onDeleteSource}
         />
       ) : null}
 
@@ -129,25 +155,49 @@ export function SettingsPanel({
             <div>
               <p className="eyebrow">系统偏好</p>
               <h2>系统级默认项</h2>
-              <p className="subtle">低频配置收纳位，避免散落在主导航里。</p>
             </div>
           </div>
-          <div className="runtime-card-grid">
-            <article className="runtime-card">
-              <span>界面定位</span>
-              <strong>信息优先</strong>
-              <p>驾驶舱只控全局，情报页专看信息。</p>
-            </article>
-            <article className="runtime-card">
-              <span>自动化默认</span>
-              <strong>草稿优先</strong>
-              <p>先发现、再成稿、再决定是否进发布链路。</p>
-            </article>
-            <article className="runtime-card">
-              <span>发布策略</span>
-              <strong>浏览器复用</strong>
-              <p>公众号发布走本机浏览器会话，一次配置后可持续复用。</p>
-            </article>
+          <div className="intel-plan-grid">
+            <label>
+              <span>采集并发数</span>
+              <select
+                value={maxWorkers}
+                onChange={(e) => setMaxWorkers(Number(e.target.value))}
+              >
+                {[1, 2, 3, 5, 8, 10, 12, 15, 20].map((v) => (
+                  <option key={v} value={v}>{v}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>说明</span>
+              <p className="subtle" style={{ marginTop: 4 }}>
+                并发数越高采集越快，但过高可能触发目标服务器限流。基准测试显示 52 个来源在 8 并发时约 12.6 秒完成，10 并发时约 12.3 秒（瓶颈在慢源本身）。
+              </p>
+            </label>
+          </div>
+          <div className="intel-plan-footer">
+            <div className="intel-plan-status">
+              {maxWorkersDirty ? <span className="dirty-chip">有未保存变更</span> : <span className="subtle-chip">已保存</span>}
+            </div>
+            <div className="intel-plan-actions">
+              <button
+                type="button"
+                className="ghost-button compact"
+                disabled={savingSettings || !maxWorkersDirty}
+                onClick={async () => {
+                  setSavingSettings(true);
+                  try {
+                    await onSaveSettings({ max_workers: maxWorkers });
+                  } finally {
+                    setSavingSettings(false);
+                  }
+                }}
+              >
+                <Save size={14} />
+                {savingSettings ? "保存中..." : "保存"}
+              </button>
+            </div>
           </div>
         </section>
       ) : null}

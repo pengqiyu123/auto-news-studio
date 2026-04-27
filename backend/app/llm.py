@@ -16,6 +16,18 @@ from openai import APIConnectionError, APITimeoutError, RateLimitError
 logger = logging.getLogger(__name__)
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
+    "nvidia": {
+        "label": "NVIDIA NIM",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "models": [
+            "qwen/qwen3.5-122b-a10b",
+            "z-ai/glm4.7",
+            "minimaxai/minimax-m2.7",
+            "z-ai/glm-5.1",
+            "deepseek-ai/deepseek-v4-flash",
+            "deepseek-ai/deepseek-v4-pro",
+        ],
+    },
     "deepseek": {
         "label": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1",
@@ -44,7 +56,15 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "siliconflow": {
         "label": "SiliconFlow",
         "base_url": "https://api.siliconflow.cn/v1",
-        "models": ["Qwen/Qwen3-8B", "deepseek-ai/DeepSeek-V3"],
+        "models": [
+            "THUDM/GLM-4-9B-0414",
+            "THUDM/GLM-Z1-9B-0414",
+            "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+            "Qwen/Qwen3-8B",
+            "Qwen/Qwen3.5-4B",
+            "THUDM/GLM-4.1V-9B-Thinking",
+            "deepseek-ai/DeepSeek-V3",
+        ],
     },
     "qwen": {
         "label": "通义千问",
@@ -59,6 +79,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
 }
 
 DEFAULT_TASK_CONFIGS: dict[str, dict[str, Any]] = {
+    "judgement": {"label": "初步判断", "temperature": 0.2, "max_tokens": 2048},
     "outline": {"label": "大纲生成", "temperature": 0.4, "max_tokens": 2048},
     "article": {"label": "正文撰写", "temperature": 0.7, "max_tokens": 4096},
     "title": {"label": "标题优化", "temperature": 0.8, "max_tokens": 512},

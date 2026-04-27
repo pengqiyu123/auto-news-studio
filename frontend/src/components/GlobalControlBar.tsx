@@ -167,7 +167,8 @@ export function GlobalControlBar({
     launch_mode: runtimePlan.launch_mode,
     start_at: runtimePlan.start_at ?? null,
     interval_minutes: runtimePlan.interval_minutes ?? 30,
-    timezone: runtimePlan.timezone
+    timezone: runtimePlan.timezone,
+    work_scope: runtimePlan.work_scope
   });
 
   useEffect(() => {
@@ -183,7 +184,8 @@ export function GlobalControlBar({
       launch_mode: runtimePlan.launch_mode,
       start_at: runtimePlan.start_at ?? null,
       interval_minutes: runtimePlan.interval_minutes ?? 30,
-      timezone: runtimePlan.timezone
+      timezone: runtimePlan.timezone,
+      work_scope: runtimePlan.work_scope
     });
   }, [runtimePlan]);
 

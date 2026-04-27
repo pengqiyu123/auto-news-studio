@@ -13,6 +13,17 @@ if TYPE_CHECKING:
 UTC = timezone.utc
 ARTICLE_VARIANT = "flash_explainer"
 logger = logging.getLogger(__name__)
+INTERNAL_FACT_MARKERS = (
+    "事件簇",
+    "来源优先级",
+    "综合得分",
+    "评分",
+    "推荐角度",
+    "适用模式",
+    "系统",
+    "聚类",
+    "jaccard",
+)
 
 ARTICLE_SYSTEM_PROMPT = """你是一位资深的科技媒体编辑，正在为微信公众号撰写文章。
 
@@ -171,15 +182,34 @@ def _cover_suggestion(candidate: dict[str, Any]) -> str:
 
 def _pick_facts(candidate: dict[str, Any], normalized_item: dict[str, Any]) -> list[str]:
     facts = [str(item).strip(" \n-") for item in candidate.get("facts", []) if str(item).strip()]
+    public_facts = [fact for fact in facts if not any(marker.lower() in fact.lower() for marker in INTERNAL_FACT_MARKERS)]
+    if public_facts:
+        return public_facts[:5]
     if facts:
-        return facts[:5]
+        return facts[:2]
     published_at = _format_cn_time(candidate.get("published_at") or normalized_item.get("published_at"))
-    return [
+    summary = str(normalized_item.get("summary") or candidate.get("summary") or "").strip()
+    points = [
         f"核心事件：{candidate['title']}",
-        f"当前摘要：{candidate['summary']}",
-        f"主要信源：{_source_phrase(list(candidate.get('source_names', [])))}",
-        f"源站时间：{published_at}",
+        f"发布时间：{published_at}",
+        f"主要来源：{_source_phrase(list(candidate.get('source_names', [])))}",
     ]
+    if summary and summary != candidate["title"]:
+        points.insert(1, f"已确认信息：{summary}")
+    return points[:4]
+
+
+def _public_fact_points(candidate: dict[str, Any], normalized_item: dict[str, Any]) -> list[str]:
+    published_at = _format_cn_time(candidate.get("published_at") or normalized_item.get("published_at"))
+    summary = str(normalized_item.get("summary") or candidate.get("summary") or "").strip("。 ")
+    points = [
+        f"核心事件：{candidate['title']}",
+        f"发布时间：{published_at}",
+        f"主要来源：{_source_phrase(list(candidate.get('source_names', [])))}",
+    ]
+    if summary and summary != candidate["title"]:
+        points.insert(1, f"已确认信息：{summary}")
+    return points[:4]
 
 
 def _build_title_options(candidate: dict[str, Any], normalized_item: dict[str, Any]) -> list[str]:
@@ -285,8 +315,8 @@ def _build_outline(
 def _build_reader_summary(candidate: dict[str, Any], brief: dict[str, Any]) -> str:
     published_at = brief["time_context"]["published_at_label"]
     return (
-        f"{published_at}，{candidate['title']}这条消息被{brief['source_count']}个信源纳入系统跟踪。"
-        f" 对读者来说，重点不只是价格、发布或表态本身，更是它会不会带来接下来的市场动作。"
+        f"{published_at}前后，{candidate['title']}开始受到持续关注。"
+        " 这篇稿件会先梳理已经确认的事实，再结合现有信息判断它对行业和读者意味着什么。"
     )
 
 
@@ -298,14 +328,14 @@ def _build_body_blocks(
 ) -> list[dict[str, Any]]:
     published_at = brief["time_context"]["published_at_label"]
     source_phrase = _source_phrase(list(candidate.get("source_names", [])))
-    facts = brief["facts"][:4]
+    facts = _public_fact_points(candidate, normalized_item)
     evidence_links = list(candidate.get("evidence_links", []))
     core_signal = normalized_item.get("summary") or candidate.get("summary") or candidate.get("title")
 
     intro = (
         f"{published_at}，{candidate['title']}这条消息开始被广泛讨论。"
-        f" 目前已经进入我们系统的可写主题池，原因并不复杂：它既有明确的事实锚点，也有足够清晰的后续观察空间。"
-        f" 对公众号读者来说，先看懂这件事本身，再看它会不会改变行业节奏，比单纯转述一句消息更重要。"
+        " 对读者来说，最重要的不是先下结论，而是先把已经确认的信息和仍待观察的部分区分清楚。"
+        " 只有先看懂事情本身，后面的判断才有意义。"
     )
     key_info = "\n".join(f"- {fact}" for fact in facts)
     analysis_one = (
@@ -326,7 +356,7 @@ def _build_body_blocks(
     closing = (
         "如果后续出现更多官方细节、二次报道或用户反馈，这篇稿件还可以继续补充。"
         " 在正式发布之前，建议再核对一次时间、数字、主体名称，并补上一张能够支撑主题的配图，"
-        "这样它会更像一篇稳定可发的公众号快讯，而不是内部测试稿。"
+        "这样它会更适合作为一篇稳定的公众号正式稿继续推进。"
     )
 
     return [

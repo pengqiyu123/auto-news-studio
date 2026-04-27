@@ -7,9 +7,13 @@ import type {
   CandidateTopic,
   ChainStateCard,
   DashboardResponse,
+  DiscoveryItem,
   DraftItem,
   ExecutionChainSnapshot,
   FreshnessSnapshot,
+  IntelAlert,
+  IntelEvent,
+  IntelOverviewSummary,
   IntelSnapshot,
   GithubSignalItem,
   HotClusterCard,
@@ -120,6 +124,7 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     control_state: "stopped",
     launch_mode: "interval_now",
     current_mode: currentAutomationMode.key,
+    work_scope: "collect_events_alerts",
     last_collect_at: null,
     last_candidate_at: null,
     last_draft_at: null,
@@ -156,7 +161,8 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     start_at: null,
     interval_minutes: currentAutomationProfile.collect_interval_minutes,
     timezone: "Asia/Shanghai",
-    effective_mode: currentAutomationMode.key
+    effective_mode: currentAutomationMode.key,
+    work_scope: "collect_events_alerts"
   };
 
   return {
@@ -210,6 +216,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   getDashboard: async () => normalizeDashboard(await request<DashboardResponse>("/api/admin/dashboard")),
   getIntel: () => request<{ item: IntelSnapshot }>("/api/admin/intel"),
+  getIntelSummary: () => request<{ item: IntelOverviewSummary }>("/api/admin/intel/summary"),
+  getDiscoveryItems: () => request<{ items: DiscoveryItem[] }>("/api/admin/intel/stream"),
+  getIntelEvents: () => request<{ items: IntelEvent[] }>("/api/admin/intel/events"),
+  getIntelEvent: (eventId: string) => request<{ item: IntelEvent }>(`/api/admin/intel/events/${eventId}`),
+  getIntelAlerts: () => request<{ items: IntelAlert[] }>("/api/admin/intel/alerts"),
+  getIntelSources: () => request<{ items: SourceConnector[] }>("/api/admin/intel/sources"),
+  watchlistEvent: (eventId: string) =>
+    request<{ item: IntelEvent }>(`/api/admin/intel/watchlist/${eventId}`, { method: "POST" }),
+  ignoreEvent: (eventId: string) =>
+    request<{ item: IntelEvent }>(`/api/admin/intel/ignore/${eventId}`, { method: "POST" }),
   getModes: () => request<{ current: ModeDefinition; items: ModeDefinition[] }>("/api/admin/modes"),
   setMode: (mode: PublishMode) =>
     request<{ current: ModeDefinition }>("/api/admin/modes/current", {
@@ -247,6 +263,25 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(payload)
     }),
+  createSource: (payload: {
+    key: string;
+    name: string;
+    kind: string;
+    driver: string;
+    url?: string;
+    enabled?: boolean;
+    schedule?: string;
+    priority?: number;
+    weight?: number;
+    tags?: string[];
+    auth?: Record<string, string>;
+  }) =>
+    request<{ item: SourceConnector }>("/api/admin/sources", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  deleteSource: (sourceKey: string) =>
+    request<{ ok: boolean }>(`/api/admin/sources/${sourceKey}`, { method: "DELETE" }),
   syncSources: () =>
     request<{ raw_count: number; normalized_count: number; candidate_count: number; synced_at: string; warnings: string[] }>(
       "/api/admin/sources/sync",
@@ -347,5 +382,11 @@ export const api = {
     }),
   testLLMProvider: (providerKey: string) =>
     request<LLMTestResult>(`/api/admin/llm/test/${providerKey}`, { method: "POST" }),
-  getLLMUsage: () => request<{ item: Record<string, Record<string, number>> }>("/api/admin/llm/usage")
+  getLLMUsage: () => request<{ item: Record<string, Record<string, number>> }>("/api/admin/llm/usage"),
+  getSettings: () => request<{ item: Record<string, unknown> }>("/api/admin/settings"),
+  updateSettings: (payload: Record<string, unknown>) =>
+    request<{ item: Record<string, unknown> }>("/api/admin/settings", {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    })
 };

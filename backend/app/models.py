@@ -39,6 +39,7 @@ LogLevel = Literal["info", "warning", "error", "success"]
 SourceKind = Literal[
     "rss",
     "rsshub",
+    "api",
     "newsnow",
     "bilibili",
     "toutiao",
@@ -46,6 +47,8 @@ SourceKind = Literal[
     "youtube",
     "github",
     "hackernews",
+    "vvhan",
+    "legacy",
     "page",
 ]
 SourceHealth = Literal["idle", "healthy", "warning", "error"]
@@ -59,6 +62,9 @@ LogStream = Literal["system_runtime", "business_event"]
 ArticleVariant = Literal["flash_explainer"]
 RuntimeControlState = Literal["stopped", "armed", "running", "waiting"]
 RuntimeLaunchMode = Literal["once_now", "once_at", "interval_now", "interval_at"]
+IntelWorkScope = Literal["collect_only", "collect_events", "collect_events_alerts"]
+IntelEventState = Literal["new", "watch", "rising", "breakout", "cooling"]
+IntelAlertLevel = Literal["watch", "rising", "breakout", "cooling"]
 
 
 class ModeDefinition(BaseModel):
@@ -105,6 +111,7 @@ class RuntimePlan(BaseModel):
     interval_minutes: Optional[int] = Field(default=30, ge=5, le=360)
     timezone: str = "Asia/Shanghai"
     effective_mode: AutomationMode = "radar_only"
+    work_scope: IntelWorkScope = "collect_events_alerts"
 
 
 class SourceConnector(BaseModel):
@@ -112,9 +119,12 @@ class SourceConnector(BaseModel):
     name: str
     kind: SourceKind
     driver: str
+    platform: str = "rss"
     enabled: bool
     schedule: str
+    interval_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
     priority: int = Field(ge=1, le=10)
+    weight: float = Field(default=0.7, ge=0.0, le=1.0)
     auth: dict[str, str] = Field(default_factory=dict)
     url: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
@@ -135,6 +145,21 @@ class SourceConnectorPayload(BaseModel):
     priority: int = Field(ge=1, le=10)
     url: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
+    weight: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+class CreateSourcePayload(BaseModel):
+    key: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_\-]+$")
+    name: str = Field(min_length=1, max_length=128)
+    kind: SourceKind = "rss"
+    driver: str = "rss_feed"
+    url: Optional[str] = None
+    enabled: bool = True
+    schedule: str = "*/30 * * * *"
+    priority: int = Field(default=5, ge=1, le=10)
+    weight: float = Field(default=0.7, ge=0.0, le=1.0)
+    tags: list[str] = Field(default_factory=list)
+    auth: dict[str, str] = Field(default_factory=dict)
 
 
 class RawItem(BaseModel):
@@ -373,6 +398,127 @@ class IntelStreamItem(BaseModel):
     draft_id: Optional[str] = None
 
 
+class DiscoveryItem(BaseModel):
+    id: str
+    raw_item_id: str
+    source_key: str
+    source_name: str
+    source_kind: str
+    platform: str
+    title: str
+    summary: str
+    content: str
+    link: str
+    canonical_link: str
+    dedupe_key: str
+    title_tokens: list[str] = Field(default_factory=list)
+    anchor_tokens: list[str] = Field(default_factory=list)
+    published_at: Optional[str] = None
+    collected_at: str
+    tags: list[str] = Field(default_factory=list)
+    engagement_score: float = 0.0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class IntelEvent(BaseModel):
+    id: str
+    title: str
+    summary: str
+    representative_link: str
+    representative_source_name: str
+    representative_discovery_item_id: str
+    discovery_item_ids: list[str] = Field(default_factory=list)
+    source_keys: list[str] = Field(default_factory=list)
+    source_names: list[str] = Field(default_factory=list)
+    platforms: list[str] = Field(default_factory=list)
+    platform_count: int = 0
+    source_count: int = 0
+    member_count: int = 0
+    published_at: Optional[str] = None
+    latest_collected_at: Optional[str] = None
+    first_seen_at: Optional[str] = None
+    last_seen_at: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    anchor_tokens: list[str] = Field(default_factory=list)
+    velocity_score: float = 0.0
+    coverage_score: float = 0.0
+    freshness_score: float = 0.0
+    composite_score: float = 0.0
+    velocity_details: dict[str, float] = Field(default_factory=dict)
+    alert_state: IntelEventState = "new"
+    alert_reason: str = ""
+    watchlisted: bool = False
+    ignored: bool = False
+
+
+class EventSnapshot(BaseModel):
+    id: str
+    event_id: str
+    captured_at: str
+    member_count: int = 0
+    platform_count: int = 0
+    source_count: int = 0
+    velocity_score: float = 0.0
+    coverage_score: float = 0.0
+    freshness_score: float = 0.0
+    composite_score: float = 0.0
+    alert_state: IntelEventState = "new"
+
+
+class IntelAlert(BaseModel):
+    id: str
+    event_id: str
+    title: str
+    level: IntelAlertLevel
+    reason: str
+    velocity_score: float = 0.0
+    coverage_score: float = 0.0
+    freshness_score: float = 0.0
+    composite_score: float = 0.0
+    platform_count: int = 0
+    source_count: int = 0
+    representative_link: str
+    triggered_at: str
+
+
+class IntelOverviewSummary(BaseModel):
+    alert_count: int = 0
+    breakout_count: int = 0
+    rising_count: int = 0
+    watch_count: int = 0
+    event_count: int = 0
+    discovery_count: int = 0
+    healthy_sources: int = 0
+    total_sources: int = 0
+    last_sync_at: Optional[str] = None
+    next_run_at: Optional[str] = None
+    running: bool = False
+    work_scope: IntelWorkScope = "collect_events_alerts"
+    top_alerts: list[IntelAlert] = Field(default_factory=list)
+    top_events: list[IntelEvent] = Field(default_factory=list)
+    source_alerts: list[str] = Field(default_factory=list)
+
+
+class IntelSummaryResponse(BaseModel):
+    item: IntelOverviewSummary
+
+
+class DiscoveryItemsResponse(BaseModel):
+    items: list[DiscoveryItem]
+
+
+class IntelEventsResponse(BaseModel):
+    items: list[IntelEvent]
+
+
+class IntelAlertsResponse(BaseModel):
+    items: list[IntelAlert]
+
+
+class IntelEventResponse(BaseModel):
+    item: IntelEvent
+
+
 class HotClusterCard(BaseModel):
     cluster_id: str
     title: str
@@ -435,6 +581,7 @@ class SchedulerStatus(BaseModel):
     control_state: RuntimeControlState = "stopped"
     launch_mode: RuntimeLaunchMode = "interval_now"
     current_mode: AutomationMode = "radar_only"
+    work_scope: IntelWorkScope = "collect_events_alerts"
     last_collect_at: Optional[str] = None
     last_candidate_at: Optional[str] = None
     last_draft_at: Optional[str] = None
@@ -531,6 +678,7 @@ class RuntimePlanPayload(BaseModel):
     start_at: Optional[str] = None
     interval_minutes: Optional[int] = Field(default=None, ge=5, le=360)
     timezone: str = "Asia/Shanghai"
+    work_scope: IntelWorkScope = "collect_events_alerts"
 
 
 class JobRunPayload(BaseModel):
@@ -650,6 +798,7 @@ class LLMProviderConfig(BaseModel):
     key: str
     api_key: str = ""
     base_url: str = ""
+    model_id: str = ""
     enabled: bool = False
     last_tested_at: Optional[str] = None
     last_test_result: Optional[str] = None
@@ -665,7 +814,22 @@ class LLMTaskConfig(BaseModel):
     system_prompt: str = ""
 
 
+class LLMProfileConfig(BaseModel):
+    id: str
+    label: str
+    description: str = ""
+    provider_key: str
+    api_key: str = ""
+    base_url: str = ""
+    model_id: str = ""
+    enabled: bool = False
+    last_tested_at: Optional[str] = None
+    last_test_result: Optional[str] = None
+
+
 class LLMConfig(BaseModel):
+    current_profile_id: str = ""
+    profiles: list[LLMProfileConfig] = Field(default_factory=list)
     providers: list[LLMProviderConfig] = Field(default_factory=list)
     tasks: list[LLMTaskConfig] = Field(default_factory=list)
     usage_today: dict[str, dict[str, int]] = Field(default_factory=dict)
@@ -679,6 +843,7 @@ class LLMProviderPayload(BaseModel):
     key: str
     api_key: str = ""
     base_url: str = ""
+    model_id: str = ""
     enabled: bool = False
 
 
