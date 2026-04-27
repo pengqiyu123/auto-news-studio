@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import json
+import time
 import traceback
 from pathlib import Path
 import re
@@ -95,6 +98,9 @@ UNSUPPORTED_SOURCE_DRIVERS = {
     "legacy_youtube",
     "newsnow_pool",
 }
+SOURCE_TIMEOUT_SECONDS = 12
+SLOW_SOURCE_WARNING_SECONDS = 8
+RUN_STALE_SECONDS = 180
 
 
 def now_iso() -> str:
@@ -729,6 +735,12 @@ class StudioStore:
     def __init__(self, data_file: Path = DATA_FILE):
         self.data_file = data_file
         self._lock = RLock()
+        self._progress_snapshot: dict[str, Any] = {
+            "percent": 0, "done": 0, "total": 0,
+            "label": None, "cycle": "idle",
+            "cycle_started_at": None,
+        }
+        self._completion_hold_until: float = 0.0
         self.data_file.parent.mkdir(parents=True, exist_ok=True)
         if not self.data_file.exists():
             self._write(self._bootstrap_state())
@@ -850,6 +862,17 @@ class StudioStore:
                 "counters_date": local_now().date().isoformat(),
                 "last_error": None,
                 "last_successful_sync_at": None,
+                "automation_run": {
+                    "run_id": None,
+                    "status": "idle",
+                    "stage": "idle",
+                    "started_at": None,
+                    "heartbeat_at": None,
+                    "finished_at": None,
+                    "triggered_by": None,
+                    "error": None,
+                    "recovered_run_id": None,
+                },
             },
         }
         self._append_log(
@@ -991,9 +1014,27 @@ class StudioStore:
 
     def _write(self, payload: dict[str, Any]) -> None:
         with self._lock:
-            temp_file = self.data_file.with_suffix(".tmp")
-            temp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            temp_file.replace(self.data_file)
+            content = json.dumps(payload, ensure_ascii=False, indent=2)
+            temp_file = self.data_file.with_name(f"{self.data_file.stem}.{uuid4().hex}.tmp")
+            temp_file.write_text(content, encoding="utf-8")
+            last_error: Exception | None = None
+            for attempt in range(8):
+                try:
+                    temp_file.replace(self.data_file)
+                    last_error = None
+                    break
+                except PermissionError as exc:
+                    last_error = exc
+                    if attempt >= 7:
+                        break
+                    time.sleep(0.05 * (attempt + 1))
+            try:
+                if temp_file.exists():
+                    temp_file.unlink()
+            except OSError:
+                pass
+            if last_error:
+                raise last_error
 
     def _upgrade_state(self, state: dict[str, Any]) -> dict[str, Any]:
         self._prune_unsupported_sources(state)
@@ -1124,6 +1165,24 @@ class StudioStore:
         runtime.setdefault("counters_date", local_now().date().isoformat())
         runtime.setdefault("last_error", None)
         runtime.setdefault("last_successful_sync_at", None)
+        automation_run = runtime.setdefault("automation_run", {})
+        automation_run.setdefault("run_id", None)
+        automation_run.setdefault("status", "idle")
+        automation_run.setdefault("stage", "idle")
+        automation_run.setdefault("started_at", None)
+        automation_run.setdefault("heartbeat_at", None)
+        automation_run.setdefault("finished_at", None)
+        automation_run.setdefault("triggered_by", None)
+        automation_run.setdefault("error", None)
+        automation_run.setdefault("recovered_run_id", None)
+        for source in state.get("sources", []):
+            source.setdefault("last_attempt_at", None)
+            source.setdefault("last_success_at", None)
+            source.setdefault("last_failure_at", None)
+            source.setdefault("consecutive_failures", 0)
+            source.setdefault("last_duration_ms", None)
+            source.setdefault("avg_duration_ms", None)
+            source.setdefault("last_item_count", int(source.get("item_count", 0) or 0))
         self._purge_synthetic_state(state)
         for log in state.get("logs", []):
             log.setdefault("stream", "business_event")
@@ -1419,8 +1478,133 @@ class StudioStore:
         runtime.setdefault("counters_date", local_now().date().isoformat())
         runtime.setdefault("last_error", None)
         runtime.setdefault("last_successful_sync_at", None)
+        automation_run = runtime.setdefault("automation_run", {})
+        automation_run.setdefault("run_id", None)
+        automation_run.setdefault("status", "idle")
+        automation_run.setdefault("stage", "idle")
+        automation_run.setdefault("started_at", None)
+        automation_run.setdefault("heartbeat_at", None)
+        automation_run.setdefault("finished_at", None)
+        automation_run.setdefault("triggered_by", None)
+        automation_run.setdefault("error", None)
+        automation_run.setdefault("recovered_run_id", None)
         self._sync_runtime_counters(runtime)
         return runtime
+
+    def _runtime_run(self, runtime: dict[str, Any]) -> dict[str, Any]:
+        return runtime.setdefault(
+            "automation_run",
+            {
+                "run_id": None,
+                "status": "idle",
+                "stage": "idle",
+                "started_at": None,
+                "heartbeat_at": None,
+                "finished_at": None,
+                "triggered_by": None,
+                "error": None,
+                "recovered_run_id": None,
+            },
+        )
+
+    def _runtime_run_is_stale(self, run: dict[str, Any], now: datetime | None = None) -> bool:
+        if str(run.get("status") or "idle") != "running":
+            return False
+        now = now or datetime.now(UTC)
+        heartbeat = parse_time(run.get("heartbeat_at")) or parse_time(run.get("started_at"))
+        if not heartbeat:
+            return False
+        return (now - heartbeat).total_seconds() > RUN_STALE_SECONDS
+
+    def _start_runtime_run(self, runtime: dict[str, Any], *, stage: str, triggered_by: str, now: datetime | None = None) -> dict[str, Any]:
+        now = now or datetime.now(UTC)
+        stamp = now.replace(microsecond=0).isoformat()
+        run = self._runtime_run(runtime)
+        run.update(
+            {
+                "run_id": f"run-{uuid4().hex[:12]}",
+                "status": "running",
+                "stage": stage,
+                "started_at": stamp,
+                "heartbeat_at": stamp,
+                "finished_at": None,
+                "triggered_by": triggered_by,
+                "error": None,
+                "recovered_run_id": None,
+            }
+        )
+        return run
+
+    def _heartbeat_runtime_run(
+        self,
+        runtime: dict[str, Any],
+        *,
+        stage: str | None = None,
+        error: str | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        now = now or datetime.now(UTC)
+        stamp = now.replace(microsecond=0).isoformat()
+        run = self._runtime_run(runtime)
+        if stage:
+            run["stage"] = stage
+        run["heartbeat_at"] = stamp
+        if error is not None:
+            run["error"] = error
+        return run
+
+    def _finish_runtime_run(
+        self,
+        runtime: dict[str, Any],
+        *,
+        status: str,
+        stage: str,
+        error: str | None = None,
+        recovered_run_id: str | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        now = now or datetime.now(UTC)
+        stamp = now.replace(microsecond=0).isoformat()
+        run = self._runtime_run(runtime)
+        run["status"] = status
+        run["stage"] = stage
+        run["heartbeat_at"] = stamp
+        run["finished_at"] = stamp
+        run["error"] = error
+        run["recovered_run_id"] = recovered_run_id
+        return run
+
+    def _recover_stale_runtime_run(self, state: dict[str, Any], actor: str, now: datetime | None = None) -> str | None:
+        now = now or datetime.now(UTC)
+        runtime = self._runtime(state)
+        run = self._runtime_run(runtime)
+        if not self._runtime_run_is_stale(run, now):
+            return None
+        recovered_run_id = str(run.get("run_id") or "").strip() or None
+        self._finish_runtime_run(
+            runtime,
+            status="abandoned",
+            stage="abandoned",
+            error=f"超过 {RUN_STALE_SECONDS}s 未更新心跳，已标记为异常轮次。",
+            recovered_run_id=recovered_run_id,
+            now=now,
+        )
+        runtime["last_error"] = str(run.get("error") or f"轮次 {recovered_run_id or 'unknown'} 超时未完成，已标记异常。")
+        runtime["current_cycle"] = "failed"
+        runtime["current_cycle_progress_label"] = runtime["last_error"]
+        runtime["control_state"] = "waiting" if runtime.get("scheduler_running") else "stopped"
+        self._progress_snapshot["cycle"] = "failed"
+        self._progress_snapshot["label"] = runtime["last_error"]
+        self._append_log(
+            state,
+            "warning",
+            "runtime",
+            f"检测到异常轮次并已接管：{recovered_run_id or 'unknown'}",
+            stream="system_runtime",
+            actor=actor,
+            detail=runtime["last_error"],
+        )
+        return recovered_run_id
 
     def _calculate_next_collect_at(self, state: dict[str, Any], now: datetime | None = None, minimum_interval_minutes: int | None = None) -> str | None:
         runtime = self._runtime(state)
@@ -1463,9 +1647,91 @@ class StudioStore:
         runtime["current_cycle_progress_done"] = max(int(done), 0)
         runtime["current_cycle_progress_total"] = max(int(total), 0)
         runtime["current_cycle_progress_label"] = label
+        snapshot = self._progress_snapshot
+        snapshot["percent"] = runtime["current_cycle_progress_percent"]
+        snapshot["done"] = runtime["current_cycle_progress_done"]
+        snapshot["total"] = runtime["current_cycle_progress_total"]
+        snapshot["label"] = label
 
     def _reset_runtime_progress(self, runtime: dict[str, Any]) -> None:
         self._set_runtime_progress(runtime, percent=0, done=0, total=0, label=None)
+        self._progress_snapshot["cycle"] = "idle"
+
+    def _record_source_attempt(
+        self,
+        source: dict[str, Any],
+        *,
+        started_at: datetime,
+        completed_at: datetime,
+        items: list[dict[str, Any]],
+        warning_text: str | None = None,
+    ) -> None:
+        duration_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
+        attempt_stamp = started_at.replace(microsecond=0).isoformat()
+        completed_stamp = completed_at.replace(microsecond=0).isoformat()
+        count = len(items)
+        source["item_count"] = count
+        source["last_item_count"] = count
+        source["last_attempt_at"] = attempt_stamp
+        source["last_duration_ms"] = duration_ms
+        previous_avg = source.get("avg_duration_ms")
+        if isinstance(previous_avg, int):
+            source["avg_duration_ms"] = max(int(round((previous_avg * 0.7) + (duration_ms * 0.3))), 0)
+        else:
+            source["avg_duration_ms"] = duration_ms
+        if warning_text:
+            source["last_failure_at"] = completed_stamp
+            source["consecutive_failures"] = int(source.get("consecutive_failures", 0) or 0) + 1
+            if count:
+                source["health_status"] = "warning"
+            else:
+                source["health_status"] = "error" if int(source.get("consecutive_failures", 0) or 0) >= 2 else "warning"
+            source["health_detail"] = warning_text
+            source["last_error"] = warning_text
+        else:
+            source["last_success_at"] = completed_stamp
+            source["last_synced_at"] = completed_stamp
+            source["consecutive_failures"] = 0
+            source["last_error"] = None
+            if duration_ms >= SLOW_SOURCE_WARNING_SECONDS * 1000:
+                source["health_status"] = "warning"
+                source["health_detail"] = f"最近一次成功但耗时较长（{round(duration_ms / 1000, 1)}s），产生 {count} 条素材。"
+            else:
+                source["health_status"] = "healthy"
+                source["health_detail"] = f"最近一次同步产生 {count} 条素材。"
+
+    def _finalize_source_health(self, source: dict[str, Any], now: datetime | None = None) -> None:
+        now = now or datetime.now(UTC)
+        if not source.get("enabled"):
+            source["health_status"] = "idle"
+            source["health_detail"] = "已停用"
+            return
+        consecutive_failures = int(source.get("consecutive_failures", 0) or 0)
+        last_success = parse_time(source.get("last_success_at"))
+        last_duration_ms = int(source.get("last_duration_ms", 0) or 0)
+        if consecutive_failures >= 2:
+            source["health_status"] = "error"
+            if not source.get("health_detail"):
+                source["health_detail"] = "连续失败 2 次以上。"
+            return
+        if last_success:
+            success_age_hours = max((now - last_success).total_seconds() / 3600, 0.0)
+            if success_age_hours > 24:
+                source["health_status"] = "error"
+                source["health_detail"] = source.get("health_detail") or "最近 24 小时无成功同步。"
+                return
+            if success_age_hours > 6 or consecutive_failures == 1 or last_duration_ms >= SLOW_SOURCE_WARNING_SECONDS * 1000:
+                source["health_status"] = "warning"
+                if not source.get("health_detail"):
+                    source["health_detail"] = "最近同步偏慢或存在轻微异常。"
+                return
+            source["health_status"] = "healthy"
+            if not source.get("health_detail"):
+                source["health_detail"] = f"最近一次同步产生 {int(source.get('last_item_count', 0) or 0)} 条素材。"
+            return
+        if source.get("last_failure_at"):
+            source["health_status"] = "error" if consecutive_failures >= 2 else "warning"
+            source["health_detail"] = source.get("health_detail") or "尚未出现成功同步。"
 
     def _project_normalized_items_from_events(self, state: dict[str, Any]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
@@ -1562,6 +1828,7 @@ class StudioStore:
         intel = build_intel_state(
             state.get("raw_items", []),
             self._sources_by_key(state),
+            previous_discovery_items=state.get("discovery_items", []),
             previous_events=state.get("intel_events", []),
             previous_snapshots=state.get("event_snapshots", []),
             captured_at=stamp or now_iso(),
@@ -1596,8 +1863,8 @@ class StudioStore:
 
     def _sync_due_sources(self, state: dict[str, Any], triggered_by: str, minimum_interval_minutes: int | None = None) -> SourceSyncResponse:
         now = datetime.now(UTC)
-        sources_by_key = self._sources_by_key(state)
         runtime = self._runtime(state)
+        run = self._runtime_run(runtime)
         due_sources: list[dict[str, Any]] = []
         for source in state["sources"]:
             if not source.get("enabled"):
@@ -1624,49 +1891,62 @@ class StudioStore:
         warnings: list[str] = []
         stamp = now_iso()
         total_sources = len(due_sources)
-        self._set_runtime_progress(runtime, percent=8, done=0, total=total_sources, label=f"准备采集 {total_sources} 个来源")
-        self._write(state)
-        for index, source in enumerate(due_sources, start=1):
-            self._set_runtime_progress(
-                runtime,
-                percent=8 + round(index / max(total_sources, 1) * 62),
-                done=index - 1,
-                total=total_sources,
-                label=f"正在采集 {source['name']} ({index}/{total_sources})",
-            )
+        max_workers = max(1, min(int(state.get("settings", {}).get("max_workers", 8)), 20))
+        self._set_runtime_progress(runtime, percent=8, done=0, total=total_sources, label=f"正在并发采集 {total_sources} 个来源 ({max_workers} 线程)")
+        self._heartbeat_runtime_run(runtime, stage="collecting", now=now)
+        with self._lock:
             self._write(state)
+
+        def _collect_one(source: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], str | None, str | None, datetime, datetime]:
+            started_at = datetime.now(UTC)
             try:
                 items, warning = _collect_with_retry(source)
+                return source, items, warning, None, started_at, datetime.now(UTC)
+            except Exception as exc:
+                tb = traceback.format_exc()
+                return source, [], None, f"{source['name']}: 抓取器异常:\n{tb}", started_at, datetime.now(UTC)
+
+        source_map: dict[str, dict[str, Any]] = {src["key"]: src for src in due_sources}
+        futures = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for src in due_sources:
+                futures[pool.submit(_collect_one, src)] = src["key"]
+            completed = 0
+            for future in as_completed(futures):
+                src_key = futures[future]
+                source = source_map[src_key]
+                try:
+                    src_collected, items, warning, error, started_at, completed_at = future.result()
+                except Exception:
+                    items, warning, error = [], None, f"{source['name']}: 未知异常"
+                    started_at = datetime.now(UTC)
+                    completed_at = started_at
                 collected.extend(items)
                 if warning:
                     warnings.append(f"{source['name']}: {warning}")
-            except Exception as exc:  # pragma: no cover - defensive
-                tb = traceback.format_exc()
-                warnings.append(f"{source['name']}: 抓取器异常，已跳过: {exc}")
-                self._append_log(state, "error", "collection", f"{source['name']} 采集异常:\n{tb}", stream="system_runtime", actor=triggered_by)
-                items = []
-            count = len(items)
-            source["item_count"] = count
-            source["last_synced_at"] = stamp
-            warning_text = next((item for item in warnings if item.startswith(f"{source['name']}:")), None)
-            if warning_text and count:
-                source["health_status"] = "warning"
-                source["health_detail"] = warning_text
-            elif warning_text:
-                source["health_status"] = "error"
-                source["health_detail"] = warning_text
-            else:
-                source["health_status"] = "healthy"
-                source["health_detail"] = f"最近一次同步产生 {count} 条素材。"
-            source["last_error"] = warning_text
-            self._set_runtime_progress(
-                runtime,
-                percent=8 + round(index / max(total_sources, 1) * 62),
-                done=index,
-                total=total_sources,
-                label=f"已完成 {source['name']} ({index}/{total_sources})",
-            )
-            self._write(state)
+                if error:
+                    warnings.append(error)
+                    self._append_log(state, "error", "collection", error, stream="system_runtime", actor=triggered_by)
+                warning_text = warning or (error.split("\n")[0][:200] if error else None)
+                self._record_source_attempt(
+                    source,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    items=items,
+                    warning_text=warning_text,
+                )
+                self._finalize_source_health(source, now=completed_at)
+                completed += 1
+                self._set_runtime_progress(
+                    runtime,
+                    percent=8 + round(completed / max(total_sources, 1) * 62),
+                    done=completed,
+                    total=total_sources,
+                    label=f"已采集 {completed}/{total_sources} 个来源",
+                )
+                self._heartbeat_runtime_run(runtime, stage=f"collecting:{source['key']}", error=warning_text, now=completed_at)
+                with self._lock:
+                    self._write(state)
         merged = sorted(existing + collected, key=lambda item: parse_time(item.get("collected_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
         state["raw_items"] = merged[:MAX_RAW_ITEMS]
         candidates = self._rebuild_candidates_for_state(state)
@@ -1674,6 +1954,7 @@ class StudioStore:
         if collected:
             runtime["last_successful_sync_at"] = stamp
         self._set_runtime_progress(runtime, percent=72, done=total_sources, total=total_sources, label="采集完成，正在整理结果")
+        self._heartbeat_runtime_run(runtime, stage="collecting:complete", now=datetime.now(UTC))
         runtime["next_collect_at"] = self._calculate_next_collect_at(state, minimum_interval_minutes=self._collect_interval_for_profile(state))
         level = "success"
         message = f"自动同步 {len(due_sources)} 个来源，新增 {len(collected)} 条素材，候选池现有 {len(candidates)} 条。"
@@ -1712,21 +1993,18 @@ class StudioStore:
         for source in state["sources"]:
             count = sum(1 for item in raw_items if item["source_key"] == source["key"])
             warning_text = next((warning for warning in warnings if warning.startswith(f"{source['name']}:")), None)
-            source["item_count"] = count
-            source["last_synced_at"] = stamp if source["enabled"] else source.get("last_synced_at")
-            if not source["enabled"]:
-                source["health_status"] = "idle"
-                source["health_detail"] = "已停用"
-            elif warning_text and count:
-                source["health_status"] = "warning"
-                source["health_detail"] = warning_text
-            elif warning_text:
-                source["health_status"] = "error"
-                source["health_detail"] = warning_text
-            else:
-                source["health_status"] = "healthy"
-                source["health_detail"] = f"最近一次同步产生 {count} 条素材。"
-            source["last_error"] = warning_text
+            now = datetime.now(UTC)
+            items_for_source = [item for item in raw_items if item["source_key"] == source["key"]]
+            self._record_source_attempt(
+                source,
+                started_at=now,
+                completed_at=now,
+                items=items_for_source,
+                warning_text=warning_text if source.get("enabled") else None,
+            )
+            if source.get("enabled"):
+                source["last_synced_at"] = stamp
+            self._finalize_source_health(source, now=now)
 
         state["raw_items"] = raw_items
         candidates = self._rebuild_candidates_for_state(state)
@@ -1969,22 +2247,107 @@ class StudioStore:
             return self._runtime_plan_from_state(state)
 
     def get_runtime_status(self) -> SchedulerStatus:
+        snapshot = self._progress_snapshot
+        now_mono = time.monotonic()
+        in_completion_hold = now_mono < self._completion_hold_until
         with self._lock:
             state = self._upgrade_state(self._read())
+            recovered_run_id = self._recover_stale_runtime_run(state, actor="runtime_status")
             runtime = self._runtime(state)
-            runtime["launch_mode"] = self._runtime_plan(state).get("launch_mode", "interval_now")
-            runtime["next_collect_at"] = self._calculate_next_collect_at(state)
-            self._write(state)
-            return self._scheduler_status_from_state(state)
+            run = self._runtime_run(runtime)
+            plan_launch = self._runtime_plan(state).get("launch_mode", "interval_now")
+            next_at = self._calculate_next_collect_at(state)
+            running = runtime.get("control_state", "stopped") != "stopped"
+            control_state = str(runtime.get("control_state") or "stopped")
+            current_mode = state["automation_mode"]
+            work_scope = str(runtime.get("work_scope") or "collect_events_alerts")
+            last_collect_at = runtime.get("last_collect_at")
+            last_candidate_at = runtime.get("last_candidate_at")
+            last_draft_at = runtime.get("last_draft_at")
+            enabled_at = runtime.get("enabled_at")
+            scheduled_start_at = runtime.get("scheduled_start_at")
+            cycle_started_at = runtime.get("current_cycle_started_at")
+            last_cycle_started_at = runtime.get("last_cycle_started_at")
+            last_cycle_finished_at = runtime.get("last_cycle_finished_at")
+            last_cycle_duration_seconds = runtime.get("last_cycle_duration_seconds")
+            completed_cycles_today = int(runtime.get("completed_cycles_today", 0) or 0)
+            failed_cycles_today = int(runtime.get("failed_cycles_today", 0) or 0)
+            last_error = runtime.get("last_error")
+            if recovered_run_id:
+                self._write(state)
+        if in_completion_hold:
+            cycle = "completed"
+            percent = 100
+            done = snapshot.get("done", 1)
+            total = snapshot.get("total", 1)
+            label = snapshot.get("label") or "本轮已完成"
+        else:
+            cycle = str(snapshot.get("cycle") or runtime.get("current_cycle", "idle"))
+            percent = int(snapshot.get("percent", 0))
+            done = int(snapshot.get("done", 0))
+            total = int(snapshot.get("total", 0))
+            label = snapshot.get("label")
+        return SchedulerStatus(
+            running=running,
+            control_state=control_state,
+            launch_mode=plan_launch,
+            current_mode=current_mode,
+            work_scope=work_scope,
+            last_collect_at=last_collect_at,
+            last_candidate_at=last_candidate_at,
+            last_draft_at=last_draft_at,
+            next_collect_at=next_at,
+            current_cycle=cycle,
+            current_cycle_progress_percent=percent,
+            current_cycle_progress_done=done,
+            current_cycle_progress_total=total,
+            current_cycle_progress_label=label,
+            enabled_at=enabled_at,
+            scheduled_start_at=scheduled_start_at,
+            current_cycle_started_at=cycle_started_at,
+            last_cycle_started_at=last_cycle_started_at,
+            last_cycle_finished_at=last_cycle_finished_at,
+            last_cycle_duration_seconds=last_cycle_duration_seconds,
+            uptime_seconds=0,
+            completed_cycles_today=completed_cycles_today,
+            failed_cycles_today=failed_cycles_today,
+            last_error=last_error,
+            run_id=run.get("run_id"),
+            run_status=str(run.get("status") or "idle"),
+            run_stage=str(run.get("stage") or "idle"),
+            run_started_at=run.get("started_at"),
+            run_heartbeat_at=run.get("heartbeat_at"),
+            run_finished_at=run.get("finished_at"),
+            run_triggered_by=run.get("triggered_by"),
+            run_error=run.get("error"),
+            recovered_run_id=run.get("recovered_run_id"),
+            run_stale=self._runtime_run_is_stale(run),
+        )
 
     def _scheduler_status_from_state(self, state: dict[str, Any]) -> SchedulerStatus:
         runtime = self._runtime(state)
+        run = self._runtime_run(runtime)
+        snapshot = self._progress_snapshot
+        now_mono = time.monotonic()
+        in_completion_hold = now_mono < self._completion_hold_until
         control_state = str(runtime.get("control_state") or "stopped")
         enabled_at = runtime.get("enabled_at")
         enabled_dt = parse_time(enabled_at)
         uptime_seconds = 0
         if control_state != "stopped" and enabled_dt:
             uptime_seconds = max(int((datetime.now(UTC) - enabled_dt).total_seconds()), 0)
+        if in_completion_hold:
+            current_cycle = "completed"
+            progress_percent = 100
+            progress_done = int(snapshot.get("done", 1))
+            progress_total = int(snapshot.get("total", 1))
+            progress_label = snapshot.get("label") or "本轮已完成"
+        else:
+            current_cycle = str(snapshot.get("cycle") or runtime.get("current_cycle", "idle"))
+            progress_percent = int(snapshot.get("percent", runtime.get("current_cycle_progress_percent", 0)) or 0)
+            progress_done = int(snapshot.get("done", runtime.get("current_cycle_progress_done", 0)) or 0)
+            progress_total = int(snapshot.get("total", runtime.get("current_cycle_progress_total", 0)) or 0)
+            progress_label = snapshot.get("label") or runtime.get("current_cycle_progress_label")
         return SchedulerStatus(
             running=control_state != "stopped",
             control_state=control_state,
@@ -1995,11 +2358,11 @@ class StudioStore:
             last_candidate_at=runtime.get("last_candidate_at"),
             last_draft_at=runtime.get("last_draft_at"),
             next_collect_at=runtime.get("next_collect_at"),
-            current_cycle=str(runtime.get("current_cycle", "idle")),
-            current_cycle_progress_percent=int(runtime.get("current_cycle_progress_percent", 0) or 0),
-            current_cycle_progress_done=int(runtime.get("current_cycle_progress_done", 0) or 0),
-            current_cycle_progress_total=int(runtime.get("current_cycle_progress_total", 0) or 0),
-            current_cycle_progress_label=runtime.get("current_cycle_progress_label"),
+            current_cycle=current_cycle,
+            current_cycle_progress_percent=progress_percent,
+            current_cycle_progress_done=progress_done,
+            current_cycle_progress_total=progress_total,
+            current_cycle_progress_label=progress_label,
             enabled_at=runtime.get("enabled_at"),
             scheduled_start_at=runtime.get("scheduled_start_at"),
             current_cycle_started_at=runtime.get("current_cycle_started_at"),
@@ -2010,6 +2373,16 @@ class StudioStore:
             completed_cycles_today=int(runtime.get("completed_cycles_today", 0) or 0),
             failed_cycles_today=int(runtime.get("failed_cycles_today", 0) or 0),
             last_error=runtime.get("last_error"),
+            run_id=run.get("run_id"),
+            run_status=str(run.get("status") or "idle"),
+            run_stage=str(run.get("stage") or "idle"),
+            run_started_at=run.get("started_at"),
+            run_heartbeat_at=run.get("heartbeat_at"),
+            run_finished_at=run.get("finished_at"),
+            run_triggered_by=run.get("triggered_by"),
+            run_error=run.get("error"),
+            recovered_run_id=run.get("recovered_run_id"),
+            run_stale=self._runtime_run_is_stale(run),
         )
 
     def set_scheduler_running(self, running: bool) -> None:
@@ -2035,6 +2408,7 @@ class StudioStore:
         with self._lock:
             state = self._upgrade_state(self._read())
             runtime = self._runtime(state)
+            self._finish_runtime_run(runtime, status="idle", stage="idle", error=None, recovered_run_id=None)
             runtime["scheduler_running"] = False
             runtime["control_state"] = "stopped"
             runtime["current_cycle"] = "idle"
@@ -2062,8 +2436,17 @@ class StudioStore:
         with self._lock:
             state = self._upgrade_state(self._read())
             runtime = self._runtime(state)
-            plan = self._runtime_plan(state)
             now = datetime.now(UTC)
+            self._recover_stale_runtime_run(state, actor=actor, now=now)
+            run = self._runtime_run(runtime)
+            startup_inflight = (
+                str(run.get("status") or "idle") == "running"
+                and str(run.get("stage") or "idle") == "starting"
+                and str(runtime.get("current_cycle") or "idle") == "starting"
+            )
+            if str(run.get("status") or "idle") == "running" and not self._runtime_run_is_stale(run, now) and not startup_inflight:
+                return self._scheduler_status_from_state(state)
+            plan = self._runtime_plan(state)
             runtime["scheduler_running"] = True
             runtime["current_mode"] = state["automation_mode"]
             runtime["launch_mode"] = plan["launch_mode"]
@@ -2088,8 +2471,11 @@ class StudioStore:
             runtime["current_cycle"] = "starting" if immediate_launch else "idle"
             if immediate_launch:
                 self._set_runtime_progress(runtime, percent=2, done=0, total=0, label="正在启动工作轮次")
+                self._progress_snapshot["cycle"] = "starting"
+                self._finish_runtime_run(runtime, status="idle", stage="starting", error=None, recovered_run_id=None, now=now)
             else:
                 self._reset_runtime_progress(runtime)
+                self._finish_runtime_run(runtime, status="idle", stage="idle", error=None, recovered_run_id=None, now=now)
             runtime["current_cycle_started_at"] = now.replace(microsecond=0).isoformat() if immediate_launch else None
             runtime["next_collect_at"] = now.replace(microsecond=0).isoformat() if immediate_launch else self._calculate_next_collect_at(state)
             self._append_log(state, "info", "runtime", "后台自动调度器已启动。", stream="system_runtime", actor=actor)
@@ -2111,6 +2497,7 @@ class StudioStore:
                 self._reset_runtime_progress(runtime)
                 runtime["current_cycle_started_at"] = None
                 runtime["enabled_at"] = None
+                self._finish_runtime_run(runtime, status="idle", stage="idle", error=None, recovered_run_id=None)
             runtime["scheduled_start_at"] = None
             runtime["next_collect_at"] = None if runtime.get("control_state") != "running" else runtime.get("next_collect_at")
             self._append_log(state, "warning", "runtime", "后台自动调度器已暂停。", stream="system_runtime", actor=actor)
@@ -2120,14 +2507,28 @@ class StudioStore:
 
     def _run_automation_cycle_locked(self, state: dict[str, Any], triggered_by: str, force: bool = False) -> dict[str, Any]:
         runtime = self._runtime(state)
+        run = self._runtime_run(runtime)
+        now = datetime.now(UTC)
+        recovered_run_id = self._recover_stale_runtime_run(state, actor=triggered_by, now=now)
+        run = self._runtime_run(runtime)
         current_cycle = str(runtime.get("current_cycle", "idle"))
-        if not force and current_cycle not in ("idle",):
-            self._write(state)
+        startup_inflight = (
+            force
+            and str(run.get("status") or "idle") == "running"
+            and str(run.get("stage") or "idle") == "starting"
+            and current_cycle == "starting"
+        )
+        if str(run.get("status") or "idle") == "running" and not self._runtime_run_is_stale(run, now) and not startup_inflight:
+            with self._lock:
+                self._write(state)
+            return {"status": "busy", "current_cycle": current_cycle, "run_id": run.get("run_id")}
+        if not force and current_cycle not in ("idle", "failed"):
+            with self._lock:
+                self._write(state)
             return {"status": "busy", "current_cycle": current_cycle}
         plan = self._runtime_plan(state)
         mode = self._current_automation_mode_def(state)
         profile = self._current_automation_profile(state)
-        now = datetime.now(UTC)
         control_state = str(runtime.get("control_state") or "stopped")
 
         if not force:
@@ -2136,24 +2537,28 @@ class StudioStore:
                 runtime["current_cycle"] = "idle"
                 self._reset_runtime_progress(runtime)
                 runtime["next_collect_at"] = None
-                self._write(state)
+                with self._lock:
+                    self._write(state)
                 return {"status": "stopped"}
             if control_state == "armed":
                 scheduled_at = parse_time(runtime.get("scheduled_start_at"))
                 if scheduled_at and now < scheduled_at:
                     runtime["next_collect_at"] = runtime.get("scheduled_start_at")
-                    self._write(state)
+                    with self._lock:
+                        self._write(state)
                     return {"status": "armed"}
                 runtime["control_state"] = "waiting"
             elif control_state == "stopped":
                 runtime["next_collect_at"] = None
                 self._reset_runtime_progress(runtime)
-                self._write(state)
+                with self._lock:
+                    self._write(state)
                 return {"status": "stopped"}
             elif control_state == "waiting":
                 next_due = parse_time(runtime.get("next_collect_at"))
                 if next_due and now < next_due:
-                    self._write(state)
+                    with self._lock:
+                        self._write(state)
                     return {"status": "waiting"}
 
         runtime["control_state"] = "running"
@@ -2162,20 +2567,31 @@ class StudioStore:
         runtime["current_cycle_started_at"] = now.replace(microsecond=0).isoformat()
         runtime["last_cycle_started_at"] = runtime["current_cycle_started_at"]
         self._set_runtime_progress(runtime, percent=5, done=0, total=0, label="正在准备采集来源")
+        self._progress_snapshot["cycle"] = "collecting"
+        self._start_runtime_run(runtime, stage="collecting", triggered_by=triggered_by, now=now)
+        if recovered_run_id:
+            self._runtime_run(runtime)["recovered_run_id"] = recovered_run_id
         runtime["launch_mode"] = str(runtime.get("launch_mode") or plan.get("launch_mode") or "interval_now")
         runtime["last_error"] = None
         self._sync_runtime_counters(runtime)
         self._append_log(state, "info", "runtime", f"轮次启动：launch_mode={runtime['launch_mode']}, work_scope={runtime['work_scope']}, force={force}", stream="system_runtime", actor=triggered_by)
+        with self._lock:
+            self._write(state)
 
         start = datetime.now(UTC)
         try:
             self._append_log(state, "info", "runtime", "阶段 1/4：开始采集到期来源...", stream="system_runtime", actor=triggered_by)
+            self._heartbeat_runtime_run(runtime, stage="collecting", now=start)
+            with self._lock:
+                self._write(state)
             sync_response = self._sync_due_sources(
                 state,
                 triggered_by="scheduler",
                 minimum_interval_minutes=None,
             )
             self._append_log(state, "info", "runtime", f"阶段 1/4 完成：采集 {sync_response.raw_count} 条素材", stream="system_runtime", actor=triggered_by)
+            with self._lock:
+                self._write(state)
             drafted_count = 0
             synced_to_wechat = 0
             if mode.get("auto_generate_drafts"):
@@ -2188,6 +2604,10 @@ class StudioStore:
                     self._append_log(state, "info", "runtime", "阶段 2/4：开始生成稿件...", stream="system_runtime", actor=triggered_by)
                     runtime["current_cycle"] = "drafting"
                     self._set_runtime_progress(runtime, percent=80, done=0, total=0, label="正在生成事件稿件")
+                    self._progress_snapshot["cycle"] = "drafting"
+                    self._heartbeat_runtime_run(runtime, stage="drafting")
+                    with self._lock:
+                        self._write(state)
                     drafted = self._build_digest_internal(
                         state,
                         triggered_by="scheduler",
@@ -2200,6 +2620,10 @@ class StudioStore:
                         self._append_log(state, "info", "runtime", f"阶段 3/4：开始同步 {len(drafted)} 篇到微信...", stream="system_runtime", actor=triggered_by)
                         runtime["current_cycle"] = "wechat_sync"
                         self._set_runtime_progress(runtime, percent=90, done=0, total=max(len(drafted), 1), label="正在同步到微信草稿箱")
+                        self._progress_snapshot["cycle"] = "wechat_sync"
+                        self._heartbeat_runtime_run(runtime, stage="wechat_sync")
+                        with self._lock:
+                            self._write(state)
                         for draft in drafted:
                             self._sync_wechat_draft_internal(state, draft, "scheduler")
                             synced_to_wechat += 1
@@ -2220,6 +2644,8 @@ class StudioStore:
             runtime["last_cycle_duration_seconds"] = duration
             runtime["current_cycle_started_at"] = None
             self._set_runtime_progress(runtime, percent=100, done=1, total=1, label="本轮已完成")
+            self._finish_runtime_run(runtime, status="completed", stage="done", error=None, now=finish)
+            self._completion_hold_until = time.monotonic() + 5
             runtime["completed_cycles_today"] = int(runtime.get("completed_cycles_today", 0) or 0) + 1
             launch_mode = str(runtime.get("launch_mode") or plan.get("launch_mode") or "interval_now")
             if not runtime.get("scheduler_running") or launch_mode in {"once_now", "once_at"}:
@@ -2242,7 +2668,8 @@ class StudioStore:
                 f"自动轮次完成：素材 {sync_response.raw_count}，候选 {sync_response.candidate_count}，新增初稿 {drafted_count}，同步微信 {synced_to_wechat}，耗时 {duration}s。",
                 triggered_by="scheduler",
             )
-            self._write(state)
+            with self._lock:
+                self._write(state)
             return {
                 "raw_count": sync_response.raw_count,
                 "candidate_count": sync_response.candidate_count,
@@ -2258,8 +2685,13 @@ class StudioStore:
             runtime["last_cycle_duration_seconds"] = duration
             runtime["current_cycle_started_at"] = None
             runtime["current_cycle_progress_label"] = f"本轮失败：{exc}"
+            self._progress_snapshot["label"] = f"本轮失败：{exc}"
+            self._progress_snapshot["cycle"] = "failed"
+            self._completion_hold_until = 0
             runtime["failed_cycles_today"] = int(runtime.get("failed_cycles_today", 0) or 0) + 1
             runtime["last_error"] = str(exc)
+            runtime["current_cycle"] = "failed"
+            self._finish_runtime_run(runtime, status="failed", stage="failed", error=str(exc), now=finish)
             if not runtime.get("scheduler_running") or str(runtime.get("launch_mode") or plan.get("launch_mode")) in {"once_now", "once_at"}:
                 runtime["scheduler_running"] = False
                 runtime["control_state"] = "stopped"
@@ -2269,9 +2701,24 @@ class StudioStore:
             else:
                 runtime["control_state"] = "waiting"
                 runtime["next_collect_at"] = self._calculate_runtime_next_collect_at(state, finish)
-            runtime["current_cycle"] = "idle"
-            self._append_log(state, "error", "runtime", f"自动轮次失败：{exc}\n{tb}", stream="system_runtime")
-            self._write(state)
+            self._append_job(
+                state,
+                "collect_news",
+                f"自动轮次失败：{exc}",
+                status="failed",
+                triggered_by="scheduler",
+            )
+            self._append_log(
+                state,
+                "error",
+                "runtime",
+                f"自动轮次失败：{exc}",
+                stream="system_runtime",
+                actor=triggered_by,
+                detail=tb,
+            )
+            with self._lock:
+                self._write(state)
             raise
 
     def run_automation_cycle(self) -> dict[str, Any]:
@@ -2282,18 +2729,36 @@ class StudioStore:
     def _launch_runtime_cycle_async(self, triggered_by: str, force: bool = False) -> None:
         def runner() -> None:
             try:
+                # Acquire lock only to read initial state, then release
                 with self._lock:
                     state = self._upgrade_state(self._read())
-                    self._run_automation_cycle_locked(state, triggered_by=triggered_by, force=force)
+                # Run the cycle without holding the lock during I/O
+                self._run_automation_cycle_locked(state, triggered_by=triggered_by, force=force)
             except Exception as exc:
-                # _run_automation_cycle_locked already writes runtime/log state on failure,
-                # but write the full traceback so the user can see exactly what failed.
                 tb = traceback.format_exc()
                 try:
                     with self._lock:
                         state = self._upgrade_state(self._read())
-                        self._append_log(state, "error", "runtime", f"轮次异常（完整堆栈）：\n{tb}", stream="system_runtime", actor=triggered_by)
+                        self._append_job(
+                            state,
+                            "collect_news",
+                            f"后台线程异常退出：{exc}",
+                            status="failed",
+                            triggered_by=triggered_by,
+                        )
+                        self._append_log(
+                            state,
+                            "error",
+                            "runtime",
+                            f"后台线程异常退出：{exc}",
+                            stream="system_runtime",
+                            actor=triggered_by,
+                            detail=tb,
+                        )
                         self._write(state)
+                        self._progress_snapshot["label"] = f"本轮失败：{exc}"
+                        self._progress_snapshot["cycle"] = "idle"
+                        self._completion_hold_until = 0
                 except Exception:
                     pass
                 return
@@ -3294,28 +3759,49 @@ class StudioStore:
         raise ValueError(f"未找到事件：{event_id}")
 
     def get_intel_summary(self) -> IntelOverviewSummary:
-        state = self._upgrade_state(self._read())
-        runtime = self._runtime(state)
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            recovered_run_id = self._recover_stale_runtime_run(state, actor="intel_summary")
+            runtime = self._runtime(state)
+            if recovered_run_id:
+                self._write(state)
+
         alerts = [IntelAlert(**item) for item in state.get("intel_alerts", [])]
         events = [IntelEvent(**item) for item in state.get("intel_events", [])]
-        healthy_sources = len([item for item in state["sources"] if item.get("enabled") and item.get("health_status") == "healthy"])
-        total_sources = len([item for item in state["sources"] if item.get("enabled")])
+        discovery_items = state.get("discovery_items", [])
+        enabled_sources = [item for item in state["sources"] if item.get("enabled")]
+        healthy_sources = len([item for item in enabled_sources if item.get("health_status") == "healthy"])
+        warning_sources = len([item for item in enabled_sources if item.get("health_status") == "warning"])
+        error_sources = len([item for item in enabled_sources if item.get("health_status") == "error"])
         source_alerts = [
             f"{item['name']}：{item['health_detail']}"
-            for item in state["sources"]
-            if item.get("enabled") and item.get("health_status") in {"warning", "error"}
+            for item in enabled_sources
+            if item.get("health_status") in {"warning", "error"}
         ]
         if not source_alerts:
             source_alerts = ["暂无来源异常，信息获取链路正常。"]
+
+        item_state_counts = Counter(str(item.get("item_state") or "new_item") for item in discovery_items)
+        event_state_counts = Counter(str(item.get("change_state") or "new_event") for item in state.get("intel_events", []))
+
         return IntelOverviewSummary(
             alert_count=len(alerts),
             breakout_count=len([item for item in alerts if item.level == "breakout"]),
             rising_count=len([item for item in alerts if item.level == "rising"]),
             watch_count=len([item for item in alerts if item.level == "watch"]),
             event_count=len(events),
-            discovery_count=len(state.get("discovery_items", [])),
+            discovery_count=len(discovery_items),
+            new_items_count=int(item_state_counts.get("new_item", 0)),
+            seen_items_count=int(item_state_counts.get("seen_item", 0)),
+            updated_items_count=int(item_state_counts.get("updated_item", 0)),
+            new_events_count=int(event_state_counts.get("new_event", 0)),
+            growing_events_count=int(event_state_counts.get("growing_event", 0)),
+            stable_events_count=int(event_state_counts.get("stable_event", 0)),
+            cooling_events_count=int(event_state_counts.get("cooling_event", 0)),
+            warning_sources=warning_sources,
+            error_sources=error_sources,
             healthy_sources=healthy_sources,
-            total_sources=total_sources,
+            total_sources=len(enabled_sources),
             last_sync_at=runtime.get("last_successful_sync_at") or runtime.get("last_collect_at"),
             next_run_at=self._calculate_next_collect_at(state),
             running=runtime.get("control_state") != "stopped",
@@ -3327,7 +3813,7 @@ class StudioStore:
 
     def list_discovery_items(self) -> list[DiscoveryItem]:
         state = self._upgrade_state(self._read())
-        return [DiscoveryItem(**item) for item in state.get("discovery_items", [])[:120]]
+        return [DiscoveryItem(**item) for item in state.get("discovery_items", [])]
 
     def list_intel_events(self) -> list[IntelEvent]:
         state = self._upgrade_state(self._read())
@@ -3440,6 +3926,8 @@ class StudioStore:
 
     def get_dashboard(self) -> DashboardResponse:
         state = self._upgrade_state(self._read())
+        recovered_run_id = self._recover_stale_runtime_run(state, actor="dashboard")
+        previous_browser = deepcopy(state.get("browser", {}).get("wechat", {}))
         browser = self._refresh_browser_session(state)
         backends = self._publish_backends(state)
         runtime = self._runtime(state)
@@ -3469,7 +3957,8 @@ class StudioStore:
             "last_job_at": (state["jobs"][0]["finished_at"] if state["jobs"] else None),
         }
         state["browser"]["wechat"] = browser
-        self._write(state)
+        if recovered_run_id or browser != previous_browser:
+            self._write(state)
         return DashboardResponse(
             stats=DashboardStats(**stats),
             top_bar=top_bar,

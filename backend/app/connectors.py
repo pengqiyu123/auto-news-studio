@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html import unescape
+from http.client import IncompleteRead
 import json
+import os
 import re
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -17,6 +19,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 UTC = timezone.utc
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AutoNewsStudio/1.0"
+SOURCE_TIMEOUT_SECONDS = 12
 
 
 def now_utc() -> datetime:
@@ -41,15 +44,62 @@ def _is_http_url(value: str | None) -> bool:
     return compact.startswith("https://") or compact.startswith("http://")
 
 
-def _fetch_text(url: str, timeout: int = 12) -> str:
+def _fetch_text(url: str, timeout: int = SOURCE_TIMEOUT_SECONDS) -> str:
     request = Request(url, headers={"User-Agent": USER_AGENT})
     with urlopen(request, timeout=timeout) as response:  # noqa: S310 - controlled URLs from config
         charset = response.headers.get_content_charset() or "utf-8"
-        return response.read().decode(charset, errors="ignore")
+        try:
+            return response.read().decode(charset, errors="ignore")
+        except IncompleteRead as exc:
+            return exc.partial.decode(charset, errors="ignore")
 
 
-def _fetch_json(url: str, timeout: int = 12) -> dict[str, Any]:
+def _fetch_json(url: str, timeout: int = SOURCE_TIMEOUT_SECONDS) -> dict[str, Any]:
     return json.loads(_fetch_text(url, timeout=timeout))
+
+
+def _parse_compact_number(value: str | None) -> int:
+    compact = str(value or "").strip().lower().replace(",", "")
+    if not compact:
+        return 0
+    multiplier = 1
+    if compact.endswith("k"):
+        multiplier = 1000
+        compact = compact[:-1]
+    elif compact.endswith("m"):
+        multiplier = 1000_000
+        compact = compact[:-1]
+    try:
+        return int(float(compact) * multiplier)
+    except ValueError:
+        return 0
+
+
+def _fetch_github_repo_metrics(repo_full_name: str, token: str | None = None) -> dict[str, int]:
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"}
+    auth_token = str(token or os.getenv("GITHUB_TOKEN") or "").strip()
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    request = Request(f"https://api.github.com/repos/{repo_full_name}", headers=headers)
+    with urlopen(request, timeout=SOURCE_TIMEOUT_SECONDS) as response:  # noqa: S310 - controlled GitHub API URL
+        payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+    return {
+        "stars_total": int(payload.get("stargazers_count", 0) or 0),
+        "forks_total": int(payload.get("forks_count", 0) or 0),
+        "watchers_total": int(payload.get("subscribers_count", payload.get("watchers_count", 0)) or 0),
+        "open_issues": int(payload.get("open_issues_count", 0) or 0),
+    }
+
+
+def _github_heat_score(stars_total: int, forks_total: int, watchers_total: int, stars_today: int) -> int:
+    return int(
+        round(
+            stars_today * 25
+            + min(stars_total, 50_000) * 0.04
+            + min(forks_total, 10_000) * 0.3
+            + min(watchers_total, 5_000) * 0.2
+        )
+    )
 
 
 def _parse_rss_source(source: dict[str, Any], limit: int = 8) -> tuple[list[dict[str, Any]], str | None]:
@@ -58,7 +108,8 @@ def _parse_rss_source(source: dict[str, Any], limit: int = 8) -> tuple[list[dict
     if feedparser is None:
         return _warning_only("feedparser 不可用，未写入素材。")
     try:
-        feed = feedparser.parse(source["url"])
+        feed_text = _fetch_text(str(source["url"]), timeout=SOURCE_TIMEOUT_SECONDS)
+        feed = feedparser.parse(feed_text.encode("utf-8", errors="ignore"))
         entries = getattr(feed, "entries", [])[:limit]
         if not entries:
             return _warning_only("RSS 源没有返回条目，未写入素材。")
@@ -92,6 +143,10 @@ def _parse_rss_source(source: dict[str, Any], limit: int = 8) -> tuple[list[dict
                     "metadata": {"collector": "feedparser"},
                 }
             )
+            metadata = items[-1]["metadata"]
+            entry_id = getattr(entry, "id", None) or getattr(entry, "guid", None) or link
+            if entry_id:
+                metadata["source_native_id"] = str(entry_id)
         if not items:
             return _warning_only("RSS 条目不完整或缺少链接/时间，未写入素材。")
         return items, None
@@ -136,6 +191,7 @@ def _collect_reddit(source: dict[str, Any]) -> tuple[list[dict[str, Any]], str |
                     "metadata": {"collector": "reddit_json", "subreddit": subreddit},
                 }
             )
+            items[-1]["metadata"]["source_native_id"] = str(data.get("id") or permalink)
         if not items:
             return _warning_only("Reddit 返回了数据，但缺少可用标题或链接，未写入素材。")
         return items, None
@@ -179,6 +235,7 @@ def _collect_hackernews(source: dict[str, Any]) -> tuple[list[dict[str, Any]], s
                     "metadata": {"collector": "hn_algolia"},
                 }
             )
+            items[-1]["metadata"]["source_native_id"] = str(hit.get("objectID") or link)
         if not items:
             return _warning_only("Hacker News 返回了数据，但缺少可用标题、链接或时间，未写入素材。")
         return items, None
@@ -195,9 +252,31 @@ def _collect_github_trending(source: dict[str, Any]) -> tuple[list[dict[str, Any
             repo_match = re.search(r'href="(/[^"]+/[^"]+)"', article)
             if not repo_match:
                 continue
-            title = re.sub(r"\s+", "", repo_match.group(1).strip("/"))
+            repo_full_name = repo_match.group(1).strip("/")
+            title = re.sub(r"\s+", "", repo_full_name)
             desc_match = re.search(r"<p[^>]*>([\s\S]*?)</p>", article)
-            stars_match = re.search(r'href="[^"]+/stargazers"[^>]*>\s*([\d,]+)\s*</a>', article)
+            stars_match = re.search(r'href="[^"]+/stargazers"[^>]*>([\s\S]*?)</a>', article)
+            forks_match = re.search(r'href="[^"]+/forks"[^>]*>([\s\S]*?)</a>', article)
+            article_text = _clean_html(article)
+            stars_today_match = re.search(r"([\d.,]+[kKmM]?)\s+stars?\s+today", article_text, re.IGNORECASE)
+
+            stars_total = _parse_compact_number(_clean_html(stars_match.group(1)) if stars_match else "")
+            forks_total = _parse_compact_number(_clean_html(forks_match.group(1)) if forks_match else "")
+            stars_today = _parse_compact_number(stars_today_match.group(1) if stars_today_match else "")
+            watchers_total = 0
+            open_issues = 0
+
+            if stars_total == 0 or forks_total == 0:
+                try:
+                    metrics = _fetch_github_repo_metrics(repo_full_name, token=source.get("auth", {}).get("github_token"))
+                    stars_total = max(stars_total, metrics.get("stars_total", 0))
+                    forks_total = max(forks_total, metrics.get("forks_total", 0))
+                    watchers_total = metrics.get("watchers_total", 0)
+                    open_issues = metrics.get("open_issues", 0)
+                except Exception:
+                    pass
+
+            github_heat = _github_heat_score(stars_total, forks_total, watchers_total, stars_today)
             items.append(
                 {
                     "id": f"raw-{uuid4().hex[:10]}",
@@ -205,7 +284,7 @@ def _collect_github_trending(source: dict[str, Any]) -> tuple[list[dict[str, Any
                     "source_name": source["name"],
                     "source_kind": source["kind"],
                     "title": title,
-                    "link": f"https://github.com{repo_match.group(1)}",
+                    "link": f"https://github.com/{repo_full_name}",
                     "published_at": now_iso(),
                     "collected_at": now_iso(),
                     "summary": _clean_html(desc_match.group(1) if desc_match else "GitHub Trending 项目"),
@@ -213,10 +292,21 @@ def _collect_github_trending(source: dict[str, Any]) -> tuple[list[dict[str, Any
                     "author": "github",
                     "tags": source.get("tags", []),
                     "engagement": {
-                        "score": int((stars_match.group(1) if stars_match else "0").replace(",", "") or 0),
+                        "score": github_heat,
                         "comments": 0,
                     },
-                    "metadata": {"collector": "github_trending_html", "published_at_inferred": True},
+                    "metadata": {
+                        "collector": "github_trending_html",
+                        "published_at_inferred": True,
+                        "source_native_id": repo_full_name,
+                        "github_repo": repo_full_name,
+                        "github_stars_total": stars_total,
+                        "github_forks_total": forks_total,
+                        "github_watchers_total": watchers_total,
+                        "github_open_issues": open_issues,
+                        "github_stars_today": stars_today,
+                        "github_heat_score": github_heat,
+                    },
                 }
             )
         if not items:
@@ -260,6 +350,7 @@ def _collect_vvhan_hotlist(source: dict[str, Any]) -> tuple[list[dict[str, Any]]
                         "metadata": {"collector": "vvhan_hotlist", "category": category, "published_at_inferred": True},
                     }
                 )
+                items[-1]["metadata"]["source_native_id"] = str(entry.get("id") or f"{category}:{url}")
         if not items:
             return _warning_only("VVhan 热榜返回为空或缺少可用链接，未写入素材。")
         items.sort(key=lambda x: x["engagement"]["score"], reverse=True)

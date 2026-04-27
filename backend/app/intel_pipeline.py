@@ -127,7 +127,59 @@ def _theme_tags(item: dict[str, Any], source: dict[str, Any] | None) -> set[str]
     return tags
 
 
-def build_discovery_items(raw_items: list[dict[str, Any]], sources_by_key: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _source_native_id(raw: dict[str, Any]) -> str | None:
+    metadata = raw.get("metadata", {}) if isinstance(raw.get("metadata"), dict) else {}
+    for key in ("source_native_id", "upstream_id", "item_id", "object_id", "post_id"):
+        value = metadata.get(key) or raw.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _discovery_identity_keys(item: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    canonical = str(item.get("canonical_link") or "").strip()
+    if canonical:
+        keys.append(f"canonical:{canonical}")
+    source_key = str(item.get("source_key") or "").strip()
+    source_native_id = str(item.get("source_native_id") or "").strip()
+    if source_key and source_native_id:
+        keys.append(f"native:{source_key}:{source_native_id}")
+    dedupe_key = str(item.get("dedupe_key") or "").strip()
+    published_at = str(item.get("published_at") or "").strip()
+    if source_key and dedupe_key and published_at:
+        keys.append(f"published:{source_key}:{dedupe_key}:{published_at}")
+    return keys
+
+
+def _discovery_fingerprint(item: dict[str, Any]) -> str:
+    summary = normalize_title(str(item.get("summary") or ""))
+    content = normalize_title(str(item.get("content") or ""))
+    engagement = round(float(item.get("engagement_score", 0) or 0), 2)
+    return "|".join(
+        [
+            normalize_title(str(item.get("title") or "")),
+            summary[:200],
+            content[:400],
+            str(engagement),
+        ]
+    )
+
+
+def _index_previous_discovery_items(previous_discovery_items: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+    for item in previous_discovery_items or []:
+        for key in _discovery_identity_keys(item):
+            index.setdefault(key, item)
+    return index
+
+
+def build_discovery_items(
+    raw_items: list[dict[str, Any]],
+    sources_by_key: dict[str, dict[str, Any]],
+    previous_discovery_items: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    previous_index = _index_previous_discovery_items(previous_discovery_items)
     discovery: list[dict[str, Any]] = []
     for raw in raw_items:
         source = sources_by_key.get(raw.get("source_key"))
@@ -150,15 +202,21 @@ def build_discovery_items(raw_items: list[dict[str, Any]], sources_by_key: dict[
                 "link": str(raw.get("link") or "").strip(),
                 "canonical_link": canonical,
                 "dedupe_key": build_dedupe_key(title, canonical),
+                "source_native_id": _source_native_id(raw),
                 "title_tokens": sorted(tokenize_title(title)),
                 "anchor_tokens": sorted(extract_anchor_tokens(title, tags)),
                 "published_at": published_at,
                 "collected_at": collected_at,
                 "tags": tags,
                 "engagement_score": float(raw.get("engagement", {}).get("score", 0) or 0),
+                "item_state": "new_item",
                 "metadata": raw.get("metadata", {}),
             }
         )
+        current = discovery[-1]
+        previous = next((previous_index[key] for key in _discovery_identity_keys(current) if key in previous_index), None)
+        if previous:
+            current["item_state"] = "updated_item" if _discovery_fingerprint(previous) != _discovery_fingerprint(current) else "seen_item"
     discovery.sort(key=lambda item: parse_time(item.get("collected_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
     return discovery
 
@@ -187,10 +245,14 @@ def _should_merge(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return anchor_overlap and within_day and same_theme
 
 
-def cluster_discovery_items(discovery_items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+def cluster_discovery_items(
+    discovery_items: list[dict[str, Any]],
+    reference_time: datetime | None = None,
+) -> list[list[dict[str, Any]]]:
     if not discovery_items:
         return []
     parent = list(range(len(discovery_items)))
+    now = reference_time or datetime.now(UTC)
 
     def find(index: int) -> int:
         while parent[index] != index:
@@ -442,6 +504,20 @@ def _rule_reason(event: dict[str, Any], details: dict[str, float], level: str) -
     return "，".join(parts)
 
 
+def _event_change_state(event: dict[str, Any], previous: dict[str, Any] | None) -> str:
+    if str(event.get("alert_state") or "") == "cooling":
+        return "cooling_event"
+    if not previous:
+        return "new_event"
+    current_member_count = int(event.get("member_count", 0) or 0)
+    previous_member_count = int(previous.get("member_count", 0) or 0)
+    current_platform_count = int(event.get("platform_count", 0) or 0)
+    previous_platform_count = int(previous.get("platform_count", 0) or 0)
+    if current_member_count > previous_member_count or current_platform_count > previous_platform_count:
+        return "growing_event"
+    return "stable_event"
+
+
 def _event_to_snapshot(event: dict[str, Any], captured_at: str) -> dict[str, Any]:
     snapshot_seed = f"{event['id']}|{captured_at}"
     return {
@@ -481,6 +557,7 @@ def _carry_forward_stale_events(
             + float(preserved.get("freshness_score", 0) or 0) * 0.25,
             1,
         )
+        preserved["change_state"] = "cooling_event"
         preserved["alert_reason"] = "最近没有继续增长，已进入降温观察。"
         carried.append(preserved)
     return carried
@@ -489,6 +566,7 @@ def _carry_forward_stale_events(
 def build_intel_state(
     raw_items: list[dict[str, Any]],
     sources_by_key: dict[str, dict[str, Any]],
+    previous_discovery_items: list[dict[str, Any]] | None = None,
     previous_events: list[dict[str, Any]] | None = None,
     previous_snapshots: list[dict[str, Any]] | None = None,
     captured_at: str | None = None,
@@ -499,8 +577,8 @@ def build_intel_state(
     previous_snapshots = previous_snapshots or []
     previous_events_by_id = {str(item.get("id")): item for item in previous_events if item.get("id")}
 
-    discovery_items = build_discovery_items(raw_items, sources_by_key)
-    clusters = cluster_discovery_items(discovery_items)
+    discovery_items = build_discovery_items(raw_items, sources_by_key, previous_discovery_items=previous_discovery_items)
+    clusters = cluster_discovery_items(discovery_items, reference_time=now)
     events: list[dict[str, Any]] = []
 
     for cluster in clusters:
@@ -550,6 +628,7 @@ def build_intel_state(
         )
         event["velocity_details"] = velocity_details
         event["alert_state"] = _alert_state(event, velocity_details, now)
+        event["change_state"] = _event_change_state(event, previous)
         event["alert_reason"] = _rule_reason(event, velocity_details, event["alert_state"])
         events.append(event)
 

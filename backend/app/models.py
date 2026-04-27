@@ -52,6 +52,7 @@ SourceKind = Literal[
     "page",
 ]
 SourceHealth = Literal["idle", "healthy", "warning", "error"]
+AutomationRunStatus = Literal["idle", "running", "completed", "failed", "abandoned"]
 CandidateStatus = Literal["new", "drafted", "parked"]
 PublishTaskStatus = Literal["pending", "running", "completed", "failed", "blocked"]
 RefreshStatus = Literal["ready", "updated", "pending_retry", "missing"]
@@ -65,6 +66,8 @@ RuntimeLaunchMode = Literal["once_now", "once_at", "interval_now", "interval_at"
 IntelWorkScope = Literal["collect_only", "collect_events", "collect_events_alerts"]
 IntelEventState = Literal["new", "watch", "rising", "breakout", "cooling"]
 IntelAlertLevel = Literal["watch", "rising", "breakout", "cooling"]
+IntelItemChangeState = Literal["new_item", "seen_item", "updated_item"]
+IntelEventChangeState = Literal["new_event", "growing_event", "stable_event", "cooling_event"]
 
 
 class ModeDefinition(BaseModel):
@@ -136,6 +139,13 @@ class SourceConnector(BaseModel):
     item_count: int = Field(default=0, ge=0)
     last_synced_at: Optional[str] = None
     last_error: Optional[str] = None
+    last_attempt_at: Optional[str] = None
+    last_success_at: Optional[str] = None
+    last_failure_at: Optional[str] = None
+    consecutive_failures: int = Field(default=0, ge=0)
+    last_duration_ms: Optional[int] = Field(default=None, ge=0)
+    avg_duration_ms: Optional[int] = Field(default=None, ge=0)
+    last_item_count: int = Field(default=0, ge=0)
     updated_at: Optional[str] = None
 
 
@@ -411,12 +421,14 @@ class DiscoveryItem(BaseModel):
     link: str
     canonical_link: str
     dedupe_key: str
+    source_native_id: Optional[str] = None
     title_tokens: list[str] = Field(default_factory=list)
     anchor_tokens: list[str] = Field(default_factory=list)
     published_at: Optional[str] = None
     collected_at: str
     tags: list[str] = Field(default_factory=list)
     engagement_score: float = 0.0
+    item_state: IntelItemChangeState = "new_item"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -446,6 +458,7 @@ class IntelEvent(BaseModel):
     composite_score: float = 0.0
     velocity_details: dict[str, float] = Field(default_factory=dict)
     alert_state: IntelEventState = "new"
+    change_state: IntelEventChangeState = "new_event"
     alert_reason: str = ""
     watchlisted: bool = False
     ignored: bool = False
@@ -488,6 +501,15 @@ class IntelOverviewSummary(BaseModel):
     watch_count: int = 0
     event_count: int = 0
     discovery_count: int = 0
+    new_items_count: int = 0
+    seen_items_count: int = 0
+    updated_items_count: int = 0
+    new_events_count: int = 0
+    growing_events_count: int = 0
+    stable_events_count: int = 0
+    cooling_events_count: int = 0
+    warning_sources: int = 0
+    error_sources: int = 0
     healthy_sources: int = 0
     total_sources: int = 0
     last_sync_at: Optional[str] = None
@@ -587,6 +609,10 @@ class SchedulerStatus(BaseModel):
     last_draft_at: Optional[str] = None
     next_collect_at: Optional[str] = None
     current_cycle: str = "idle"
+    current_cycle_progress_percent: int = 0
+    current_cycle_progress_done: int = 0
+    current_cycle_progress_total: int = 0
+    current_cycle_progress_label: Optional[str] = None
     enabled_at: Optional[str] = None
     scheduled_start_at: Optional[str] = None
     current_cycle_started_at: Optional[str] = None
@@ -597,6 +623,16 @@ class SchedulerStatus(BaseModel):
     completed_cycles_today: int = 0
     failed_cycles_today: int = 0
     last_error: Optional[str] = None
+    run_id: Optional[str] = None
+    run_status: AutomationRunStatus = "idle"
+    run_stage: str = "idle"
+    run_started_at: Optional[str] = None
+    run_heartbeat_at: Optional[str] = None
+    run_finished_at: Optional[str] = None
+    run_triggered_by: Optional[str] = None
+    run_error: Optional[str] = None
+    recovered_run_id: Optional[str] = None
+    run_stale: bool = False
 
 
 class DashboardStats(BaseModel):

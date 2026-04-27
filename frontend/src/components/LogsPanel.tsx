@@ -10,7 +10,7 @@ export function LogsPanel({ logs, runtime }: LogsPanelProps) {
   const sortedLogs = [...logs].sort((a, b) => {
     const ta = a.created_at ?? "";
     const tb = b.created_at ?? "";
-    return tb > ta ? -1 : tb < ta ? 1 : 0;
+    return tb > ta ? 1 : tb < ta ? -1 : 0;
   });
 
   return (
@@ -26,7 +26,11 @@ export function LogsPanel({ logs, runtime }: LogsPanelProps) {
         <div className="runtime-card">
           <span>状态</span>
           <strong>{runtime.running ? runtime.current_cycle : "已停止"}</strong>
-          <p>上轮耗时 {formatDuration(runtime.last_cycle_duration_seconds, "暂无")}</p>
+          <p>
+            {runtime.current_cycle_progress_label
+              ? runtime.current_cycle_progress_label
+              : `上轮耗时 ${formatDuration(runtime.last_cycle_duration_seconds, "暂无")}`}
+          </p>
         </div>
         <div className="runtime-card">
           <span>今日</span>
@@ -41,7 +45,11 @@ export function LogsPanel({ logs, runtime }: LogsPanelProps) {
             <span className="log-plain-time">{formatDateTime(log.created_at, { fallback: "--:--" })}</span>
             <span className="log-plain-level">{log.level}</span>
             <span className="log-plain-cat">{log.category}</span>
-            <span className="log-plain-msg">{log.message}</span>
+            <div className="log-plain-body">
+              <span className="log-plain-msg">{log.message}</span>
+              <span className="log-plain-meta">{log.stream} / {log.actor}</span>
+              {log.detail ? <pre className="log-plain-detail">{log.detail}</pre> : null}
+            </div>
           </div>
         ))}
         {!sortedLogs.length ? <p className="empty-state">暂无日志。</p> : null}

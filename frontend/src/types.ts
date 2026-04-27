@@ -37,8 +37,11 @@ export type SourceKind =
   | "youtube"
   | "github"
   | "hackernews"
+  | "vvhan"
+  | "legacy"
   | "page";
 export type SourceHealth = "idle" | "healthy" | "warning" | "error";
+export type AutomationRunStatus = "idle" | "running" | "completed" | "failed" | "abandoned";
 export type CandidateStatus = "new" | "drafted" | "parked";
 export type PublishTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked";
 export type RefreshStatus = "ready" | "updated" | "pending_retry" | "missing";
@@ -52,6 +55,8 @@ export type RuntimeLaunchMode = "once_now" | "once_at" | "interval_now" | "inter
 export type IntelWorkScope = "collect_only" | "collect_events" | "collect_events_alerts";
 export type IntelEventState = "new" | "watch" | "rising" | "breakout" | "cooling";
 export type IntelAlertLevel = "watch" | "rising" | "breakout" | "cooling";
+export type IntelItemChangeState = "new_item" | "seen_item" | "updated_item";
+export type IntelEventChangeState = "new_event" | "growing_event" | "stable_event" | "cooling_event";
 
 export interface ModeDefinition {
   key: PublishMode;
@@ -122,6 +127,13 @@ export interface SourceConnector {
   item_count: number;
   last_synced_at?: string | null;
   last_error?: string | null;
+  last_attempt_at?: string | null;
+  last_success_at?: string | null;
+  last_failure_at?: string | null;
+  consecutive_failures: number;
+  last_duration_ms?: number | null;
+  avg_duration_ms?: number | null;
+  last_item_count: number;
   updated_at?: string | null;
 }
 
@@ -382,12 +394,14 @@ export interface DiscoveryItem {
   link: string;
   canonical_link: string;
   dedupe_key: string;
+  source_native_id?: string | null;
   title_tokens: string[];
   anchor_tokens: string[];
   published_at?: string | null;
   collected_at: string;
   tags: string[];
   engagement_score: number;
+  item_state: IntelItemChangeState;
   metadata: Record<string, unknown>;
 }
 
@@ -417,6 +431,7 @@ export interface IntelEvent {
   composite_score: number;
   velocity_details: Record<string, number>;
   alert_state: IntelEventState;
+  change_state: IntelEventChangeState;
   alert_reason: string;
   watchlisted: boolean;
   ignored: boolean;
@@ -445,6 +460,15 @@ export interface IntelOverviewSummary {
   watch_count: number;
   event_count: number;
   discovery_count: number;
+  new_items_count: number;
+  seen_items_count: number;
+  updated_items_count: number;
+  new_events_count: number;
+  growing_events_count: number;
+  stable_events_count: number;
+  cooling_events_count: number;
+  warning_sources: number;
+  error_sources: number;
   healthy_sources: number;
   total_sources: number;
   last_sync_at?: string | null;
@@ -524,6 +548,10 @@ export interface SchedulerStatus {
   last_draft_at?: string | null;
   next_collect_at?: string | null;
   current_cycle: string;
+  current_cycle_progress_percent: number;
+  current_cycle_progress_done: number;
+  current_cycle_progress_total: number;
+  current_cycle_progress_label?: string | null;
   enabled_at?: string | null;
   scheduled_start_at?: string | null;
   current_cycle_started_at?: string | null;
@@ -534,6 +562,16 @@ export interface SchedulerStatus {
   completed_cycles_today: number;
   failed_cycles_today: number;
   last_error?: string | null;
+  run_id?: string | null;
+  run_status: AutomationRunStatus;
+  run_stage: string;
+  run_started_at?: string | null;
+  run_heartbeat_at?: string | null;
+  run_finished_at?: string | null;
+  run_triggered_by?: string | null;
+  run_error?: string | null;
+  recovered_run_id?: string | null;
+  run_stale: boolean;
 }
 
 export interface BatchDraftResult {

@@ -124,7 +124,7 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
 
   const refreshIntelCore = useCallback(async () => {
-    const [dashboardData, summaryData, streamData, eventData, alertData, sourceData, candidateData, logData] = await Promise.all([
+    const [dashboardData, summaryData, streamData, eventData, alertData, sourceData, candidateData, logData, jobData, publishTaskData] = await Promise.all([
       api.getDashboard(),
       api.getIntelSummary(),
       api.getDiscoveryItems(),
@@ -133,6 +133,8 @@ export default function App() {
       api.getIntelSources(),
       api.getCandidates(),
       api.getLogs(),
+      api.getJobs(),
+      api.getPublishTasks(),
     ]);
     setDashboard(dashboardData);
     setSummary(summaryData.item);
@@ -142,6 +144,8 @@ export default function App() {
     setSources(sourceData.items);
     setCandidates(candidateData.items);
     setLogs(logData.items);
+    setJobs(jobData.items);
+    setPublishTasks(publishTaskData.items);
     setBrowserSession(dashboardData.browser_session);
   }, []);
 
@@ -212,8 +216,8 @@ export default function App() {
   }, [refreshAll]);
 
   useEffect(() => {
-    const intelFocusedTabs: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist"];
-    if (!intelFocusedTabs.includes(activeTab)) {
+    const runtimeAwareTabs: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "jobs", "logs"];
+    if (!runtimeAwareTabs.includes(activeTab)) {
       return;
     }
     const isRunning = dashboard?.runtime_status.running;
@@ -224,7 +228,7 @@ export default function App() {
       dashboard.runtime_status.current_cycle === "drafting" ||
       dashboard.runtime_status.current_cycle === "wechat_sync"
     ) : false;
-    const intervalMs = isActiveCycle ? 3000 : isRunning ? 10000 : 60000;
+    const intervalMs = isActiveCycle ? 2000 : isRunning ? 6000 : 60000;
     const timer = window.setInterval(() => {
       void refreshIntelCore().catch((err: unknown) => {
         setError(err instanceof Error ? err.message : "自动刷新失败");
@@ -458,9 +462,17 @@ export default function App() {
     }
   }
 
-  // 独立的 runtime 状态快速轮询，3 秒一次，用于进度条实时更新
+  // 独立的 runtime 状态快速轮询，活跃周期 2 秒一次，空闲 10 秒
   useEffect(() => {
     if (!dashboard?.runtime_status?.running) return;
+    const isActiveCycle = (
+      dashboard.runtime_status.control_state === "running" ||
+      dashboard.runtime_status.current_cycle === "starting" ||
+      dashboard.runtime_status.current_cycle === "collecting" ||
+      dashboard.runtime_status.current_cycle === "drafting" ||
+      dashboard.runtime_status.current_cycle === "wechat_sync"
+    );
+    const intervalMs = isActiveCycle ? 2000 : 10000;
     const timer = window.setInterval(async () => {
       try {
         const res = await api.getRuntimeStatus();
@@ -468,9 +480,9 @@ export default function App() {
       } catch {
         // silent
       }
-    }, 3000);
+    }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [dashboard?.runtime_status?.running]);
+  }, [dashboard?.runtime_status?.running, dashboard?.runtime_status?.control_state, dashboard?.runtime_status?.current_cycle]);
 
   function showToast(message: string) {
     setToast(message);

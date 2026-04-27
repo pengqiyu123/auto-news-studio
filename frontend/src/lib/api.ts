@@ -130,6 +130,10 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     last_draft_at: null,
     next_collect_at: null,
     current_cycle: "idle",
+    current_cycle_progress_percent: 0,
+    current_cycle_progress_done: 0,
+    current_cycle_progress_total: 0,
+    current_cycle_progress_label: null,
     enabled_at: null,
     scheduled_start_at: null,
     current_cycle_started_at: null,
@@ -139,7 +143,17 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     uptime_seconds: 0,
     completed_cycles_today: 0,
     failed_cycles_today: 0,
-    last_error: null
+    last_error: null,
+    run_id: null,
+    run_status: "idle",
+    run_stage: "idle",
+    run_started_at: null,
+    run_heartbeat_at: null,
+    run_finished_at: null,
+    run_triggered_by: null,
+    run_error: null,
+    recovered_run_id: null,
+    run_stale: false
   };
 
   const currentAutomationProfile: AutomationModeProfile = dashboard.current_automation_profile ?? {

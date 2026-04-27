@@ -20,6 +20,19 @@ export function SourceHealthPage({
   onSyncSource,
   onSaveSource,
 }: SourceHealthPageProps) {
+  function healthLabel(source: SourceConnector) {
+    if (!source.enabled || source.health_status === "idle") return "停用";
+    if (source.health_status === "healthy") return "正常";
+    if (source.health_status === "warning") return "告警";
+    return "异常";
+  }
+
+  function formatDurationMs(value?: number | null) {
+    if (value == null) return "暂无";
+    if (value < 1000) return `${value}ms`;
+    return `${(value / 1000).toFixed(1)}s`;
+  }
+
   return (
     <section className="panel">
       <div className="panel-header compact">
@@ -36,16 +49,26 @@ export function SourceHealthPage({
           <article key={source.key} className="intel-row-card">
             <div className="intel-card-topline">
               <span className={`status-badge status-${source.health_status === "healthy" ? "success" : source.health_status === "warning" ? "warning" : source.health_status === "error" ? "danger" : "neutral"}`}>
-                {source.health_status}
+                {healthLabel(source)}
               </span>
               <span>{source.platform} / 权重 {source.weight}</span>
             </div>
             <strong>{source.name}</strong>
             <p>{source.health_detail || "尚未同步"}</p>
             <div className="intel-score-row">
-              <span>{source.item_count} 条素材</span>
-              <span>{formatDateTime(source.last_synced_at, { fallback: "从未同步" })}</span>
-              <span>{formatRelativeTime(source.last_synced_at, "从未同步")}</span>
+              <span>最近成功 {formatRelativeTime(source.last_success_at ?? source.last_synced_at, "从未成功")}</span>
+              <span>连续失败 {source.consecutive_failures}</span>
+              <span>最近 {formatDurationMs(source.last_duration_ms)}</span>
+            </div>
+            <div className="intel-score-row">
+              <span>平均 {formatDurationMs(source.avg_duration_ms)}</span>
+              <span>最近条数 {source.last_item_count}</span>
+              <span>累计素材 {source.item_count}</span>
+            </div>
+            <div className="intel-score-row">
+              <span>最近成功 {formatDateTime(source.last_success_at, { fallback: "暂无" })}</span>
+              <span>最近失败 {formatDateTime(source.last_failure_at, { fallback: "暂无" })}</span>
+              <span>最近尝试 {formatDateTime(source.last_attempt_at, { fallback: "暂无" })}</span>
             </div>
             <div className="intel-inline-actions">
               <button

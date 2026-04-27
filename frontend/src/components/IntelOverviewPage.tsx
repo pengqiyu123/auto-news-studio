@@ -1,5 +1,5 @@
-import { AlertTriangle, BellRing, ChevronDown, ChevronUp, Clock3, Loader2, PauseCircle, PlayCircle, RadioTower, RefreshCcw, Save } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, BellRing, CheckCircle2, ChevronDown, ChevronUp, Clock3, Loader2, PauseCircle, PlayCircle, RadioTower, RefreshCcw, Save } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { formatDateTime, formatDuration, formatRelativeTime, toDateTimeLocalValue } from "../lib/time";
 import type { IntelAlert, IntelEvent, IntelOverviewSummary, IntelWorkScope, RuntimePlan, SchedulerStatus } from "../types";
@@ -44,6 +44,7 @@ const CYCLE_LABELS: Record<string, string> = {
   scoring: "评分中",
   drafting: "生成稿件中",
   wechat_sync: "同步微信",
+  completed: "已完成",
 };
 
 function plansEqual(left: Omit<RuntimePlan, "effective_mode">, right: RuntimePlan) {
@@ -84,6 +85,22 @@ function eventTone(event: IntelEvent) {
   return "neutral";
 }
 
+function runtimeTone(runtime: SchedulerStatus) {
+  if (runtime.run_status === "failed") return "danger";
+  if (runtime.recovered_run_id || runtime.run_status === "abandoned") return "warning";
+  if (runtime.control_state === "running" || runtime.run_status === "running") return "success";
+  if (runtime.control_state === "armed" || runtime.control_state === "waiting") return "warning";
+  return "neutral";
+}
+
+function runtimeLabel(runtime: SchedulerStatus) {
+  if (runtime.run_status === "failed") return "本轮失败";
+  if (runtime.recovered_run_id || runtime.run_status === "abandoned") return "已接管异常轮次";
+  if (runtime.control_state === "running" || runtime.run_status === "running") return "运行中";
+  if (runtime.control_state === "armed" || runtime.control_state === "waiting") return "等待下一轮";
+  return "已停止";
+}
+
 export function IntelOverviewPage({
   summary,
   runtime,
@@ -103,11 +120,59 @@ export function IntelOverviewPage({
   const [planDraft, setPlanDraft] = useState<Omit<RuntimePlan, "effective_mode">>(buildPlanDraft(runtimePlan));
   const [planExpanded, setPlanExpanded] = useState(false);
 
+  const cycleStartRef = useRef<number | null>(null);
+  const prevPercentRef = useRef<number>(0);
+
   useEffect(() => {
     setPlanDraft(buildPlanDraft(runtimePlan));
   }, [runtimePlan]);
 
+  // Track when the cycle starts (first non-zero percent)
+  useEffect(() => {
+    const pct = runtime.current_cycle_progress_percent;
+    if (pct > 0 && cycleStartRef.current === null) {
+      cycleStartRef.current = Date.now();
+    }
+    // Reset when cycle ends
+    if (pct === 0 && prevPercentRef.current > 0) {
+      cycleStartRef.current = null;
+    }
+    prevPercentRef.current = pct;
+  }, [runtime.current_cycle_progress_percent]);
+
+  const estimatedRemaining = useMemo((): string | null => {
+    const pct = runtime.current_cycle_progress_percent;
+    const total = runtime.current_cycle_progress_total;
+    if (
+      cycleStartRef.current === null ||
+      pct <= 0 ||
+      pct >= 100 ||
+      total <= 0
+    ) return null;
+    const elapsedMs = Date.now() - cycleStartRef.current;
+    const estimatedTotalMs = (elapsedMs / pct) * 100;
+    const remainingMs = estimatedTotalMs - elapsedMs;
+    if (remainingMs <= 0) return null;
+    const remainingSec = Math.round(remainingMs / 1000);
+    if (remainingSec < 60) return `约 ${remainingSec}s`;
+    return `约 ${Math.round(remainingSec / 60)}m`;
+  }, [runtime.current_cycle_progress_percent, runtime.current_cycle_progress_total, runtime.current_cycle]);
+
   const planDirty = useMemo(() => !plansEqual(planDraft, runtimePlan), [planDraft, runtimePlan]);
+  const showCycleStatus =
+    runtime.current_cycle !== "idle" ||
+    runtime.run_status === "running" ||
+    runtime.run_status === "failed" ||
+    runtime.run_status === "abandoned";
+  const nextRunLabel = useMemo(() => {
+    if (showCycleStatus) {
+      return "本轮执行中";
+    }
+    if (runtime.control_state === "armed" || runtime.control_state === "waiting") {
+      return formatRelativeTime(summary.next_run_at, "等待计划");
+    }
+    return formatRelativeTime(summary.next_run_at, "未安排");
+  }, [runtime.control_state, summary.next_run_at, showCycleStatus]);
 
   async function handleStart() {
     if (planDirty) {
@@ -122,13 +187,13 @@ export function IntelOverviewPage({
       <section className="panel intel-hero-panel">
         <div className="intel-plan-compact-bar">
           <div className="intel-plan-compact-status">
-            <span className={`status-badge status-${runtime.running ? "success" : "neutral"}`}>
-              {runtime.running ? "运行中" : "已停止"}
+            <span className={`status-badge status-${runtimeTone(runtime)}`}>
+              {runtimeLabel(runtime)}
             </span>
             <span>{WORK_SCOPE_LABELS[planDraft.work_scope]}</span>
             <span>{LAUNCH_MODE_LABELS[planDraft.launch_mode]}</span>
             {planDraft.launch_mode.includes("interval") ? <span>每 {planDraft.interval_minutes ?? 30} 分钟</span> : null}
-            <span className="subtle">{formatRelativeTime(summary.next_run_at, "未安排")}</span>
+            <span className="subtle">{nextRunLabel}</span>
           </div>
           <div className="intel-hero-actions">
             <button type="button" className="ghost-button" disabled={refreshing} onClick={() => void onRefresh()}>
@@ -169,14 +234,48 @@ export function IntelOverviewPage({
         </div>
 
         {/* 运行阶段指示器 */}
-        {runtime.running && runtime.current_cycle && runtime.current_cycle !== "idle" ? (
+        {showCycleStatus ? (
           <div className="intel-cycle-progress">
-            <Loader2 size={13} className="spin" />
-            <span className="intel-cycle-stage">{CYCLE_LABELS[runtime.current_cycle] ?? runtime.current_cycle}</span>
+            {runtime.run_status === "failed" ? (
+              <AlertTriangle size={13} className="text-red-600" />
+            ) : runtime.current_cycle === "completed" ? (
+              <CheckCircle2 size={13} className="text-green-600" />
+            ) : (
+              <Loader2 size={13} className="spin" />
+            )}
+            <span className={`intel-cycle-stage${runtime.current_cycle === "completed" ? " intel-cycle-stage-done" : ""}`}>
+              {runtime.run_status === "failed" ? "本轮失败" : (CYCLE_LABELS[runtime.current_cycle] ?? runtime.current_cycle)}
+            </span>
+            <span className="intel-cycle-percent">{runtime.current_cycle_progress_percent}%</span>
+            {estimatedRemaining && runtime.current_cycle !== "completed" && runtime.run_status !== "failed" ? (
+              <span className="subtle">剩余 {estimatedRemaining}</span>
+            ) : null}
+            {runtime.current_cycle_progress_total > 0 ? (
+              <span className="subtle">
+                {runtime.current_cycle_progress_done}/{runtime.current_cycle_progress_total}
+              </span>
+            ) : null}
             {runtime.current_cycle_started_at ? (
               <span className="subtle">{formatRelativeTime(runtime.current_cycle_started_at, "")}</span>
             ) : null}
           </div>
+        ) : null}
+
+        {showCycleStatus && runtime.current_cycle_progress_percent > 0 ? (
+          <div className="intel-cycle-meter">
+            <div
+              className="intel-cycle-meter-fill"
+              style={{ width: `${Math.max(0, Math.min(runtime.current_cycle_progress_percent, 100))}%` }}
+            />
+          </div>
+        ) : null}
+
+        {(showCycleStatus || runtime.current_cycle_progress_label) && (runtime.current_cycle_progress_label || runtime.run_error || runtime.last_error) ? (
+          <p className="intel-cycle-label">{runtime.current_cycle_progress_label || runtime.run_error || runtime.last_error}</p>
+        ) : null}
+
+        {runtime.recovered_run_id ? (
+          <p className="intel-cycle-label">已接管异常轮次 {runtime.recovered_run_id}，当前状态以最新轮次为准。</p>
         ) : null}
 
         {/* 展开的计划配置面板 */}
@@ -367,19 +466,19 @@ export function IntelOverviewPage({
               <p>{summary.breakout_count} 爆发 / {summary.rising_count} 上升</p>
             </div>
             <div className="intel-stat-card">
-              <span>事件</span>
-              <strong>{summary.event_count}</strong>
-              <p>实时流 {summary.discovery_count} 条</p>
+              <span>本轮动态</span>
+              <strong>{summary.new_events_count + summary.growing_events_count}</strong>
+              <p>新事件 {summary.new_events_count} / 升温 {summary.growing_events_count}</p>
             </div>
             <div className="intel-stat-card">
               <span>来源</span>
               <strong>{summary.healthy_sources}/{summary.total_sources}</strong>
-              <p>已启用来源</p>
+              <p>警告 {summary.warning_sources} / 异常 {summary.error_sources}</p>
             </div>
             <div className="intel-stat-card">
-              <span>下一轮</span>
-              <strong>{formatRelativeTime(summary.next_run_at, "未安排")}</strong>
-              <p>{formatDateTime(summary.next_run_at, { fallback: "未安排" })}</p>
+              <span>素材变化</span>
+              <strong>{summary.new_items_count}</strong>
+              <p>更新 {summary.updated_items_count} / 已见过 {summary.seen_items_count}</p>
             </div>
           </div>
         </article>
@@ -413,7 +512,7 @@ export function IntelOverviewPage({
               <AlertTriangle size={16} />
               <div>
                 <strong>最近异常</strong>
-                <p>{runtime.last_error || summary.source_alerts[0] || "暂无异常"}</p>
+                <p>{runtime.run_error || runtime.last_error || summary.source_alerts[0] || "暂无异常"}</p>
               </div>
             </div>
           </div>
