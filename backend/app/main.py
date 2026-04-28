@@ -23,6 +23,8 @@ from .models import (
     CreateSourcePayload,
     DiscoveryItemsResponse,
     DictEnvelope,
+    EntityWatchlistPayload,
+    EntityWatchlistResponse,
     DraftApprovalPayload,
     DraftContentPayload,
     DraftsResponse,
@@ -45,6 +47,7 @@ from .models import (
     ReferenceProjectsResponse,
     RuntimePlanPayload,
     RuntimePlanResponse,
+    RuntimeIntentPayload,
     SchedulerStatusResponse,
     SourceConnectorPayload,
     SourceSyncResponse,
@@ -124,6 +127,16 @@ def get_intel_event(event_id: str):
 @app.get("/api/admin/intel/alerts", response_model=IntelAlertsResponse)
 def get_intel_alerts():
     return IntelAlertsResponse(items=store.list_intel_alerts())
+
+
+@app.get("/api/admin/entities/watchlist", response_model=EntityWatchlistResponse)
+def get_entity_watchlist():
+    return EntityWatchlistResponse(items=store.list_entity_watchlist())
+
+
+@app.put("/api/admin/entities/watchlist", response_model=EntityWatchlistResponse)
+def put_entity_watchlist(payload: EntityWatchlistPayload):
+    return EntityWatchlistResponse(items=store.update_entity_watchlist([item.model_dump() for item in payload.items]))
 
 
 @app.get("/api/admin/intel/sources", response_model=SourcesResponse)
@@ -255,6 +268,14 @@ def start_runtime():
 @app.post("/api/admin/runtime/stop", response_model=SchedulerStatusResponse)
 def stop_runtime():
     return SchedulerStatusResponse(item=store.stop_runtime())
+
+
+@app.post("/api/admin/runtime/run-intent", response_model=SchedulerStatusResponse)
+def run_runtime_intent(payload: RuntimeIntentPayload):
+    try:
+        return SchedulerStatusResponse(item=store.run_runtime_intent(payload.intent))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/admin/sources", response_model=SourcesResponse)

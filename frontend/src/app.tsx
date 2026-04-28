@@ -24,12 +24,14 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { SourceHealthPage } from "./components/SourceHealthPage";
 import { WatchlistPanel } from "./components/WatchlistPanel";
 import { api } from "./lib/api";
+import { deriveRuntimeDisplayStatus, isRuntimeActivelyProcessing, pickNewerRuntimeStatus, RUNTIME_INTENT_LABELS } from "./lib/runtimeIntent";
 import type {
   BrowserSessionState,
   CandidateTopic,
   DashboardResponse,
   DiscoveryItem,
   DraftItem,
+  EntityWatchlistItem,
   IntelAlert,
   IntelEvent,
   IntelOverviewSummary,
@@ -39,6 +41,7 @@ import type {
   PublishMode,
   PublishTask,
   ReferenceProject,
+  RuntimeIntent,
   RuntimePlan,
   SourceConnector,
   WeChatChannelConfig,
@@ -77,15 +80,15 @@ const systemTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboa
 
 const pageMeta: Record<TabKey, { eyebrow: string; title: string }> = {
   overview: { eyebrow: "总览", title: "情报总览" },
-  stream: { eyebrow: "实时流", title: "实时流" },
-  events: { eyebrow: "热点簇", title: "热点簇" },
-  alerts: { eyebrow: "预警台", title: "预警台" },
-  "source-health": { eyebrow: "来源健康", title: "来源健康" },
-  watchlist: { eyebrow: "重点观察", title: "重点观察" },
-  drafts: { eyebrow: "稿件", title: "稿件" },
-  jobs: { eyebrow: "任务", title: "任务" },
-  settings: { eyebrow: "设置", title: "设置" },
-  logs: { eyebrow: "日志", title: "日志" },
+  stream: { eyebrow: "信息获取", title: "原始素材流" },
+  events: { eyebrow: "事件聚合", title: "热点事件列表" },
+  alerts: { eyebrow: "趋势判断", title: "热点预警列表" },
+  "source-health": { eyebrow: "来源巡检", title: "来源运行状态" },
+  watchlist: { eyebrow: "人工跟进", title: "重点观察事件" },
+  drafts: { eyebrow: "内容产出", title: "稿件工作台" },
+  jobs: { eyebrow: "补跑与排障", title: "手动任务中心" },
+  settings: { eyebrow: "系统配置", title: "渠道与模型设置" },
+  logs: { eyebrow: "运行记录", title: "系统日志与异常" },
 };
 
 export default function App() {
@@ -98,6 +101,8 @@ export default function App() {
   const [sources, setSources] = useState<SourceConnector[]>([]);
   const [candidates, setCandidates] = useState<CandidateTopic[]>([]);
   const [drafts, setDrafts] = useState<DraftItem[]>([]);
+  const [entityWatchlist, setEntityWatchlist] = useState<EntityWatchlistItem[]>([]);
+  const [selectedEntityId, setSelectedEntityId] = useState<string>("all");
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [publishTasks, setPublishTasks] = useState<PublishTask[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
@@ -120,6 +125,7 @@ export default function App() {
   const [refreshingBrowser, setRefreshingBrowser] = useState(false);
   const [openingBrowser, setOpeningBrowser] = useState(false);
   const [busyRuntimeAction, setBusyRuntimeAction] = useState<"start" | "stop" | null>(null);
+  const [busyMaintenanceIntent, setBusyMaintenanceIntent] = useState<RuntimeIntent | null>(null);
   const [savingRuntimePlan, setSavingRuntimePlan] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -136,7 +142,14 @@ export default function App() {
       api.getJobs(),
       api.getPublishTasks(),
     ]);
-    setDashboard(dashboardData);
+    setDashboard((current) =>
+      !current
+        ? dashboardData
+        : {
+            ...dashboardData,
+            runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
+          },
+    );
     setSummary(summaryData.item);
     setStreamItems(streamData.items);
     setEvents(eventData.items);
@@ -162,6 +175,7 @@ export default function App() {
         sourceData,
         candidateData,
         draftData,
+        entityWatchlistData,
         publishTaskData,
         jobData,
         logData,
@@ -179,6 +193,7 @@ export default function App() {
         api.getIntelSources(),
         api.getCandidates(),
         api.getDrafts(),
+        api.getEntityWatchlist(),
         api.getPublishTasks(),
         api.getJobs(),
         api.getLogs(),
@@ -188,7 +203,14 @@ export default function App() {
         api.getLLMConfig(),
         api.getSettings(),
       ]);
-      setDashboard(dashboardData);
+      setDashboard((current) =>
+        !current
+          ? dashboardData
+          : {
+              ...dashboardData,
+              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
+            },
+      );
       setSummary(summaryData.item);
       setStreamItems(streamData.items);
       setEvents(eventData.items);
@@ -196,6 +218,7 @@ export default function App() {
       setSources(sourceData.items);
       setCandidates(candidateData.items);
       setDrafts(draftData.items);
+      setEntityWatchlist(entityWatchlistData.items);
       setPublishTasks(publishTaskData.items);
       setJobs(jobData.items);
       setLogs(logData.items);
@@ -221,13 +244,7 @@ export default function App() {
       return;
     }
     const isRunning = dashboard?.runtime_status.running;
-    const isActiveCycle = dashboard?.runtime_status ? (
-      dashboard.runtime_status.control_state === "running" ||
-      dashboard.runtime_status.current_cycle === "starting" ||
-      dashboard.runtime_status.current_cycle === "collecting" ||
-      dashboard.runtime_status.current_cycle === "drafting" ||
-      dashboard.runtime_status.current_cycle === "wechat_sync"
-    ) : false;
+    const isActiveCycle = dashboard?.runtime_status ? isRuntimeActivelyProcessing(dashboard.runtime_status) : false;
     const intervalMs = isActiveCycle ? 2000 : isRunning ? 6000 : 60000;
     const timer = window.setInterval(() => {
       void refreshIntelCore().catch((err: unknown) => {
@@ -314,6 +331,33 @@ export default function App() {
     }
   }
 
+  async function handleUpdateEntityWatchlist(items: EntityWatchlistItem[]) {
+    try {
+      const response = await api.updateEntityWatchlist(items);
+      setEntityWatchlist(response.items);
+      const dashboardData = await api.getDashboard();
+      setDashboard((current) =>
+        !current
+          ? dashboardData
+          : {
+              ...dashboardData,
+              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
+            },
+      );
+      if (selectedEntityId !== "all" && !response.items.some((item) => item.entity_id === selectedEntityId)) {
+        setSelectedEntityId("all");
+      }
+      showToast("重点监控实体已更新");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "实体监控更新失败");
+    }
+  }
+
+  function handleOpenEntity(entityId: string) {
+    setSelectedEntityId(entityId);
+    setActiveTab("events");
+  }
+
   async function handleCreateDraft(candidateId: string, mode: PublishMode) {
     setBusyCandidateId(candidateId);
     try {
@@ -346,7 +390,14 @@ export default function App() {
       const draftData = await api.getDrafts();
       setDrafts(draftData.items);
       const dashboardData = await api.getDashboard();
-      setDashboard(dashboardData);
+      setDashboard((current) =>
+        !current
+          ? dashboardData
+          : {
+              ...dashboardData,
+              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
+            },
+      );
       setBrowserSession(dashboardData.browser_session);
     } catch (err) {
       setError(err instanceof Error ? err.message : "稿件动作执行失败");
@@ -362,7 +413,14 @@ export default function App() {
       const [jobData, logData, dashboardData] = await Promise.all([api.getJobs(), api.getLogs(), api.getDashboard()]);
       setJobs(jobData.items);
       setLogs(logData.items);
-      setDashboard(dashboardData);
+      setDashboard((current) =>
+        !current
+          ? dashboardData
+          : {
+              ...dashboardData,
+              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
+            },
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "任务执行失败");
     } finally {
@@ -442,7 +500,9 @@ export default function App() {
     setBusyRuntimeAction("start");
     try {
       const response = await api.startRuntime();
-      setDashboard((current) => current ? { ...current, runtime_status: response.item } : current);
+      setDashboard((current) =>
+        current ? { ...current, runtime_status: pickNewerRuntimeStatus(current.runtime_status, response.item) ?? response.item } : current
+      );
       setSummary((current) =>
         current
           ? {
@@ -465,18 +525,14 @@ export default function App() {
   // 独立的 runtime 状态快速轮询，活跃周期 2 秒一次，空闲 10 秒
   useEffect(() => {
     if (!dashboard?.runtime_status?.running) return;
-    const isActiveCycle = (
-      dashboard.runtime_status.control_state === "running" ||
-      dashboard.runtime_status.current_cycle === "starting" ||
-      dashboard.runtime_status.current_cycle === "collecting" ||
-      dashboard.runtime_status.current_cycle === "drafting" ||
-      dashboard.runtime_status.current_cycle === "wechat_sync"
-    );
+    const isActiveCycle = isRuntimeActivelyProcessing(dashboard.runtime_status);
     const intervalMs = isActiveCycle ? 2000 : 10000;
     const timer = window.setInterval(async () => {
       try {
         const res = await api.getRuntimeStatus();
-        setDashboard((cur) => cur ? { ...cur, runtime_status: res.item } : cur);
+        setDashboard((cur) =>
+          cur ? { ...cur, runtime_status: pickNewerRuntimeStatus(cur.runtime_status, res.item) ?? res.item } : cur
+        );
       } catch {
         // silent
       }
@@ -493,7 +549,9 @@ export default function App() {
     setBusyRuntimeAction("stop");
     try {
       const response = await api.stopRuntime();
-      setDashboard((current) => current ? { ...current, runtime_status: response.item } : current);
+      setDashboard((current) =>
+        current ? { ...current, runtime_status: pickNewerRuntimeStatus(current.runtime_status, response.item) ?? response.item } : current
+      );
       setSummary((current) =>
         current
           ? {
@@ -519,13 +577,36 @@ export default function App() {
       const response = await api.updateRuntimePlan(payload);
       setDashboard((current) => current ? { ...current, runtime_plan: response.item } : current);
       const dashboardData = await api.getDashboard();
-      setDashboard(dashboardData);
+      setDashboard((current) =>
+        !current
+          ? dashboardData
+          : {
+              ...dashboardData,
+              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
+            },
+      );
       const summaryData = await api.getIntelSummary();
       setSummary(summaryData.item);
     } catch (err) {
       setError(err instanceof Error ? err.message : "工作计划保存失败");
     } finally {
       setSavingRuntimePlan(false);
+    }
+  }
+
+  async function handleRunRuntimeIntent(intent: RuntimeIntent) {
+    setBusyMaintenanceIntent(intent);
+    try {
+      const response = await api.runRuntimeIntent(intent);
+      setDashboard((current) =>
+        current ? { ...current, runtime_status: pickNewerRuntimeStatus(current.runtime_status, response.item) ?? response.item } : current
+      );
+      await refreshAll();
+      showToast(intent === "normal_monitoring" ? "已执行一次完整补跑" : `已执行：${RUNTIME_INTENT_LABELS[intent]}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "维护动作执行失败");
+    } finally {
+      setBusyMaintenanceIntent(null);
     }
   }
 
@@ -596,8 +677,8 @@ export default function App() {
             </div>
           </div>
           <div className="sidebar-footer-mode">
-            <p>{dashboard?.runtime_status.running ? "工作中" : "已停止"}</p>
-            <strong>{summary ? summary.work_scope.replace(/_/g, " ") : "collect_events_alerts"}</strong>
+            <p>{dashboard ? deriveRuntimeDisplayStatus(dashboard.runtime_status) : "已停止"}</p>
+            <strong>{dashboard ? RUNTIME_INTENT_LABELS[dashboard.runtime_status.run_intent] : "正常监测"}</strong>
           </div>
         </div>
       </aside>
@@ -645,24 +726,48 @@ export default function App() {
               <IntelOverviewPage
                 summary={summary}
                 runtime={dashboard.runtime_status}
+                entityWatchlistSummary={dashboard.entity_watchlist_summary}
                 runtimePlan={dashboard.runtime_plan}
                 savingRuntimePlan={savingRuntimePlan}
                 busyRuntimeAction={busyRuntimeAction}
+                busyMaintenanceIntent={busyMaintenanceIntent}
                 refreshing={loading}
                 onSaveRuntimePlan={handleSaveRuntimePlan}
                 onStart={handleStartRuntime}
                 onStop={handleStopRuntime}
-                onSyncNow={handleSourceSync}
+                onRunIntent={handleRunRuntimeIntent}
                 onRefresh={refreshAll}
                 onNavigate={(tab) => setActiveTab(tab)}
+                onOpenEntity={handleOpenEntity}
                 onWatchEvent={handleWatchEvent}
                 onIgnoreEvent={handleIgnoreEvent}
               />
             ) : null}
 
             {activeTab === "stream" ? <IntelStreamPage items={streamItems} /> : null}
-            {activeTab === "events" ? <IntelEventsPage items={events} onWatchEvent={handleWatchEvent} onIgnoreEvent={handleIgnoreEvent} /> : null}
-            {activeTab === "alerts" ? <IntelAlertsPage items={alerts} /> : null}
+            {activeTab === "events" ? (
+              <IntelEventsPage
+                items={events}
+                runtime={dashboard.runtime_status}
+                entityWatchlist={entityWatchlist}
+                entityWatchlistSummary={dashboard.entity_watchlist_summary}
+                selectedEntityId={selectedEntityId}
+                onSelectedEntityChange={setSelectedEntityId}
+                onUpdateEntityWatchlist={handleUpdateEntityWatchlist}
+                onOpenEntity={handleOpenEntity}
+                onWatchEvent={handleWatchEvent}
+                onIgnoreEvent={handleIgnoreEvent}
+              />
+            ) : null}
+            {activeTab === "alerts" ? (
+              <IntelAlertsPage
+                items={alerts}
+                runtime={dashboard.runtime_status}
+                eventCount={events.length}
+                selectedEntityId={selectedEntityId}
+                onSelectedEntityChange={setSelectedEntityId}
+              />
+            ) : null}
             {activeTab === "source-health" ? (
               <SourceHealthPage
                 sources={sources}

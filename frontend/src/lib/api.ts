@@ -9,6 +9,8 @@ import type {
   DashboardResponse,
   DiscoveryItem,
   DraftItem,
+  EntityWatchlistItem,
+  EntityWatchlistSummaryItem,
   ExecutionChainSnapshot,
   FreshnessSnapshot,
   IntelAlert,
@@ -28,6 +30,7 @@ import type {
   PublishTask,
   ReferenceProject,
   RuntimePlan,
+  RuntimeIntent,
   SchedulerStatus,
   SourceConnector,
   WeChatChannelConfig
@@ -134,6 +137,10 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     current_cycle_progress_done: 0,
     current_cycle_progress_total: 0,
     current_cycle_progress_label: null,
+    stage_key: "idle",
+    stage_label: "空闲",
+    stage_index: 0,
+    stage_total: 0,
     enabled_at: null,
     scheduled_start_at: null,
     current_cycle_started_at: null,
@@ -144,6 +151,8 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     completed_cycles_today: 0,
     failed_cycles_today: 0,
     last_error: null,
+    last_cycle_issue_count: 0,
+    last_cycle_issue_summary: null,
     run_id: null,
     run_status: "idle",
     run_stage: "idle",
@@ -153,7 +162,10 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     run_triggered_by: null,
     run_error: null,
     recovered_run_id: null,
-    run_stale: false
+    run_stale: false,
+    run_intent: "normal_monitoring",
+    last_run_outcome: null,
+    last_cycle_summary: null
   };
 
   const currentAutomationProfile: AutomationModeProfile = dashboard.current_automation_profile ?? {
@@ -192,6 +204,8 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     automation_profiles: (dashboard.automation_profiles ?? [currentAutomationProfile]) as AutomationModeProfile[],
     runtime_plan: runtimePlan,
     runtime_status: runtimeStatus,
+    last_cycle_summary: dashboard.last_cycle_summary ?? runtimeStatus.last_cycle_summary ?? null,
+    entity_watchlist_summary: (dashboard.entity_watchlist_summary ?? []) as EntityWatchlistSummaryItem[],
     current_mode: currentMode,
     drafts: dashboard.drafts ?? [],
     recent_jobs: dashboard.recent_jobs ?? [],
@@ -235,6 +249,12 @@ export const api = {
   getIntelEvents: () => request<{ items: IntelEvent[] }>("/api/admin/intel/events"),
   getIntelEvent: (eventId: string) => request<{ item: IntelEvent }>(`/api/admin/intel/events/${eventId}`),
   getIntelAlerts: () => request<{ items: IntelAlert[] }>("/api/admin/intel/alerts"),
+  getEntityWatchlist: () => request<{ items: EntityWatchlistItem[] }>("/api/admin/entities/watchlist"),
+  updateEntityWatchlist: (items: EntityWatchlistItem[]) =>
+    request<{ items: EntityWatchlistItem[] }>("/api/admin/entities/watchlist", {
+      method: "PUT",
+      body: JSON.stringify({ items })
+    }),
   getIntelSources: () => request<{ items: SourceConnector[] }>("/api/admin/intel/sources"),
   watchlistEvent: (eventId: string) =>
     request<{ item: IntelEvent }>(`/api/admin/intel/watchlist/${eventId}`, { method: "POST" }),
@@ -271,6 +291,11 @@ export const api = {
     }),
   startRuntime: () => request<{ item: SchedulerStatus }>("/api/admin/runtime/start", { method: "POST" }),
   stopRuntime: () => request<{ item: SchedulerStatus }>("/api/admin/runtime/stop", { method: "POST" }),
+  runRuntimeIntent: (intent: RuntimeIntent) =>
+    request<{ item: SchedulerStatus }>("/api/admin/runtime/run-intent", {
+      method: "POST",
+      body: JSON.stringify({ intent })
+    }),
   getSources: () => request<{ items: SourceConnector[] }>("/api/admin/sources"),
   updateSource: (sourceKey: string, payload: Pick<SourceConnector, "enabled" | "schedule" | "priority" | "url" | "tags">) =>
     request<{ item: SourceConnector }>(`/api/admin/sources/${sourceKey}`, {

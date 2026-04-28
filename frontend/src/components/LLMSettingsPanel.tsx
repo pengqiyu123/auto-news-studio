@@ -62,11 +62,11 @@ const PROVIDER_REGISTRY: Record<string, { label: string; base_url: string; model
 };
 
 const DEFAULT_TASKS: LLMTaskConfig[] = [
-  { task_key: "judgement", label: "初步判断", provider_key: "", model_id: "", temperature: 0.2, max_tokens: 2048, system_prompt: "" },
-  { task_key: "outline", label: "写作提纲", provider_key: "", model_id: "", temperature: 0.4, max_tokens: 2048, system_prompt: "" },
-  { task_key: "article", label: "正文生成", provider_key: "", model_id: "", temperature: 0.7, max_tokens: 4096, system_prompt: "" },
-  { task_key: "title", label: "标题润色", provider_key: "", model_id: "", temperature: 0.8, max_tokens: 512, system_prompt: "" },
-  { task_key: "summary", label: "摘要生成", provider_key: "", model_id: "", temperature: 0.5, max_tokens: 1024, system_prompt: "" },
+  { task_key: "judgement", label: "初步判断", provider_key: "", model_id: "", fallback_provider_key: "", fallback_model_id: "", temperature: 0.2, max_tokens: 2048, system_prompt: "" },
+  { task_key: "outline", label: "写作提纲", provider_key: "", model_id: "", fallback_provider_key: "", fallback_model_id: "", temperature: 0.4, max_tokens: 2048, system_prompt: "" },
+  { task_key: "article", label: "正文生成", provider_key: "", model_id: "", fallback_provider_key: "", fallback_model_id: "", temperature: 0.7, max_tokens: 4096, system_prompt: "" },
+  { task_key: "title", label: "标题润色", provider_key: "", model_id: "", fallback_provider_key: "", fallback_model_id: "", temperature: 0.8, max_tokens: 512, system_prompt: "" },
+  { task_key: "summary", label: "摘要生成", provider_key: "", model_id: "", fallback_provider_key: "", fallback_model_id: "", temperature: 0.5, max_tokens: 1024, system_prompt: "" },
 ];
 
 const DEFAULT_PROFILES: LLMProfileConfig[] = [
@@ -285,16 +285,32 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: LL
     const normalizedProfiles = normalizeProfiles(nextProfiles);
     const currentProfileId = options?.currentProfileId ?? draftConfig.current_profile_id;
     const active = normalizedProfiles.find((item) => item.id === currentProfileId) ?? normalizedProfiles[0];
+    // Preserve existing tasks if they exist and have the same task keys (don't reset task edits)
+    const existingTaskKeys = new Set(draftConfig.tasks.map((t) => t.task_key));
+    const profileTasks = active ? buildTasks(active) : [];
+    const profileTaskKeys = new Set(profileTasks.map((t) => t.task_key));
+    // If task keys match, keep existing tasks (preserve user's task edits)
+    const tasks = existingTaskKeys.size === profileTaskKeys.size && [...existingTaskKeys].every((k) => profileTaskKeys.has(k))
+      ? draftConfig.tasks
+      : profileTasks;
     setDraftConfig({
       current_profile_id: active?.id ?? "",
       profiles: normalizedProfiles,
       providers: active ? buildProviders(active) : [],
-      tasks: active ? buildTasks(active) : [],
+      tasks,
       usage_today: draftConfig.usage_today,
     });
     if (options?.selectedId) {
       setSelectedProfileId(options.selectedId);
     }
+    setDirty(true);
+  }
+
+  function updateTasks(nextTasks: LLMTaskConfig[]) {
+    setDraftConfig((prev) => ({
+      ...prev,
+      tasks: nextTasks,
+    }));
     setDirty(true);
   }
 
@@ -358,11 +374,12 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: LL
     }));
     const normalizedProfiles = normalizeProfiles(nextProfiles);
     const active = normalizedProfiles.find((item) => item.id === profileId) ?? normalizedProfiles[0];
+    // Preserve existing tasks (don't reset task edits on profile switch)
     const payload: LLMConfig = {
       current_profile_id: active?.id ?? "",
       profiles: normalizedProfiles,
       providers: active ? buildProviders(active) : [],
-      tasks: active ? buildTasks(active) : [],
+      tasks: draftConfig.tasks,
       usage_today: draftConfig.usage_today,
     };
     setSwitchingProfileId(profileId);
@@ -386,11 +403,12 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: LL
       }));
       const normalizedProfiles = normalizeProfiles(nextProfiles);
       const active = normalizedProfiles.find((item) => item.id === selectedProfile.id) ?? normalizedProfiles[0];
+      // Preserve existing tasks (don't reset task edits on test)
       const payload: LLMConfig = {
         current_profile_id: active?.id ?? "",
         profiles: normalizedProfiles,
         providers: active ? buildProviders(active) : [],
-        tasks: active ? buildTasks(active) : [],
+        tasks: draftConfig.tasks,
         usage_today: draftConfig.usage_today,
       };
       await persist(payload);
@@ -660,6 +678,91 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: LL
               ) : null}
             </div>
           ) : null}
+
+          {/* Task-level primary/fallback settings */}
+          <div className="llm-tasks-section">
+            <div className="llm-tasks-header">
+              <p className="eyebrow">任务路由</p>
+              <h3>主备模型配置</h3>
+              <p className="subtle">每个任务的主模型不可用时，自动切换到备用模型。</p>
+            </div>
+            <div className="llm-tasks-grid">
+              {draftConfig.tasks.map((task) => (
+                <div key={task.task_key} className="llm-task-row">
+                  <div className="llm-task-label">{task.label}</div>
+                  <div className="llm-task-selects">
+                    <select
+                      value={task.provider_key}
+                      onChange={(e) => {
+                        const nextRegistry = PROVIDER_REGISTRY[e.target.value] ?? PROVIDER_REGISTRY.siliconflow;
+                        const updatedTasks = draftConfig.tasks.map((t) =>
+                          t.task_key === task.task_key
+                            ? { ...t, provider_key: e.target.value, model_id: nextRegistry.models[0] ?? "" }
+                            : t
+                        );
+                        updateTasks(updatedTasks);
+                      }}
+                    >
+                      <option value="">-- 主模型服务商 --</option>
+                      {Object.entries(PROVIDER_REGISTRY).map(([key, item]) => (
+                        <option key={key} value={key}>{item.label}</option>
+                      ))}
+                    </select>
+                    {task.provider_key && (
+                      <select
+                        value={task.model_id}
+                        onChange={(e) => {
+                          const updatedTasks = draftConfig.tasks.map((t) =>
+                            t.task_key === task.task_key ? { ...t, model_id: e.target.value } : t
+                          );
+                          updateTasks(updatedTasks);
+                        }}
+                      >
+                        {PROVIDER_REGISTRY[task.provider_key]?.models.map((modelId) => (
+                          <option key={modelId} value={modelId}>{modelId}</option>
+                        )) ?? <option value={task.model_id}>{task.model_id}</option>}
+                      </select>
+                    )}
+                  </div>
+                  <div className="llm-task-separator">→</div>
+                  <div className="llm-task-selects">
+                    <select
+                      value={task.fallback_provider_key}
+                      onChange={(e) => {
+                        const nextRegistry = PROVIDER_REGISTRY[e.target.value] ?? PROVIDER_REGISTRY.siliconflow;
+                        const updatedTasks = draftConfig.tasks.map((t) =>
+                          t.task_key === task.task_key
+                            ? { ...t, fallback_provider_key: e.target.value, fallback_model_id: nextRegistry.models[0] ?? "" }
+                            : t
+                        );
+                        updateTasks(updatedTasks);
+                      }}
+                    >
+                      <option value="">-- 备用服务商 --</option>
+                      {Object.entries(PROVIDER_REGISTRY).map(([key, item]) => (
+                        <option key={key} value={key}>{item.label}</option>
+                      ))}
+                    </select>
+                    {task.fallback_provider_key && (
+                      <select
+                        value={task.fallback_model_id}
+                        onChange={(e) => {
+                          const updatedTasks = draftConfig.tasks.map((t) =>
+                            t.task_key === task.task_key ? { ...t, fallback_model_id: e.target.value } : t
+                          );
+                          updateTasks(updatedTasks);
+                        }}
+                      >
+                        {PROVIDER_REGISTRY[task.fallback_provider_key]?.models.map((modelId) => (
+                          <option key={modelId} value={modelId}>{modelId}</option>
+                        )) ?? <option value={task.fallback_model_id}>{task.fallback_model_id}</option>}
+                      </select>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </section>
     </div>

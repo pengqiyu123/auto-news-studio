@@ -114,7 +114,7 @@ class LLMService:
         registry = PROVIDER_REGISTRY.get(provider_key, {})
         return registry.get("models", [])
 
-    def _get_client(self, provider_key: str):
+    def _get_client(self, provider_key: str, timeout: float | None = None):
         from openai import OpenAI
 
         provider = self._providers.get(provider_key)
@@ -127,7 +127,8 @@ class LLMService:
         if not api_key:
             raise ValueError(f"Provider {provider_key} has no API key configured")
 
-        return OpenAI(base_url=base_url, api_key=api_key, timeout=120.0)
+        client_timeout = timeout if timeout is not None else 120.0
+        return OpenAI(base_url=base_url, api_key=api_key, timeout=client_timeout)
 
     def generate(
         self,
@@ -135,28 +136,42 @@ class LLMService:
         messages: list[dict[str, str]],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """Dispatch a generation request to the configured model for a task.
 
         Returns a dict with keys: content, model, provider_key, input_tokens,
-        output_tokens, latency_ms.
+        output_tokens, latency_ms, failover_triggered (bool).
+
+        Args:
+            timeout: Optional timeout in seconds. Uses provider default if not specified.
         """
         task = self._tasks.get(task_key)
         if not task:
             raise ValueError(f"Task {task_key} is not configured. Available: {list(self._tasks.keys())}")
 
+        # Primary provider
         provider_key = task.get("provider_key", "")
         model_id = task.get("model_id", "")
         if not provider_key or not model_id:
             raise ValueError(f"Task {task_key} has no provider or model assigned")
 
+        # Fallback provider (optional)
+        fallback_provider_key = task.get("fallback_provider_key", "") or ""
+        fallback_model_id = task.get("fallback_model_id", "") or ""
+
         temp = temperature if temperature is not None else task.get("temperature", 0.7)
         tokens = max_tokens if max_tokens is not None else task.get("max_tokens", 4096)
 
-        client = self._get_client(provider_key)
+        # Try primary first
         t0 = time.time()
+        failover_triggered = False
+        failover_reason = ""
+        used_provider_key = provider_key
+        used_model_id = model_id
 
         try:
+            client = self._get_client(provider_key, timeout)
             response = client.chat.completions.create(
                 model=model_id,
                 messages=messages,
@@ -164,7 +179,39 @@ class LLMService:
                 max_tokens=tokens,
             )
         except (RateLimitError, APIConnectionError, APITimeoutError) as exc:
-            logger.error("LLM call failed for provider=%s model=%s: %s", provider_key, model_id, exc)
+            failover_reason = str(exc)
+            # Try fallback if available
+            if fallback_provider_key and fallback_model_id:
+                logger.warning(
+                    "LLM primary failed for task=%s provider=%s model=%s: %s, trying fallback...",
+                    task_key, provider_key, model_id, exc,
+                )
+                failover_triggered = True
+                used_provider_key = fallback_provider_key
+                used_model_id = fallback_model_id
+                t0 = time.time()
+                try:
+                    client = self._get_client(fallback_provider_key, timeout)
+                    response = client.chat.completions.create(
+                        model=fallback_model_id,
+                        messages=messages,
+                        temperature=temp,
+                        max_tokens=tokens,
+                    )
+                except (RateLimitError, APIConnectionError, APITimeoutError) as fallback_exc:
+                    logger.error(
+                        "LLM fallback also failed for task=%s provider=%s model=%s: %s",
+                        task_key, fallback_provider_key, fallback_model_id, fallback_exc,
+                    )
+                    raise
+            else:
+                logger.error(
+                    "LLM call failed for task=%s provider=%s model=%s: %s (no fallback configured)",
+                    task_key, provider_key, model_id, exc,
+                )
+                raise
+        except Exception:
+            # Re-raise non-failover exceptions
             raise
 
         latency_ms = round((time.time() - t0) * 1000, 1)
@@ -178,20 +225,27 @@ class LLMService:
             input_tokens = response.usage.prompt_tokens or 0
             output_tokens = response.usage.completion_tokens or 0
 
-        self._track_usage(provider_key, input_tokens, output_tokens)
+        self._track_usage(used_provider_key, input_tokens, output_tokens)
 
-        logger.info(
-            "LLM call succeeded: task=%s provider=%s model=%s in=%d out=%d latency=%.0fms",
-            task_key, provider_key, model_id, input_tokens, output_tokens, latency_ms,
-        )
+        if failover_triggered:
+            logger.info(
+                "LLM call succeeded with failover: task=%s primary=%s/%s failed=%s fallback=%s/%s succeeded in=%.0fms",
+                task_key, provider_key, model_id, failover_reason, used_provider_key, used_model_id, latency_ms,
+            )
+        else:
+            logger.info(
+                "LLM call succeeded: task=%s provider=%s model=%s in=%d out=%d latency=%.0fms",
+                task_key, used_provider_key, used_model_id, input_tokens, output_tokens, latency_ms,
+            )
 
         return {
             "content": content,
-            "model": model_id,
-            "provider_key": provider_key,
+            "model": used_model_id,
+            "provider_key": used_provider_key,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "latency_ms": latency_ms,
+            "failover_triggered": failover_triggered,
         }
 
     def test_connection(self, provider_key: str) -> dict[str, Any]:

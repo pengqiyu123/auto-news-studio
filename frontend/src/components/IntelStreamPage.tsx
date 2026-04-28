@@ -1,4 +1,4 @@
-import { Search } from "lucide-react";
+import { RotateCcw, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { formatDateTime, formatRelativeTime } from "../lib/time";
@@ -7,6 +7,7 @@ import type { DiscoveryItem } from "../types";
 const PAGE_SIZE = 20;
 type TimeFilter = "all" | "1h" | "6h" | "24h" | "72h";
 type ChangeFilter = "all" | "new_item" | "updated_item" | "seen_item";
+type HeatFilter = "all" | "none" | "low" | "mid" | "high";
 
 interface IntelStreamPageProps {
   items: DiscoveryItem[];
@@ -18,6 +19,7 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
   const [platformFilter, setPlatformFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [changeFilter, setChangeFilter] = useState<ChangeFilter>("all");
+  const [heatFilter, setHeatFilter] = useState<HeatFilter>("all");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   const platformOptions = useMemo(
@@ -32,7 +34,7 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [query, timeFilter, platformFilter, sourceFilter, changeFilter]);
+  }, [query, timeFilter, platformFilter, sourceFilter, changeFilter, heatFilter]);
 
   const filtered = useMemo(() => {
     const now = Date.now();
@@ -49,6 +51,13 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
       const matchesPlatform = platformFilter === "all" || item.platform === platformFilter;
       const matchesSource = sourceFilter === "all" || item.source_name === sourceFilter;
       const matchesChange = changeFilter === "all" || item.item_state === changeFilter;
+      const engagement = Number(item.engagement_score ?? 0);
+      const matchesHeat =
+        heatFilter === "all" ||
+        (heatFilter === "none" && engagement <= 0) ||
+        (heatFilter === "low" && engagement > 0 && engagement < 10) ||
+        (heatFilter === "mid" && engagement >= 10 && engagement < 100) ||
+        (heatFilter === "high" && engagement >= 100);
 
       let matchesTime = true;
       if (timeFilter !== "all") {
@@ -62,9 +71,9 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
         matchesTime = collectedAt > 0 && ageMs <= limitMs;
       }
 
-      return matchesQuery && matchesPlatform && matchesSource && matchesChange && matchesTime;
+      return matchesQuery && matchesPlatform && matchesSource && matchesChange && matchesHeat && matchesTime;
     });
-  }, [items, query, timeFilter, platformFilter, sourceFilter, changeFilter]);
+  }, [items, query, timeFilter, platformFilter, sourceFilter, changeFilter, heatFilter]);
 
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;
@@ -75,6 +84,7 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
     setPlatformFilter("all");
     setSourceFilter("all");
     setChangeFilter("all");
+    setHeatFilter("all");
   }
 
   function githubMeta(item: DiscoveryItem) {
@@ -92,7 +102,7 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
       <div className="panel-header compact">
         <div>
           <p className="eyebrow">实时流</p>
-          <h2>实时流</h2>
+          <h2>进入聚类前的原始素材</h2>
         </div>
         <span className="subtle">{filtered.length} 条</span>
       </div>
@@ -129,8 +139,15 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
           <option value="updated_item">内容更新</option>
           <option value="seen_item">重复出现</option>
         </select>
-        <button type="button" className="ghost-button compact" onClick={resetFilters}>
-          清空筛选
+        <select value={heatFilter} onChange={(e) => setHeatFilter(e.target.value as HeatFilter)}>
+          <option value="all">全部热度</option>
+          <option value="none">无热度</option>
+          <option value="low">1-9</option>
+          <option value="mid">10-99</option>
+          <option value="high">100+</option>
+        </select>
+        <button type="button" className="ghost-button compact intel-filter-reset" onClick={resetFilters} title="清空筛选">
+          <RotateCcw size={14} />
         </button>
       </div>
       <div className="intel-score-row">
@@ -172,7 +189,11 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
               );
             })()}
           </article>
-        )) : <p className="empty-state">没有匹配的素材。</p>}
+        )) : (
+          <p className="empty-state">
+            {items.length && filtered.length === 0 ? "当前筛选条件下没有匹配的素材。" : "本轮还没有抓到新的素材。"}
+          </p>
+        )}
       </div>
       {hasMore ? (
         <div className="intel-load-more">

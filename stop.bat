@@ -12,7 +12,8 @@ echo [INFO] Stopping Auto News Studio...
 
 if exist "%PID_FILE%" (
   set /p TARGET_PID=<"%PID_FILE%"
-  if not "!TARGET_PID!"=="" (
+  echo(!TARGET_PID!| findstr /R "^[0-9][0-9]*$" >nul 2>nul
+  if not errorlevel 1 if not "!TARGET_PID!"=="" (
     tasklist /FI "PID eq !TARGET_PID!" | find "!TARGET_PID!" >nul 2>nul
     if not errorlevel 1 (
       echo [INFO] Stopping PID !TARGET_PID!...
@@ -22,6 +23,10 @@ if exist "%PID_FILE%" (
         set "STOPPED=1"
         set "KILLED_!TARGET_PID!=1"
       )
+    )
+  ) else (
+    if not "!TARGET_PID!"=="" (
+      echo [WARN] Ignoring invalid PID file content: !TARGET_PID!
     )
   )
   del /q "%PID_FILE%" >nul 2>nul

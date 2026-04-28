@@ -1,50 +1,37 @@
 import { AlertTriangle, BellRing, CheckCircle2, ChevronDown, ChevronUp, Clock3, Loader2, PauseCircle, PlayCircle, RadioTower, RefreshCcw, Save } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { deriveRuntimeDisplayStatus, explainAlertsEmptyState, explainEventsEmptyState, getRuntimeProgressMeta, RUNTIME_INTENT_LABELS, runtimeDisplayTone } from "../lib/runtimeIntent";
 import { formatDateTime, formatDuration, formatRelativeTime, toDateTimeLocalValue } from "../lib/time";
-import type { IntelAlert, IntelEvent, IntelOverviewSummary, IntelWorkScope, RuntimePlan, SchedulerStatus } from "../types";
+import type { EntityWatchlistSummaryItem, IntelAlert, IntelEvent, IntelOverviewSummary, RuntimeIntent, RuntimePlan, SchedulerStatus } from "../types";
 
 type OverviewTab = "alerts" | "events" | "source-health";
 
 interface IntelOverviewPageProps {
   summary: IntelOverviewSummary;
   runtime: SchedulerStatus;
+  entityWatchlistSummary: EntityWatchlistSummaryItem[];
   runtimePlan: RuntimePlan;
   savingRuntimePlan: boolean;
   busyRuntimeAction?: "start" | "stop" | null;
+  busyMaintenanceIntent?: RuntimeIntent | null;
   refreshing?: boolean;
   onSaveRuntimePlan: (payload: Omit<RuntimePlan, "effective_mode">) => Promise<void>;
   onStart: () => Promise<void>;
   onStop: () => Promise<void>;
-  onSyncNow: () => Promise<void>;
+  onRunIntent: (intent: RuntimeIntent) => Promise<void>;
   onRefresh: () => Promise<void>;
   onNavigate: (tab: OverviewTab) => void;
+  onOpenEntity: (entityId: string) => void;
   onWatchEvent: (eventId: string) => Promise<void>;
   onIgnoreEvent: (eventId: string) => Promise<void>;
 }
-
-const WORK_SCOPE_LABELS: Record<IntelWorkScope, string> = {
-  collect_only: "只采集",
-  collect_events: "采集 + 事件",
-  collect_events_alerts: "采集 + 事件 + 预警",
-};
 
 const LAUNCH_MODE_LABELS: Record<RuntimePlan["launch_mode"], string> = {
   once_now: "立即一次",
   once_at: "定时一次",
   interval_now: "立即循环",
   interval_at: "定时循环",
-};
-
-const CYCLE_LABELS: Record<string, string> = {
-  idle: "空闲",
-  starting: "启动中",
-  collecting: "采集中",
-  clustering: "聚类中",
-  scoring: "评分中",
-  drafting: "生成稿件中",
-  wechat_sync: "同步微信",
-  completed: "已完成",
 };
 
 function plansEqual(left: Omit<RuntimePlan, "effective_mode">, right: RuntimePlan) {
@@ -56,8 +43,7 @@ function plansEqual(left: Omit<RuntimePlan, "effective_mode">, right: RuntimePla
     left.launch_mode === right.launch_mode &&
     leftStartAt === rightStartAt &&
     leftInterval === rightInterval &&
-    left.timezone === right.timezone &&
-    left.work_scope === right.work_scope
+    left.timezone === right.timezone
   );
 }
 
@@ -67,7 +53,7 @@ function buildPlanDraft(runtimePlan: RuntimePlan): Omit<RuntimePlan, "effective_
     start_at: runtimePlan.launch_mode.endsWith("_at") ? (runtimePlan.start_at ?? null) : null,
     interval_minutes: runtimePlan.launch_mode.includes("interval") ? (runtimePlan.interval_minutes ?? 30) : null,
     timezone: runtimePlan.timezone,
-    work_scope: runtimePlan.work_scope,
+    work_scope: "collect_events_alerts",
   };
 }
 
@@ -85,40 +71,32 @@ function eventTone(event: IntelEvent) {
   return "neutral";
 }
 
-function runtimeTone(runtime: SchedulerStatus) {
-  if (runtime.run_status === "failed") return "danger";
-  if (runtime.recovered_run_id || runtime.run_status === "abandoned") return "warning";
-  if (runtime.control_state === "running" || runtime.run_status === "running") return "success";
-  if (runtime.control_state === "armed" || runtime.control_state === "waiting") return "warning";
-  return "neutral";
-}
-
-function runtimeLabel(runtime: SchedulerStatus) {
-  if (runtime.run_status === "failed") return "本轮失败";
-  if (runtime.recovered_run_id || runtime.run_status === "abandoned") return "已接管异常轮次";
-  if (runtime.control_state === "running" || runtime.run_status === "running") return "运行中";
-  if (runtime.control_state === "armed" || runtime.control_state === "waiting") return "等待下一轮";
-  return "已停止";
+function formatRuntimeIssueLabel(sourceName: string | null | undefined, message: string) {
+  return `${sourceName?.trim() ? `${sourceName}: ` : "系统异常："}${message}`;
 }
 
 export function IntelOverviewPage({
   summary,
   runtime,
+  entityWatchlistSummary,
   runtimePlan,
   savingRuntimePlan,
   busyRuntimeAction,
+  busyMaintenanceIntent,
   refreshing,
   onSaveRuntimePlan,
   onStart,
   onStop,
-  onSyncNow,
+  onRunIntent,
   onRefresh,
   onNavigate,
+  onOpenEntity,
   onWatchEvent,
   onIgnoreEvent,
 }: IntelOverviewPageProps) {
   const [planDraft, setPlanDraft] = useState<Omit<RuntimePlan, "effective_mode">>(buildPlanDraft(runtimePlan));
   const [planExpanded, setPlanExpanded] = useState(false);
+  const [advancedExpanded, setAdvancedExpanded] = useState(false);
 
   const cycleStartRef = useRef<number | null>(null);
   const prevPercentRef = useRef<number>(0);
@@ -159,20 +137,33 @@ export function IntelOverviewPage({
   }, [runtime.current_cycle_progress_percent, runtime.current_cycle_progress_total, runtime.current_cycle]);
 
   const planDirty = useMemo(() => !plansEqual(planDraft, runtimePlan), [planDraft, runtimePlan]);
-  const showCycleStatus =
-    runtime.current_cycle !== "idle" ||
-    runtime.run_status === "running" ||
-    runtime.run_status === "failed" ||
-    runtime.run_status === "abandoned";
+  const displayStatus = useMemo(() => deriveRuntimeDisplayStatus(runtime), [runtime]);
+  const progressMeta = useMemo(() => getRuntimeProgressMeta(runtime), [runtime]);
+  const cycleSummary = runtime.last_cycle_summary ?? null;
+  const cycleIssuePreview = useMemo(() => {
+    if (!cycleSummary?.issues?.length) {
+      return runtime.last_cycle_issue_summary || "本轮无异常";
+    }
+    return cycleSummary.issues
+      .slice(0, 2)
+      .map((item) => formatRuntimeIssueLabel(item.source_name, item.message))
+      .join("；");
+  }, [cycleSummary, runtime.last_cycle_issue_summary]);
   const nextRunLabel = useMemo(() => {
-    if (showCycleStatus) {
+    if (progressMeta.active) {
       return "本轮执行中";
+    }
+    if (displayStatus === "本轮完成") {
+      return "刚完成一轮";
+    }
+    if (displayStatus === "本轮失败") {
+      return "本轮失败";
     }
     if (runtime.control_state === "armed" || runtime.control_state === "waiting") {
       return formatRelativeTime(summary.next_run_at, "等待计划");
     }
     return formatRelativeTime(summary.next_run_at, "未安排");
-  }, [runtime.control_state, summary.next_run_at, showCycleStatus]);
+  }, [displayStatus, progressMeta.active, runtime.control_state, summary.next_run_at]);
 
   async function handleStart() {
     if (planDirty) {
@@ -187,10 +178,10 @@ export function IntelOverviewPage({
       <section className="panel intel-hero-panel">
         <div className="intel-plan-compact-bar">
           <div className="intel-plan-compact-status">
-            <span className={`status-badge status-${runtimeTone(runtime)}`}>
-              {runtimeLabel(runtime)}
+            <span className={`status-badge status-${runtimeDisplayTone(displayStatus)}`}>
+              {displayStatus}
             </span>
-            <span>{WORK_SCOPE_LABELS[planDraft.work_scope]}</span>
+            <span>{RUNTIME_INTENT_LABELS[runtime.run_intent]}</span>
             <span>{LAUNCH_MODE_LABELS[planDraft.launch_mode]}</span>
             {planDraft.launch_mode.includes("interval") ? <span>每 {planDraft.interval_minutes ?? 30} 分钟</span> : null}
             <span className="subtle">{nextRunLabel}</span>
@@ -199,9 +190,14 @@ export function IntelOverviewPage({
             <button type="button" className="ghost-button" disabled={refreshing} onClick={() => void onRefresh()}>
               <RefreshCcw size={14} />
             </button>
-            <button type="button" className="ghost-button" onClick={() => void onSyncNow()}>
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={runtime.running || busyMaintenanceIntent === "normal_monitoring"}
+              onClick={() => void onRunIntent("normal_monitoring")}
+            >
               <RadioTower size={14} />
-              补抓
+              {busyMaintenanceIntent === "normal_monitoring" ? "执行中..." : "立即补跑"}
             </button>
             <button
               type="button"
@@ -209,8 +205,16 @@ export function IntelOverviewPage({
               onClick={() => setPlanExpanded((v) => !v)}
             >
               {planExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-              计划
+              计划设置
               {planDirty ? <span className="dirty-dot" /> : null}
+            </button>
+            <button
+              type="button"
+              className="ghost-button compact"
+              onClick={() => setAdvancedExpanded((v) => !v)}
+            >
+              {advancedExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              高级操作
             </button>
             <button
               type="button"
@@ -219,7 +223,7 @@ export function IntelOverviewPage({
               onClick={() => void handleStart()}
             >
               <PlayCircle size={14} />
-              {busyRuntimeAction === "start" ? "启动中..." : "开始"}
+              {busyRuntimeAction === "start" ? "启动中..." : "开始监测"}
             </button>
             <button
               type="button"
@@ -228,29 +232,50 @@ export function IntelOverviewPage({
               onClick={() => void onStop()}
             >
               <PauseCircle size={14} />
-              {busyRuntimeAction === "stop" ? "停止中..." : "停止"}
+              {busyRuntimeAction === "stop" ? "停止中..." : "停止监测"}
             </button>
           </div>
         </div>
 
+        {advancedExpanded ? (
+          <div className="intel-plan-grid">
+            {([
+              { intent: "collect_validation", label: "仅采集素材" },
+              { intent: "event_rebuild", label: "重建事件" },
+              { intent: "alert_rebuild", label: "重算预警" },
+            ] as Array<{ intent: RuntimeIntent; label: string }>).map((item) => (
+              <button
+                key={item.intent}
+                type="button"
+                className="ghost-button"
+                disabled={runtime.running || busyMaintenanceIntent === item.intent}
+                onClick={() => void onRunIntent(item.intent)}
+              >
+                <RadioTower size={14} />
+                {busyMaintenanceIntent === item.intent ? "执行中..." : item.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
         {/* 运行阶段指示器 */}
-        {showCycleStatus ? (
+        {progressMeta.visible ? (
           <div className="intel-cycle-progress">
-            {runtime.run_status === "failed" ? (
+            {progressMeta.tone === "danger" ? (
               <AlertTriangle size={13} className="text-red-600" />
-            ) : runtime.current_cycle === "completed" ? (
+            ) : runtime.current_cycle === "completed" || runtime.run_status === "completed" ? (
               <CheckCircle2 size={13} className="text-green-600" />
             ) : (
               <Loader2 size={13} className="spin" />
             )}
-            <span className={`intel-cycle-stage${runtime.current_cycle === "completed" ? " intel-cycle-stage-done" : ""}`}>
-              {runtime.run_status === "failed" ? "本轮失败" : (CYCLE_LABELS[runtime.current_cycle] ?? runtime.current_cycle)}
+            <span className={`intel-cycle-stage intel-cycle-stage-${progressMeta.tone}${runtime.current_cycle === "completed" || runtime.run_status === "completed" ? " intel-cycle-stage-done" : ""}`}>
+              {progressMeta.stageLabel}
             </span>
             <span className="intel-cycle-percent">{runtime.current_cycle_progress_percent}%</span>
-            {estimatedRemaining && runtime.current_cycle !== "completed" && runtime.run_status !== "failed" ? (
+            {progressMeta.showEta && estimatedRemaining && runtime.current_cycle !== "completed" && runtime.run_status !== "failed" ? (
               <span className="subtle">剩余 {estimatedRemaining}</span>
             ) : null}
-            {runtime.current_cycle_progress_total > 0 ? (
+            {progressMeta.showCounters ? (
               <span className="subtle">
                 {runtime.current_cycle_progress_done}/{runtime.current_cycle_progress_total}
               </span>
@@ -261,16 +286,16 @@ export function IntelOverviewPage({
           </div>
         ) : null}
 
-        {showCycleStatus && runtime.current_cycle_progress_percent > 0 ? (
+        {progressMeta.meterVisible ? (
           <div className="intel-cycle-meter">
             <div
-              className="intel-cycle-meter-fill"
+              className={`intel-cycle-meter-fill intel-cycle-meter-fill-${progressMeta.tone}`}
               style={{ width: `${Math.max(0, Math.min(runtime.current_cycle_progress_percent, 100))}%` }}
             />
           </div>
         ) : null}
 
-        {(showCycleStatus || runtime.current_cycle_progress_label) && (runtime.current_cycle_progress_label || runtime.run_error || runtime.last_error) ? (
+        {(progressMeta.visible || runtime.current_cycle_progress_label) && (runtime.current_cycle_progress_label || runtime.run_error || runtime.last_error) ? (
           <p className="intel-cycle-label">{runtime.current_cycle_progress_label || runtime.run_error || runtime.last_error}</p>
         ) : null}
 
@@ -281,23 +306,6 @@ export function IntelOverviewPage({
         {/* 展开的计划配置面板 */}
         {planExpanded ? (
           <div className="intel-plan-grid">
-            <label>
-              <span>工作内容</span>
-              <select
-                value={planDraft.work_scope}
-                onChange={(event) =>
-                  setPlanDraft((current) => ({
-                    ...current,
-                    work_scope: event.target.value as IntelWorkScope,
-                  }))
-                }
-              >
-                <option value="collect_only">只采集</option>
-                <option value="collect_events">采集 + 事件</option>
-                <option value="collect_events_alerts">采集 + 事件 + 预警</option>
-              </select>
-            </label>
-
             <label>
               <span>启动方式</span>
               <select
@@ -405,7 +413,7 @@ export function IntelOverviewPage({
                 </div>
                 <a href={alert.representative_link} target="_blank" rel="noreferrer">查看原文</a>
               </div>
-            )) : <p className="empty-state">当前没有爆发或上升中的预警。</p>}
+            )) : <p className="empty-state">{explainAlertsEmptyState(runtime, summary.event_count, summary.alert_count)}</p>}
           </div>
         </article>
 
@@ -445,7 +453,7 @@ export function IntelOverviewPage({
                   </button>
                 </div>
               </div>
-            )) : <p className="empty-state">还没有形成热点事件。</p>}
+            )) : <p className="empty-state">{explainEventsEmptyState(runtime)}</p>}
           </div>
         </article>
       </section>
@@ -498,23 +506,92 @@ export function IntelOverviewPage({
               <Clock3 size={16} />
               <div>
                 <strong>上轮开始</strong>
-                <p>{formatDateTime(runtime.last_cycle_started_at, { fallback: "尚未执行" })}</p>
+                <p>{formatDateTime(cycleSummary?.started_at ?? runtime.last_cycle_started_at, { fallback: "尚未执行" })}</p>
               </div>
             </div>
             <div>
               <BellRing size={16} />
               <div>
                 <strong>上轮耗时</strong>
-                <p>{formatDuration(runtime.last_cycle_duration_seconds, "暂无")}</p>
+                <p>{formatDuration((cycleSummary?.duration_ms ?? 0) / 1000 || runtime.last_cycle_duration_seconds, "暂无")}</p>
               </div>
             </div>
             <div>
               <AlertTriangle size={16} />
               <div>
-                <strong>最近异常</strong>
-                <p>{runtime.run_error || runtime.last_error || summary.source_alerts[0] || "暂无异常"}</p>
+                <strong>本轮异常</strong>
+                <p>{cycleIssuePreview}</p>
               </div>
             </div>
+          </div>
+          {cycleSummary ? (
+            <div className="intel-runtime-summary">
+              <div className="intel-score-row">
+                <span>成功来源 {cycleSummary.success_source_count}</span>
+                <span>失败来源 {cycleSummary.failed_source_count}</span>
+                <span>新增素材 {cycleSummary.new_items_count}</span>
+                <span>新事件 {cycleSummary.new_events_count}</span>
+                <span>升温事件 {cycleSummary.growing_events_count}</span>
+              </div>
+              {cycleSummary.slow_sources.length ? (
+                <div className="intel-runtime-section">
+                  <strong>最慢来源 Top 3</strong>
+                  <div className="intel-runtime-chip-row">
+                    {cycleSummary.slow_sources.map((item) => (
+                      <span key={`${item.source_key}-${item.duration_ms}`} className="subtle-chip">
+                        {item.source_name} {Math.round(item.duration_ms / 1000)}s
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {cycleSummary.issues.length ? (
+                <div className="intel-runtime-section">
+                  <strong>整轮异常</strong>
+                    <ul className="intel-runtime-issues">
+                      {cycleSummary.issues.slice(0, 4).map((item, index) => (
+                        <li key={`${item.source_key ?? "runtime"}-${index}`}>
+                          {formatRuntimeIssueLabel(item.source_name, item.message)}
+                        </li>
+                      ))}
+                    </ul>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </article>
+
+        <article className="panel">
+          <div className="panel-header compact">
+            <div>
+              <p className="eyebrow">重点监控实体</p>
+              <h2>首页重点监控摘要</h2>
+            </div>
+            <button type="button" className="ghost-button compact" onClick={() => onNavigate("events")}>
+              热点簇
+            </button>
+          </div>
+          <div className="entity-watchlist-list">
+            {entityWatchlistSummary.length ? entityWatchlistSummary.slice(0, 5).map((item) => (
+              <article key={item.entity_id} className="entity-watchlist-card">
+                <div className="entity-watchlist-head">
+                  <div>
+                    <strong>{item.entity_name}</strong>
+                    <p>{item.entity_type}</p>
+                  </div>
+                  <button type="button" className="ghost-button compact" onClick={() => onOpenEntity(item.entity_id)}>
+                    查看
+                  </button>
+                </div>
+                <div className="entity-watchlist-stats">
+                  <span>事件 {item.event_count}</span>
+                  <span>预警 {item.alert_count}</span>
+                  <span>上升 {item.rising_count}</span>
+                  <span>爆发 {item.breakout_count}</span>
+                </div>
+                <p className="subtle">最近出现 {formatDateTime(item.last_seen_at, { fallback: "暂无" })}</p>
+              </article>
+            )) : <p className="empty-state">还没有重点监控实体。</p>}
           </div>
         </article>
       </section>

@@ -37,6 +37,10 @@ function launchModeLabel(value: RuntimePlan["launch_mode"]) {
   return map[value];
 }
 
+function formatRuntimeIssueLabel(sourceName: string | null | undefined, message: string) {
+  return `${sourceName?.trim() ? `${sourceName}: ` : "系统异常："}${message}`;
+}
+
 export function JobsPanel({
   jobs,
   publishTasks,
@@ -47,6 +51,7 @@ export function JobsPanel({
   onRun
 }: JobsPanelProps) {
   const manualDisabled = runtime.control_state !== "stopped";
+  const cycleSummary = runtime.last_cycle_summary ?? null;
 
   return (
     <section className="panel">
@@ -82,6 +87,41 @@ export function JobsPanel({
           <p>{runtime.last_error ? `最近错误：${runtime.last_error}` : "当前没有自动调度错误"}</p>
         </article>
       </div>
+
+      {cycleSummary ? (
+        <section className="intel-runtime-section">
+          <div className="panel-header compact">
+            <div>
+              <p className="eyebrow">最近一轮</p>
+              <h3>执行摘要</h3>
+            </div>
+          </div>
+          <div className="intel-score-row">
+            <span>新增素材 {cycleSummary.new_items_count}</span>
+            <span>新事件 {cycleSummary.new_events_count}</span>
+            <span>升温事件 {cycleSummary.growing_events_count}</span>
+            <span>失败来源 {cycleSummary.failed_source_count}</span>
+          </div>
+          {cycleSummary.slow_sources.length ? (
+            <div className="intel-runtime-chip-row">
+              {cycleSummary.slow_sources.map((item) => (
+                <span key={`${item.source_key}-${item.duration_ms}`} className="subtle-chip">
+                  {item.source_name} {Math.round(item.duration_ms / 1000)}s
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {cycleSummary.issues.length ? (
+            <ul className="intel-runtime-issues compact">
+              {cycleSummary.issues.slice(0, 4).map((item, index) => (
+                <li key={`${item.source_key ?? "runtime"}-${index}`}>
+                  {formatRuntimeIssueLabel(item.source_name, item.message)}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="job-control-cluster">
         <div className="job-control-header">

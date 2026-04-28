@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import hashlib
@@ -8,6 +9,8 @@ import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from .entity_extractor import extract_entities
+from .llm import LLMService
 
 UTC = timezone.utc
 TRACKING_QUERY_KEYS = {
@@ -245,13 +248,137 @@ def _should_merge(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return anchor_overlap and within_day and same_theme
 
 
+def _day_bucket(item: dict[str, Any]) -> str:
+    point = (
+        parse_time(item.get("published_at"))
+        or parse_time(item.get("collected_at"))
+        or datetime.now(UTC)
+    )
+    return point.astimezone(UTC).strftime("%Y-%m-%d")
+
+
+def _source_story_seed(item: dict[str, Any]) -> str:
+    canonical = str(item.get("canonical_link") or "").strip()
+    if canonical:
+        return f"canonical:{canonical}"
+    source_native_id = str(item.get("source_native_id") or "").strip()
+    if source_native_id:
+        return f"native:{source_native_id}"
+    anchors = sorted(set(str(token).strip().lower() for token in item.get("anchor_tokens", []) if str(token).strip()))
+    top_anchors = anchors[:2]
+    if top_anchors:
+        return f"anchors:{'|'.join(top_anchors)}:{_day_bucket(item)}"
+    dedupe = str(item.get("dedupe_key") or "").strip()
+    return f"dedupe:{dedupe[:80]}:{_day_bucket(item)}"
+
+
+def _source_story_time(item: dict[str, Any]) -> datetime:
+    return (
+        parse_time(item.get("published_at"))
+        or parse_time(item.get("collected_at"))
+        or datetime.min.replace(tzinfo=UTC)
+    )
+
+
+def _should_merge_within_source(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if str(left.get("source_key") or "") != str(right.get("source_key") or ""):
+        return False
+    if left.get("canonical_link") and left.get("canonical_link") == right.get("canonical_link"):
+        return True
+    if left.get("source_native_id") and left.get("source_native_id") == right.get("source_native_id"):
+        return True
+    if left.get("dedupe_key") and left.get("dedupe_key") == right.get("dedupe_key"):
+        return True
+    left_time = _source_story_time(left)
+    right_time = _source_story_time(right)
+    if abs((left_time - right_time).total_seconds()) > 12 * 3600:
+        return False
+    similarity = jaccard(set(left.get("title_tokens", [])), set(right.get("title_tokens", [])))
+    if similarity < 0.30:
+        return False
+    left_anchors = set(left.get("anchor_tokens", []))
+    right_anchors = set(right.get("anchor_tokens", []))
+    return bool(left_anchors & right_anchors)
+
+
+def _compact_source_cluster(cluster: list[dict[str, Any]], sources_by_key: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    primary = _representative_item(cluster, sources_by_key)
+    compacted = dict(primary)
+    compacted["title_tokens"] = list(primary.get("title_tokens", []))
+    compacted["anchor_tokens"] = list(primary.get("anchor_tokens", []))
+    compacted["tags"] = sorted({tag for item in cluster for tag in item.get("tags", [])})
+    compacted["summary"] = primary.get("summary") or primary.get("content") or primary.get("title")
+    compacted["content"] = primary.get("content") or primary.get("summary") or primary.get("title")
+    compacted["engagement_score"] = max(float(item.get("engagement_score", 0) or 0) for item in cluster)
+    compacted["story_discovery_item_ids"] = [str(item.get("id")) for item in cluster if item.get("id")]
+    compacted["raw_member_count"] = len(cluster)
+    compacted["published_at"] = primary.get("published_at")
+    compacted["collected_at"] = max(
+        (item.get("collected_at") for item in cluster),
+        key=lambda value: parse_time(value) or datetime.min.replace(tzinfo=UTC),
+    ) if cluster else primary.get("collected_at")
+    return compacted
+
+
+def _compact_source_stories(
+    discovery_items: list[dict[str, Any]],
+    sources_by_key: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not discovery_items:
+        return []
+    grouped_by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in discovery_items:
+        grouped_by_source[str(item.get("source_key") or "")].append(item)
+
+    stories: list[dict[str, Any]] = []
+    for source_key, source_items in grouped_by_source.items():
+        seed_buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for item in source_items:
+            seed_buckets[_source_story_seed(item)].append(item)
+        for bucket_items in seed_buckets.values():
+            if len(bucket_items) == 1:
+                single = dict(bucket_items[0])
+                single["story_discovery_item_ids"] = [str(single.get("id"))] if single.get("id") else []
+                single["raw_member_count"] = 1
+                stories.append(single)
+                continue
+            parent = list(range(len(bucket_items)))
+
+            def find(index: int) -> int:
+                while parent[index] != index:
+                    parent[index] = parent[parent[index]]
+                    index = parent[index]
+                return index
+
+            def union(left: int, right: int) -> None:
+                left_root = find(left)
+                right_root = find(right)
+                if left_root != right_root:
+                    parent[left_root] = right_root
+
+            for idx, left in enumerate(bucket_items):
+                for right_idx in range(idx + 1, len(bucket_items)):
+                    if _should_merge_within_source(left, bucket_items[right_idx]):
+                        union(idx, right_idx)
+
+            compacted_groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
+            for index, item in enumerate(bucket_items):
+                compacted_groups[find(index)].append(item)
+            for cluster in compacted_groups.values():
+                stories.append(_compact_source_cluster(cluster, sources_by_key))
+    stories.sort(key=lambda item: _source_story_time(item), reverse=True)
+    return stories
+
+
 def cluster_discovery_items(
     discovery_items: list[dict[str, Any]],
+    sources_by_key: dict[str, dict[str, Any]],
     reference_time: datetime | None = None,
 ) -> list[list[dict[str, Any]]]:
     if not discovery_items:
         return []
-    parent = list(range(len(discovery_items)))
+    source_stories = _compact_source_stories(discovery_items, sources_by_key)
+    parent = list(range(len(source_stories)))
     now = reference_time or datetime.now(UTC)
 
     def find(index: int) -> int:
@@ -268,16 +395,16 @@ def cluster_discovery_items(
 
     recent_cutoff = now - timedelta(hours=24)
     recent_indices = [
-        i for i, item in enumerate(discovery_items)
+        i for i, item in enumerate(source_stories)
         if (parse_time(item.get("collected_at")) or datetime.min.replace(tzinfo=UTC)) >= recent_cutoff
     ]
     for idx, left_index in enumerate(recent_indices):
         for right_index in recent_indices[idx + 1:]:
-            if _should_merge(discovery_items[left_index], discovery_items[right_index]):
+            if _should_merge(source_stories[left_index], source_stories[right_index]):
                 union(left_index, right_index)
 
     grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for index, item in enumerate(discovery_items):
+    for index, item in enumerate(source_stories):
         grouped[find(index)].append(item)
     return list(grouped.values())
 
@@ -380,7 +507,7 @@ def _growth_from_last_two(snapshots: list[dict[str, Any]], event_id: str, curren
     ]
     candidates.sort(key=lambda item: parse_time(item.get("captured_at")) or datetime.min.replace(tzinfo=UTC))
     if not candidates:
-        return current_member_count > 0
+        return False
     if len(candidates) == 1:
         return current_member_count > int(candidates[-1].get("member_count", 0) or 0)
     return (
@@ -563,6 +690,48 @@ def _carry_forward_stale_events(
     return carried
 
 
+def _make_llm_service(llm_config: dict[str, Any] | None) -> LLMService | None:
+    if not llm_config:
+        return None
+    try:
+        return LLMService(llm_config)
+    except Exception:
+        return None
+
+
+# Translation cache: key=md5[:16], value=translated text
+_translation_cache: dict[str, str] = {}
+_MAX_CACHE_SIZE = 200
+
+
+def _translate_summary(text: str, llm_service: LLMService | None) -> str:
+    """Translate summary to Chinese. Returns empty string on failure or if already Chinese."""
+    if not text:
+        return ""
+    chinese_chars = sum(1 for c in text if "一" <= c <= "鿿")
+    if len(text) > 0 and chinese_chars / len(text) > 0.5:
+        return ""
+    cache_key = hashlib.md5(text[:500].encode()).hexdigest()[:16]
+    if cache_key in _translation_cache:
+        return _translation_cache[cache_key]
+    if not llm_service or not llm_service.is_available():
+        return ""
+    truncated = text[:1500]
+    try:
+        messages = [{"role": "user", "content": f"翻译成中文，只返回译文：\n{truncated}"}]
+        # Use 15 second timeout for translation to avoid blocking the pipeline
+        result = llm_service.generate("summary", messages, temperature=0.3, max_tokens=256, timeout=15.0)
+        translated = result.get("content", "").strip()
+        if translated:
+            if len(_translation_cache) >= _MAX_CACHE_SIZE:
+                oldest_key = next(iter(_translation_cache))
+                del _translation_cache[oldest_key]
+            _translation_cache[cache_key] = translated
+        return translated
+    except Exception:
+        return ""
+
+
 def build_intel_state(
     raw_items: list[dict[str, Any]],
     sources_by_key: dict[str, dict[str, Any]],
@@ -570,6 +739,7 @@ def build_intel_state(
     previous_events: list[dict[str, Any]] | None = None,
     previous_snapshots: list[dict[str, Any]] | None = None,
     captured_at: str | None = None,
+    llm_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     stamp = captured_at or now_iso()
     now = parse_time(stamp) or datetime.now(UTC)
@@ -578,8 +748,9 @@ def build_intel_state(
     previous_events_by_id = {str(item.get("id")): item for item in previous_events if item.get("id")}
 
     discovery_items = build_discovery_items(raw_items, sources_by_key, previous_discovery_items=previous_discovery_items)
-    clusters = cluster_discovery_items(discovery_items, reference_time=now)
+    clusters = cluster_discovery_items(discovery_items, sources_by_key, reference_time=now)
     events: list[dict[str, Any]] = []
+    llm_service = _make_llm_service(llm_config)
 
     for cluster in clusters:
         primary = _representative_item(cluster, sources_by_key)
@@ -595,6 +766,12 @@ def build_intel_state(
             new_first_seen = parse_time(first_seen)
             if previous_first_seen and new_first_seen and previous_first_seen < new_first_seen:
                 first_seen = previous_first_seen.replace(microsecond=0).isoformat()
+        discovery_item_ids = [
+            item_id
+            for item in cluster
+            for item_id in item.get("story_discovery_item_ids", [item.get("id")])
+            if item_id
+        ]
         event = {
             "id": event_id,
             "title": _rule_title(primary),
@@ -602,19 +779,23 @@ def build_intel_state(
             "representative_link": primary.get("link"),
             "representative_source_name": primary.get("source_name"),
             "representative_discovery_item_id": primary.get("id"),
-            "discovery_item_ids": [item.get("id") for item in cluster],
+            "discovery_item_ids": discovery_item_ids,
             "source_keys": source_keys,
             "source_names": source_names,
             "platforms": platforms,
             "platform_count": len(platforms),
-            "source_count": len(source_names),
-            "member_count": len(cluster),
+            "source_count": len(source_keys),
+            "member_count": len(discovery_item_ids),
+            "story_count": len(cluster),
+            "member_delta": 0,
+            "platform_delta": 0,
             "published_at": primary.get("published_at"),
             "latest_collected_at": max((item.get("collected_at") for item in cluster), key=lambda value: parse_time(value) or datetime.min.replace(tzinfo=UTC)) if cluster else stamp,
             "first_seen_at": first_seen or primary.get("published_at") or primary.get("collected_at") or stamp,
             "last_seen_at": last_seen or primary.get("collected_at") or stamp,
             "tags": tags,
             "anchor_tokens": sorted({token for item in cluster for token in item.get("anchor_tokens", [])}),
+            "representative_engagement_score": float(primary.get("engagement_score", 0) or 0),
             "watchlisted": bool(previous.get("watchlisted", False)),
             "ignored": bool(previous.get("ignored", False)),
         }
@@ -628,14 +809,51 @@ def build_intel_state(
         )
         event["velocity_details"] = velocity_details
         event["alert_state"] = _alert_state(event, velocity_details, now)
+        previous_member_count = int(previous.get("member_count", 0) or 0)
+        previous_platform_count = int(previous.get("platform_count", 0) or 0)
+        event["member_delta"] = int(event["member_count"]) - previous_member_count
+        event["platform_delta"] = int(event["platform_count"]) - previous_platform_count
         event["change_state"] = _event_change_state(event, previous)
         event["alert_reason"] = _rule_reason(event, velocity_details, event["alert_state"])
+        try:
+            extracted_entities = extract_entities(
+                " ".join(
+                    part for part in [
+                        str(event.get("title") or "").strip(),
+                        str(event.get("summary") or "").strip(),
+                    ]
+                    if part
+                )
+            )
+        except Exception:
+            extracted_entities = []
+        event["entity_ids"] = [item["entity_id"] for item in extracted_entities if item.get("entity_id")]
+        event["entity_names"] = [item["entity_name"] for item in extracted_entities if item.get("entity_name")]
+        event["summary_translated"] = ""
         events.append(event)
 
     active_ids = {item["id"] for item in events}
     events.extend(_carry_forward_stale_events(events, previous_events, active_ids, now))
 
     events.sort(key=lambda item: (ALERT_LEVELS.get(str(item.get("alert_state")), 0), float(item.get("composite_score", 0) or 0)), reverse=True)
+
+    # Parallel translation for events without translation (skip carry-forward events that already have it)
+    if llm_service and llm_service.is_available():
+        events_needing_translation = [
+            (e["id"], e.get("summary") or "") for e in events if not e.get("summary_translated")
+        ]
+        if events_needing_translation:
+            def _translate_one(item: tuple[str, str]) -> tuple[str, str]:
+                return (item[0], _translate_summary(item[1], llm_service))
+
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {executor.submit(_translate_one, item): item[0] for item in events_needing_translation}
+                for future in as_completed(futures):
+                    event_id, translated = future.result()
+                    for event in events:
+                        if event["id"] == event_id:
+                            event["summary_translated"] = translated
+                            break
 
     retained_snapshots = [
         item for item in previous_snapshots
@@ -663,6 +881,9 @@ def build_intel_state(
                 "source_count": event["source_count"],
                 "representative_link": event["representative_link"],
                 "triggered_at": stamp,
+                "entity_ids": list(event.get("entity_ids", [])),
+                "entity_names": list(event.get("entity_names", [])),
+                "summary_translated": event.get("summary_translated") or "",
             }
         )
     alerts.sort(key=lambda item: (ALERT_LEVELS.get(item["level"], 0), item["composite_score"]), reverse=True)

@@ -35,13 +35,23 @@ if not exist "%FRONTEND_DIST%" (
 
 if exist "%PID_FILE%" (
   set /p EXISTING_PID=<"%PID_FILE%"
-  if not "!EXISTING_PID!"=="" (
+  echo(!EXISTING_PID!| findstr /R "^[0-9][0-9]*$" >nul 2>nul
+  if not errorlevel 1 if not "!EXISTING_PID!"=="" (
     tasklist /FI "PID eq !EXISTING_PID!" | find "!EXISTING_PID!" >nul 2>nul
     if not errorlevel 1 (
-      echo [INFO] Auto News Studio is already running. PID=!EXISTING_PID!
-      echo URL: http://127.0.0.1:8000
-      pause
-      exit /b 0
+      for /f %%P in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$pid = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue ^| Select-Object -First 1 -ExpandProperty OwningProcess; if ($pid) { Write-Output $pid }"') do (
+        set "ACTIVE_LISTENER_PID=%%P"
+      )
+      if defined ACTIVE_LISTENER_PID (
+        echo [INFO] Auto News Studio is already running. PID=!EXISTING_PID!
+        echo URL: http://127.0.0.1:8000
+        pause
+        exit /b 0
+      ) else (
+        echo [INFO] Found stale backend parent process, cleaning up PID !EXISTING_PID!.
+        taskkill /PID !EXISTING_PID! /T /F >nul 2>nul
+        del /q "%PID_FILE%" >nul 2>nul
+      )
     ) else (
       echo [INFO] Stale PID file found, cleaning up.
       del /q "%PID_FILE%" >nul 2>nul
@@ -69,12 +79,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 timeout /t 3 /nobreak >nul
 
 set "STARTED_PID="
-for /f %%P in ('powershell -NoProfile -Command "$line = netstat -ano ^| Select-String '':8000\\s+.*LISTENING\\s+\\d+$'' ^| Select-Object -First 1; if ($line) { (($line.ToString() -split ''\\s+'')[-1]) }"') do (
+for /f %%P in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$pid = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue ^| Select-Object -First 1 -ExpandProperty OwningProcess; if ($pid) { Write-Output $pid }"') do (
   set "STARTED_PID=%%P"
-)
-
-if not defined STARTED_PID if exist "%PID_FILE%" (
-  set /p STARTED_PID=<"%PID_FILE%"
 )
 
 if not defined STARTED_PID (
@@ -83,13 +89,14 @@ if not defined STARTED_PID (
   exit /b 1
 )
 
->"%PID_FILE%" echo !STARTED_PID!
-
 echo.
 echo ========================================
 echo   Auto News Studio started successfully
 echo ========================================
+set "PARENT_PID="
+if exist "%PID_FILE%" set /p PARENT_PID=<"%PID_FILE%"
 echo   PID:  !STARTED_PID!
+if defined PARENT_PID if not "!PARENT_PID!"=="!STARTED_PID!" echo   Tree: !PARENT_PID! -> !STARTED_PID!
 echo   URL:  http://127.0.0.1:8000
 echo   Logs: %RUNTIME_DIR%\
 echo ========================================

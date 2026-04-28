@@ -6,12 +6,17 @@ interface LogsPanelProps {
   runtime: SchedulerStatus;
 }
 
+function formatRuntimeIssueLabel(sourceName: string | null | undefined, message: string) {
+  return `${sourceName?.trim() ? `${sourceName}: ` : "系统异常："}${message}`;
+}
+
 export function LogsPanel({ logs, runtime }: LogsPanelProps) {
   const sortedLogs = [...logs].sort((a, b) => {
     const ta = a.created_at ?? "";
     const tb = b.created_at ?? "";
     return tb > ta ? 1 : tb < ta ? -1 : 0;
   });
+  const cycleSummary = runtime.last_cycle_summary ?? null;
 
   return (
     <section className="panel">
@@ -38,6 +43,28 @@ export function LogsPanel({ logs, runtime }: LogsPanelProps) {
           <p>{runtime.last_error ?? "无异常"}</p>
         </div>
       </div>
+
+      {cycleSummary ? (
+        <section className="intel-runtime-section">
+          <div className="intel-score-row">
+            <span>成功来源 {cycleSummary.success_source_count}</span>
+            <span>失败来源 {cycleSummary.failed_source_count}</span>
+            <span>新增素材 {cycleSummary.new_items_count}</span>
+            <span>新事件 {cycleSummary.new_events_count}</span>
+          </div>
+          {cycleSummary.issues.length ? (
+            <ul className="intel-runtime-issues compact">
+              {cycleSummary.issues.map((item, index) => (
+                <li key={`${item.source_key ?? "runtime"}-${index}`}>
+                  {formatRuntimeIssueLabel(item.source_name, item.message)}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="subtle">最近一轮没有记录到异常。</p>
+          )}
+        </section>
+      ) : null}
 
       <div className="log-plain-list">
         {sortedLogs.map((log) => (

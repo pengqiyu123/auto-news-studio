@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from .composer import _markdown_to_html, _wechat_html, compose_draft
 from .connectors import _collect_with_retry, collect_enabled_sources, collect_from_source
+from .entity_extractor import entity_id_for_name, entity_type_for_name
 from .intel_pipeline import build_intel_state
 from .llm import LLMService
 from .legacy_sources import build_legacy_rss_sources
@@ -34,6 +35,8 @@ from .models import (
     DashboardTopBar,
     DraftItem,
     DiscoveryItem,
+    EntityWatchlistItem,
+    EntityWatchlistSummaryItem,
     ExecutionChainSnapshot,
     FreshnessSnapshot,
     GithubSignalItem,
@@ -49,6 +52,9 @@ from .models import (
     IntelStreamItem,
     JobItem,
     LogItem,
+    RuntimeCycleSummary,
+    RuntimeIssueItem,
+    RuntimeSlowSource,
     SchedulerStatus,
     ModeDefinition,
     PublishBackendStatus,
@@ -56,12 +62,21 @@ from .models import (
     PublishTask,
     ReferenceProject,
     RuntimePlan,
+    RuntimeIntent,
     RuntimePlanPayload,
     SourceConnector,
     SourceConnectorPayload,
     CreateSourcePayload,
     SourceSyncResponse,
     WeChatChannelConfig,
+)
+from .store_llm import (
+    build_provider_from_profile,
+    build_tasks_from_profile,
+    default_llm_state,
+    merge_llm_profiles,
+    DEFAULT_LLM_PROFILES,
+    DEFAULT_LLM_TASK_TEMPLATE,
 )
 from .pipeline import build_candidates, normalize_raw_items
 from .publishers import (
@@ -101,6 +116,40 @@ UNSUPPORTED_SOURCE_DRIVERS = {
 SOURCE_TIMEOUT_SECONDS = 12
 SLOW_SOURCE_WARNING_SECONDS = 8
 RUN_STALE_SECONDS = 180
+DEFAULT_RUNTIME_INTENT = "normal_monitoring"
+INTENT_TO_WORK_SCOPE: dict[str, str] = {
+    "normal_monitoring": "collect_events_alerts",
+    "collect_validation": "collect_only",
+    "event_rebuild": "collect_events",
+    "alert_rebuild": "collect_events_alerts",
+}
+
+MODE_STAGE_PLANS: dict[str, list[dict[str, str]]] = {
+    "radar_only": [
+        {"key": "collecting", "label": "采集素材"},
+        {"key": "clustering", "label": "聚合热点事件"},
+        {"key": "scoring", "label": "判断热度与预警"},
+    ],
+    "radar_and_draft": [
+        {"key": "collecting", "label": "采集素材"},
+        {"key": "clustering", "label": "聚合热点事件"},
+        {"key": "scoring", "label": "判断热度与预警"},
+        {"key": "drafting", "label": "生成稿件"},
+    ],
+    "full_pipeline": [
+        {"key": "collecting", "label": "采集素材"},
+        {"key": "clustering", "label": "聚合热点事件"},
+        {"key": "scoring", "label": "判断热度与预警"},
+        {"key": "drafting", "label": "生成稿件"},
+        {"key": "wechat_sync", "label": "分发与同步"},
+    ],
+}
+
+INTENT_STAGE_PLANS: dict[str, list[dict[str, str]]] = {
+    "collect_validation": [{"key": "collecting", "label": "采集素材"}],
+    "event_rebuild": [{"key": "clustering", "label": "重建热点事件"}],
+    "alert_rebuild": [{"key": "scoring", "label": "重算预警"}],
+}
 
 
 def now_iso() -> str:
@@ -440,165 +489,9 @@ DEFAULT_AUTOMATION_PROFILES: list[dict[str, Any]] = [
     },
 ]
 
-DEFAULT_LLM_PROFILES: list[dict[str, Any]] = [
-    {
-        "id": "nvidia-qwen35-122b",
-        "label": "NVIDIA Qwen 122B",
-        "description": "主力强模型，实测连通快，适合优先做正式稿。",
-        "provider_key": "nvidia",
-        "base_url": "https://integrate.api.nvidia.com/v1",
-        "api_key": "",
-        "model_id": "qwen/qwen3.5-122b-a10b",
-        "enabled": False,
-    },
-    {
-        "id": "nvidia-glm47",
-        "label": "NVIDIA GLM 4.7",
-        "description": "NVIDIA 通道下的 GLM 备选，实测可用且响应很快。",
-        "provider_key": "nvidia",
-        "base_url": "https://integrate.api.nvidia.com/v1",
-        "api_key": "",
-        "model_id": "z-ai/glm4.7",
-        "enabled": False,
-    },
-    {
-        "id": "nvidia-minimax-m27",
-        "label": "NVIDIA MiniMax M2.7",
-        "description": "实测可用，但接近 10 秒边界，适合作为额外备选。",
-        "provider_key": "nvidia",
-        "base_url": "https://integrate.api.nvidia.com/v1",
-        "api_key": "",
-        "model_id": "minimaxai/minimax-m2.7",
-        "enabled": False,
-    },
-    {
-        "id": "siliconflow-glm4-9b",
-        "label": "SiliconFlow GLM 4 9B",
-        "description": "免费且快，适合做稳态兜底。",
-        "provider_key": "siliconflow",
-        "base_url": "https://api.siliconflow.cn/v1",
-        "api_key": "",
-        "model_id": "THUDM/GLM-4-9B-0414",
-        "enabled": False,
-    },
-    {
-        "id": "siliconflow-glmz1-9b",
-        "label": "SiliconFlow GLM Z1 9B",
-        "description": "免费备选，实测连通和速度都不错。",
-        "provider_key": "siliconflow",
-        "base_url": "https://api.siliconflow.cn/v1",
-        "api_key": "",
-        "model_id": "THUDM/GLM-Z1-9B-0414",
-        "enabled": False,
-    },
-    {
-        "id": "siliconflow-deepseek-r1-qwen3-8b",
-        "label": "SiliconFlow DeepSeek R1 Qwen3 8B",
-        "description": "免费推理型备选，适合做判断和摘要。",
-        "provider_key": "siliconflow",
-        "base_url": "https://api.siliconflow.cn/v1",
-        "api_key": "",
-        "model_id": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
-        "enabled": False,
-    },
-    {
-        "id": "siliconflow-qwen3-8b",
-        "label": "SiliconFlow Qwen3 8B",
-        "description": "免费通用备选，适合快速切换测试。",
-        "provider_key": "siliconflow",
-        "base_url": "https://api.siliconflow.cn/v1",
-        "api_key": "",
-        "model_id": "Qwen/Qwen3-8B",
-        "enabled": False,
-    },
-]
-
-DEFAULT_LLM_TASK_TEMPLATE: list[dict[str, Any]] = [
-    {"task_key": "judgement", "label": "初步判断", "temperature": 0.2, "max_tokens": 2048},
-    {"task_key": "outline", "label": "写作提纲", "temperature": 0.4, "max_tokens": 2048},
-    {"task_key": "article", "label": "正文生成", "temperature": 0.7, "max_tokens": 4096},
-    {"task_key": "title", "label": "标题润色", "temperature": 0.8, "max_tokens": 512},
-    {"task_key": "summary", "label": "摘要生成", "temperature": 0.5, "max_tokens": 1024},
-]
-
-
-def build_provider_from_profile(profile: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "key": str(profile.get("provider_key") or "").strip(),
-        "label": str(profile.get("label") or "").strip(),
-        "base_url": str(profile.get("base_url") or "").strip(),
-        "api_key": str(profile.get("api_key") or "").strip(),
-        "model_id": str(profile.get("model_id") or "").strip(),
-        "enabled": bool(profile.get("enabled")) and bool(str(profile.get("api_key") or "").strip()),
-        "last_tested_at": profile.get("last_tested_at"),
-        "last_test_result": profile.get("last_test_result"),
-    }
-
-
-def build_tasks_from_profile(profile: dict[str, Any]) -> list[dict[str, Any]]:
-    provider_key = str(profile.get("provider_key") or "").strip()
-    model_id = str(profile.get("model_id") or "").strip()
-    return [
-        {
-            **task,
-            "provider_key": provider_key if bool(profile.get("enabled")) and model_id else "",
-            "model_id": model_id if bool(profile.get("enabled")) else "",
-        }
-        for task in deepcopy(DEFAULT_LLM_TASK_TEMPLATE)
-    ]
-
-
-def default_llm_state() -> dict[str, Any]:
-    profiles = deepcopy(DEFAULT_LLM_PROFILES)
-    current_profile_id = profiles[0]["id"] if profiles else ""
-    active_profile = next((item for item in profiles if item["id"] == current_profile_id), {})
-    return {
-        "current_profile_id": current_profile_id,
-        "profiles": profiles,
-        "providers": [build_provider_from_profile(active_profile)] if active_profile else [],
-        "tasks": build_tasks_from_profile(active_profile) if active_profile else [],
-        "usage_today": {},
-    }
-
-
-def merge_llm_profiles(
-    incoming_profiles: list[dict[str, Any]],
-    existing_profiles: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    existing_by_id = {
-        str(item.get("id")): deepcopy(item)
-        for item in (existing_profiles or [])
-        if isinstance(item, dict) and item.get("id")
-    }
-    merged_by_id: dict[str, dict[str, Any]] = {
-        item["id"]: {**item, **existing_by_id.get(item["id"], {})}
-        for item in deepcopy(DEFAULT_LLM_PROFILES)
-    }
-    for item in incoming_profiles:
-        if not isinstance(item, dict) or not item.get("id"):
-            continue
-        profile_id = str(item["id"])
-        profile = {**merged_by_id.get(profile_id, {}), **deepcopy(item)}
-        existing = existing_by_id.get(profile_id, {})
-        api_key = str(profile.get("api_key") or "").strip()
-        if "****" in api_key and existing:
-            profile["api_key"] = str(existing.get("api_key") or "")
-        merged_by_id[profile_id] = profile
-
-    provider_keys: dict[str, str] = {}
-    for profile in list(merged_by_id.values()) + list(existing_by_id.values()):
-        provider_key = str(profile.get("provider_key") or "").strip()
-        api_key = str(profile.get("api_key") or "").strip()
-        if provider_key and api_key and "****" not in api_key:
-            provider_keys[provider_key] = api_key
-
-    for profile in merged_by_id.values():
-        provider_key = str(profile.get("provider_key") or "").strip()
-        if provider_key and not str(profile.get("api_key") or "").strip():
-            profile["api_key"] = provider_keys.get(provider_key, "")
-        profile["enabled"] = bool(profile.get("enabled")) and bool(str(profile.get("api_key") or "").strip())
-
-    return list(merged_by_id.values())
+# DEFAULT_LLM_PROFILES, DEFAULT_LLM_TASK_TEMPLATE, build_provider_from_profile,
+# build_tasks_from_profile, default_llm_state, merge_llm_profiles
+# have been moved to store_llm.py
 
 
 def _rss(
@@ -827,6 +720,7 @@ class StudioStore:
             "llm": default_llm_state(),
             "settings": {
                 "max_workers": 8,
+                "entity_watchlist": [],
             },
             "reference_projects": reference_projects,
             "runtime_plan": {
@@ -862,6 +756,13 @@ class StudioStore:
                 "counters_date": local_now().date().isoformat(),
                 "last_error": None,
                 "last_successful_sync_at": None,
+                "current_cycle_sources": [],
+                "current_cycle_metrics": {
+                    "draft_count": 0,
+                    "wechat_sync_count": 0,
+                    "publish_count": 0,
+                },
+                "last_cycle_summary": None,
                 "automation_run": {
                     "run_id": None,
                     "status": "idle",
@@ -872,6 +773,8 @@ class StudioStore:
                     "triggered_by": None,
                     "error": None,
                     "recovered_run_id": None,
+                    "intent": DEFAULT_RUNTIME_INTENT,
+                    "last_run_outcome": None,
                 },
             },
         }
@@ -1090,11 +993,17 @@ class StudioStore:
         llm["current_profile_id"] = current_profile_id
         if active_profile:
             active_profile["enabled"] = bool(str(active_profile.get("api_key") or "").strip()) and bool(active_profile.get("enabled"))
-            llm["providers"] = [build_provider_from_profile(active_profile)]
-            llm["tasks"] = build_tasks_from_profile(active_profile)
+            # Preserve existing providers and tasks if they exist (saved by update_llm_config)
+            # Only build from profile if not present (for initial migration)
+            if not llm.get("providers"):
+                llm["providers"] = [build_provider_from_profile(active_profile)]
+            if not llm.get("tasks"):
+                llm["tasks"] = build_tasks_from_profile(active_profile)
         else:
-            llm["providers"] = []
-            llm["tasks"] = []
+            if not llm.get("providers"):
+                llm["providers"] = []
+            if not llm.get("tasks"):
+                llm["tasks"] = []
         llm.setdefault("usage_today", {})
         state.setdefault("automation_mode", "radar_only")
         state.setdefault("automation_mode_definitions", deepcopy(AUTOMATION_MODE_DEFINITIONS))
@@ -1103,6 +1012,9 @@ class StudioStore:
         state.setdefault("intel_events", [])
         state.setdefault("event_snapshots", [])
         state.setdefault("intel_alerts", [])
+        settings = state.setdefault("settings", {})
+        settings.setdefault("max_workers", 8)
+        settings.setdefault("entity_watchlist", [])
         state.setdefault("runtime_plan", {})
         state.setdefault("notifications", {
             "webhook": {
@@ -1165,6 +1077,13 @@ class StudioStore:
         runtime.setdefault("counters_date", local_now().date().isoformat())
         runtime.setdefault("last_error", None)
         runtime.setdefault("last_successful_sync_at", None)
+        runtime.setdefault("current_cycle_sources", [])
+        runtime.setdefault("current_cycle_metrics", {
+            "draft_count": 0,
+            "wechat_sync_count": 0,
+            "publish_count": 0,
+        })
+        runtime.setdefault("last_cycle_summary", None)
         automation_run = runtime.setdefault("automation_run", {})
         automation_run.setdefault("run_id", None)
         automation_run.setdefault("status", "idle")
@@ -1175,6 +1094,22 @@ class StudioStore:
         automation_run.setdefault("triggered_by", None)
         automation_run.setdefault("error", None)
         automation_run.setdefault("recovered_run_id", None)
+        automation_run.setdefault("intent", DEFAULT_RUNTIME_INTENT)
+        automation_run.setdefault("last_run_outcome", None)
+        for event in state.get("intel_events", []):
+            event.setdefault("entity_ids", [])
+            event.setdefault("entity_names", [])
+        for alert in state.get("intel_alerts", []):
+            alert.setdefault("entity_ids", [])
+            alert.setdefault("entity_names", [])
+        sanitized_watchlist: list[dict[str, Any]] = []
+        for raw_item in settings.get("entity_watchlist", []):
+            if not isinstance(raw_item, dict):
+                continue
+            normalized = self._normalize_entity_watchlist_item(raw_item)
+            if normalized:
+                sanitized_watchlist.append(normalized)
+        settings["entity_watchlist"] = sanitized_watchlist
         for source in state.get("sources", []):
             source.setdefault("last_attempt_at", None)
             source.setdefault("last_success_at", None)
@@ -1293,7 +1228,9 @@ class StudioStore:
             runtime_plan.setdefault(key, value)
         runtime_plan["timezone"] = str(runtime_plan.get("timezone") or "Asia/Shanghai")
         runtime_plan["launch_mode"] = str(runtime_plan.get("launch_mode") or "interval_now")
-        runtime_plan["work_scope"] = str(runtime_plan.get("work_scope") or defaults["work_scope"])
+        # Normal monitoring always runs the full intel chain; intermediate scopes
+        # are kept only as transient maintenance actions, not as saved user plans.
+        runtime_plan["work_scope"] = "collect_events_alerts"
         launch_mode = runtime_plan["launch_mode"]
         if launch_mode in {"once_now", "interval_now"}:
             runtime_plan["start_at"] = None
@@ -1478,6 +1415,13 @@ class StudioStore:
         runtime.setdefault("counters_date", local_now().date().isoformat())
         runtime.setdefault("last_error", None)
         runtime.setdefault("last_successful_sync_at", None)
+        runtime.setdefault("current_cycle_sources", [])
+        runtime.setdefault("current_cycle_metrics", {
+            "draft_count": 0,
+            "wechat_sync_count": 0,
+            "publish_count": 0,
+        })
+        runtime.setdefault("last_cycle_summary", None)
         automation_run = runtime.setdefault("automation_run", {})
         automation_run.setdefault("run_id", None)
         automation_run.setdefault("status", "idle")
@@ -1488,6 +1432,8 @@ class StudioStore:
         automation_run.setdefault("triggered_by", None)
         automation_run.setdefault("error", None)
         automation_run.setdefault("recovered_run_id", None)
+        automation_run.setdefault("intent", DEFAULT_RUNTIME_INTENT)
+        automation_run.setdefault("last_run_outcome", None)
         self._sync_runtime_counters(runtime)
         return runtime
 
@@ -1504,6 +1450,8 @@ class StudioStore:
                 "triggered_by": None,
                 "error": None,
                 "recovered_run_id": None,
+                "intent": DEFAULT_RUNTIME_INTENT,
+                "last_run_outcome": None,
             },
         )
 
@@ -1516,7 +1464,20 @@ class StudioStore:
             return False
         return (now - heartbeat).total_seconds() > RUN_STALE_SECONDS
 
-    def _start_runtime_run(self, runtime: dict[str, Any], *, stage: str, triggered_by: str, now: datetime | None = None) -> dict[str, Any]:
+    def _set_runtime_run_intent(self, runtime: dict[str, Any], intent: str | None) -> dict[str, Any]:
+        run = self._runtime_run(runtime)
+        run["intent"] = str(intent or run.get("intent") or DEFAULT_RUNTIME_INTENT)
+        return run
+
+    def _start_runtime_run(
+        self,
+        runtime: dict[str, Any],
+        *,
+        stage: str,
+        triggered_by: str,
+        intent: str | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
         now = now or datetime.now(UTC)
         stamp = now.replace(microsecond=0).isoformat()
         run = self._runtime_run(runtime)
@@ -1531,6 +1492,7 @@ class StudioStore:
                 "triggered_by": triggered_by,
                 "error": None,
                 "recovered_run_id": None,
+                "intent": str(intent or run.get("intent") or DEFAULT_RUNTIME_INTENT),
             }
         )
         return run
@@ -1561,6 +1523,7 @@ class StudioStore:
         stage: str,
         error: str | None = None,
         recovered_run_id: str | None = None,
+        last_run_outcome: str | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         now = now or datetime.now(UTC)
@@ -1572,6 +1535,8 @@ class StudioStore:
         run["finished_at"] = stamp
         run["error"] = error
         run["recovered_run_id"] = recovered_run_id
+        if last_run_outcome is not None:
+            run["last_run_outcome"] = last_run_outcome
         return run
 
     def _recover_stale_runtime_run(self, state: dict[str, Any], actor: str, now: datetime | None = None) -> str | None:
@@ -1587,6 +1552,7 @@ class StudioStore:
             stage="abandoned",
             error=f"超过 {RUN_STALE_SECONDS}s 未更新心跳，已标记为异常轮次。",
             recovered_run_id=recovered_run_id,
+            last_run_outcome="abandoned",
             now=now,
         )
         runtime["last_error"] = str(run.get("error") or f"轮次 {recovered_run_id or 'unknown'} 超时未完成，已标记异常。")
@@ -1630,6 +1596,264 @@ class StudioStore:
         if not due_times:
             return None
         return min(due_times).replace(microsecond=0).isoformat()
+
+    def _last_cycle_issue_snapshot(self, state: dict[str, Any], runtime: dict[str, Any]) -> tuple[int, str | None]:
+        summary = runtime.get("last_cycle_summary")
+        if isinstance(summary, dict):
+            issues = summary.get("issues", [])
+            if isinstance(issues, list):
+                count = len(issues)
+                if count == 0:
+                    return 0, "本轮无异常"
+                preview = "；".join(
+                    str(item.get("message") or "").strip()
+                    for item in issues[:2]
+                    if isinstance(item, dict) and str(item.get("message") or "").strip()
+                )
+                if preview:
+                    return count, f"本轮 {count} 条异常。{preview}"
+                return count, f"本轮 {count} 条异常。"
+        started_at = parse_time(runtime.get("last_cycle_started_at"))
+        finished_at = parse_time(runtime.get("last_cycle_finished_at"))
+        if not started_at or not finished_at or finished_at < started_at:
+            return 0, None
+
+        issues: list[dict[str, Any]] = []
+        for item in state.get("logs", []):
+            level = str(item.get("level") or "")
+            if level not in {"warning", "error"}:
+                continue
+            created_at = parse_time(item.get("created_at"))
+            if not created_at or created_at < started_at or created_at > finished_at:
+                continue
+            issues.append(item)
+
+        count = len(issues)
+        if count == 0:
+            return 0, "本轮无异常"
+
+        messages = [str(item.get("message") or "").strip() for item in issues if str(item.get("message") or "").strip()]
+        unique_messages: list[str] = []
+        for message in messages:
+            if message not in unique_messages:
+                unique_messages.append(message)
+
+        if count == 1 and unique_messages:
+            return 1, unique_messages[0]
+
+        collection_count = len([item for item in issues if str(item.get("category") or "") == "collection"])
+        runtime_count = len([item for item in issues if str(item.get("category") or "") == "runtime"])
+        preview = "；".join(unique_messages[:2]) if unique_messages else "详情见日志"
+
+        if collection_count == count:
+            return count, f"本轮 {count} 条来源异常。{preview}"
+        if runtime_count == count:
+            return count, f"本轮 {count} 条运行异常。{preview}"
+        return count, f"本轮 {count} 条异常。{preview}"
+
+    def _reset_runtime_cycle_context(self, runtime: dict[str, Any]) -> None:
+        runtime["current_cycle_sources"] = []
+        runtime["current_cycle_metrics"] = {
+            "draft_count": 0,
+            "wechat_sync_count": 0,
+            "publish_count": 0,
+        }
+
+    def _record_runtime_source_attempt(
+        self,
+        runtime: dict[str, Any],
+        *,
+        source: dict[str, Any],
+        duration_ms: int,
+        status: str,
+        item_count: int,
+        warning_text: str | None = None,
+        error_text: str | None = None,
+    ) -> None:
+        attempts = runtime.setdefault("current_cycle_sources", [])
+        attempts.append(
+            {
+                "source_key": str(source.get("key") or ""),
+                "source_name": str(source.get("name") or source.get("key") or "unknown"),
+                "duration_ms": max(int(duration_ms), 0),
+                "status": status,
+                "item_count": max(int(item_count), 0),
+                "warning_text": warning_text,
+                "error_text": error_text,
+            }
+        )
+
+    def _set_runtime_cycle_metric(self, runtime: dict[str, Any], key: str, value: int) -> None:
+        metrics = runtime.setdefault("current_cycle_metrics", {})
+        metrics[key] = max(int(value), 0)
+
+    def _build_last_cycle_summary(self, state: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any] | None:
+        started_at = runtime.get("last_cycle_started_at")
+        finished_at = runtime.get("last_cycle_finished_at")
+        if not started_at or not finished_at:
+            return None
+        attempts = [
+            item for item in runtime.get("current_cycle_sources", [])
+            if isinstance(item, dict)
+        ]
+        success_source_count = len([item for item in attempts if str(item.get("status") or "") == "success"])
+        failed_source_count = len([item for item in attempts if str(item.get("status") or "") != "success"])
+        slow_sources = sorted(
+            attempts,
+            key=lambda item: int(item.get("duration_ms", 0) or 0),
+            reverse=True,
+        )[:3]
+        issues: list[dict[str, Any]] = []
+        for item in attempts:
+            status = str(item.get("status") or "success")
+            if status == "success":
+                continue
+            issues.append(
+                {
+                    "source_key": item.get("source_key"),
+                    "source_name": item.get("source_name"),
+                    "error_kind": "warning" if status == "warning" else "collection",
+                    "message": str(item.get("warning_text") or item.get("error_text") or "来源执行异常").strip(),
+                }
+            )
+        run = self._runtime_run(runtime)
+        run_error = str(run.get("error") or runtime.get("last_error") or "").strip()
+        if run_error and not any(issue.get("message") == run_error for issue in issues):
+            issues.append(
+                {
+                    "source_key": None,
+                    "source_name": None,
+                    "error_kind": "runtime",
+                    "message": run_error,
+                }
+            )
+        event_state_counts = Counter(str(item.get("change_state") or "new_event") for item in state.get("intel_events", []))
+        item_state_counts = Counter(str(item.get("item_state") or "new_item") for item in state.get("discovery_items", []))
+        metrics = runtime.get("current_cycle_metrics", {})
+        duration_seconds = float(runtime.get("last_cycle_duration_seconds", 0) or 0)
+        summary = RuntimeCycleSummary(
+            run_id=run.get("run_id"),
+            mode_key=str(runtime.get("current_mode") or state.get("automation_mode") or "radar_only"),
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=max(int(round(duration_seconds * 1000)), 0),
+            success_source_count=success_source_count,
+            failed_source_count=failed_source_count,
+            new_items_count=int(item_state_counts.get("new_item", 0)),
+            new_events_count=int(event_state_counts.get("new_event", 0)),
+            growing_events_count=int(event_state_counts.get("growing_event", 0)),
+            slow_sources=[
+                RuntimeSlowSource(
+                    source_key=str(item.get("source_key") or ""),
+                    source_name=str(item.get("source_name") or "unknown"),
+                    duration_ms=max(int(item.get("duration_ms", 0) or 0), 0),
+                    status=str(item.get("status") or "success"),
+                )
+                for item in slow_sources
+            ],
+            issues=[
+                RuntimeIssueItem(
+                    source_key=item.get("source_key"),
+                    source_name=item.get("source_name"),
+                    error_kind=str(item.get("error_kind") or "runtime"),
+                    message=str(item.get("message") or "").strip(),
+                )
+                for item in issues
+                if str(item.get("message") or "").strip()
+            ],
+            draft_count=int(metrics.get("draft_count", 0) or 0),
+            wechat_sync_count=int(metrics.get("wechat_sync_count", 0) or 0),
+            publish_count=int(metrics.get("publish_count", 0) or 0),
+        )
+        return summary.model_dump()
+
+    def _project_cycle_summary_text(self, summary: dict[str, Any] | None) -> str | None:
+        if not isinstance(summary, dict):
+            return None
+        issues = [item for item in summary.get("issues", []) if isinstance(item, dict)]
+        if not issues:
+            return "本轮无异常"
+        preview = "；".join(
+            str(item.get("message") or "").strip()
+            for item in issues[:2]
+            if str(item.get("message") or "").strip()
+        )
+        if preview:
+            return f"本轮 {len(issues)} 条异常。{preview}"
+        return f"本轮 {len(issues)} 条异常。"
+
+    def _stage_plan(self, runtime: dict[str, Any]) -> list[dict[str, str]]:
+        intent = str(self._runtime_run(runtime).get("intent") or DEFAULT_RUNTIME_INTENT)
+        if intent != "normal_monitoring":
+            return deepcopy(INTENT_STAGE_PLANS.get(intent, [{"key": "collecting", "label": "执行维护任务"}]))
+        mode_key = str(runtime.get("current_mode") or "radar_only")
+        return deepcopy(MODE_STAGE_PLANS.get(mode_key, MODE_STAGE_PLANS["radar_only"]))
+
+    def _stage_display_key(self, runtime: dict[str, Any], cycle: str) -> str:
+        mode_key = str(runtime.get("current_mode") or "radar_only")
+        intent = str(self._runtime_run(runtime).get("intent") or DEFAULT_RUNTIME_INTENT)
+        if cycle in {"starting", "idle"}:
+            plan = self._stage_plan(runtime)
+            return plan[0]["key"] if plan else "idle"
+        if cycle == "wechat_sync" and intent == "normal_monitoring" and mode_key == "radar_and_draft":
+            return "drafting"
+        if cycle.startswith("collecting"):
+            return "collecting"
+        if cycle.startswith("clustering"):
+            return "clustering"
+        if cycle.startswith("scoring"):
+            return "scoring"
+        return cycle
+
+    def _stage_status(self, runtime: dict[str, Any], cycle: str | None = None) -> tuple[str, str, int, int]:
+        plan = self._stage_plan(runtime)
+        total = len(plan)
+        if not plan:
+            return "idle", "空闲", 0, 0
+        cycle_key = self._stage_display_key(runtime, str(cycle or runtime.get("current_cycle") or "idle"))
+        if str(self._runtime_run(runtime).get("status") or "idle") == "completed":
+            last = plan[-1]
+            return last["key"], last["label"], total, total
+        for index, item in enumerate(plan, start=1):
+            if item["key"] == cycle_key:
+                return item["key"], item["label"], index, total
+        first = plan[0]
+        return first["key"], first["label"], 1, total
+
+    def _stage_progress_percent(self, runtime: dict[str, Any], stage_key: str, stage_progress: float) -> int:
+        plan = self._stage_plan(runtime)
+        if not plan:
+            return max(0, min(int(round(stage_progress)), 100))
+        total = max(len(plan), 1)
+        stage_index = next((index for index, item in enumerate(plan, start=1) if item["key"] == stage_key), 1)
+        bounded = max(0.0, min(float(stage_progress), 100.0))
+        span_start = 4.0 + ((stage_index - 1) / total) * 96.0
+        span_end = 4.0 + (stage_index / total) * 96.0
+        percent = span_start + (span_end - span_start) * (bounded / 100.0)
+        if stage_index == total and bounded >= 100.0:
+            return 100
+        return max(0, min(int(round(percent)), 99))
+
+    def _featured_event_engagement_threshold(self, events: list[dict[str, Any]]) -> float:
+        scores = sorted(
+            float(item.get("representative_engagement_score", 0) or 0)
+            for item in events
+            if float(item.get("representative_engagement_score", 0) or 0) > 0
+        )
+        if not scores:
+            return 0.0
+        percentile_index = max(int(len(scores) * 0.75) - 1, 0)
+        return scores[percentile_index]
+
+    def _is_featured_event(self, event: dict[str, Any], engagement_threshold: float) -> bool:
+        if int(event.get("platform_count", 0) or 0) >= 2:
+            return True
+        if int(event.get("source_count", 0) or 0) >= 2:
+            return True
+        if int(event.get("member_count", 0) or 0) >= 3:
+            return True
+        engagement_score = float(event.get("representative_engagement_score", 0) or 0)
+        return engagement_threshold > 0 and engagement_score >= engagement_threshold
 
     def _work_scope(self, state: dict[str, Any]) -> str:
         return str(self._runtime_plan(state).get("work_scope") or "collect_events_alerts")
@@ -1823,8 +2047,13 @@ class StudioStore:
         candidates.sort(key=lambda item: item.get("score", 0), reverse=True)
         return candidates
 
-    def _rebuild_intel_for_state(self, state: dict[str, Any], stamp: str | None = None) -> None:
-        work_scope = self._work_scope(state)
+    def _rebuild_intel_for_state(
+        self,
+        state: dict[str, Any],
+        stamp: str | None = None,
+        work_scope_override: str | None = None,
+    ) -> None:
+        work_scope = str(work_scope_override or self._work_scope(state))
         intel = build_intel_state(
             state.get("raw_items", []),
             self._sources_by_key(state),
@@ -1832,6 +2061,7 @@ class StudioStore:
             previous_events=state.get("intel_events", []),
             previous_snapshots=state.get("event_snapshots", []),
             captured_at=stamp or now_iso(),
+            llm_config=state.get("llm"),
         )
         state["discovery_items"] = intel["discovery_items"]
         if work_scope == "collect_only":
@@ -1854,10 +2084,15 @@ class StudioStore:
         runtime = self._runtime(state)
         runtime["last_candidate_at"] = now_iso()
 
-    def _rebuild_candidates_for_state(self, state: dict[str, Any]) -> list[dict[str, Any]]:
-        self._rebuild_intel_for_state(state)
+    def _rebuild_candidates_for_state(
+        self,
+        state: dict[str, Any],
+        work_scope_override: str | None = None,
+        apply_llm_judgement: bool = False,
+    ) -> list[dict[str, Any]]:
+        self._rebuild_intel_for_state(state, work_scope_override=work_scope_override)
         candidates = state.get("candidates", [])
-        if candidates:
+        if apply_llm_judgement and candidates:
             self._apply_llm_candidate_judgement(state, candidates)
         return candidates
 
@@ -1865,6 +2100,12 @@ class StudioStore:
         now = datetime.now(UTC)
         runtime = self._runtime(state)
         run = self._runtime_run(runtime)
+        stage_plan = self._stage_plan(runtime)
+        stage_positions = {item["key"]: index + 1 for index, item in enumerate(stage_plan)}
+        stage_total = len(stage_plan)
+        collect_stage_no = stage_positions.get("collecting", 1)
+        cluster_stage_no = stage_positions.get("clustering", min(collect_stage_no + 1, max(stage_total, 1)))
+        scoring_stage_no = stage_positions.get("scoring", min(cluster_stage_no + 1, max(stage_total, 1)))
         due_sources: list[dict[str, Any]] = []
         for source in state["sources"]:
             if not source.get("enabled"):
@@ -1892,7 +2133,13 @@ class StudioStore:
         stamp = now_iso()
         total_sources = len(due_sources)
         max_workers = max(1, min(int(state.get("settings", {}).get("max_workers", 8)), 20))
-        self._set_runtime_progress(runtime, percent=8, done=0, total=total_sources, label=f"正在并发采集 {total_sources} 个来源 ({max_workers} 线程)")
+        self._set_runtime_progress(
+            runtime,
+            percent=self._stage_progress_percent(runtime, "collecting", 5),
+            done=0,
+            total=total_sources,
+            label=f"正在并发采集 {total_sources} 个来源 ({max_workers} 线程)",
+        )
         self._heartbeat_runtime_run(runtime, stage="collecting", now=now)
         with self._lock:
             self._write(state)
@@ -1935,11 +2182,21 @@ class StudioStore:
                     items=items,
                     warning_text=warning_text,
                 )
+                duration_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
+                self._record_runtime_source_attempt(
+                    runtime,
+                    source=source,
+                    duration_ms=duration_ms,
+                    status="success" if not warning_text else ("warning" if items else "error"),
+                    item_count=len(items),
+                    warning_text=warning_text,
+                    error_text=error.split("\n")[0][:200] if error else None,
+                )
                 self._finalize_source_health(source, now=completed_at)
                 completed += 1
                 self._set_runtime_progress(
                     runtime,
-                    percent=8 + round(completed / max(total_sources, 1) * 62),
+                    percent=self._stage_progress_percent(runtime, "collecting", completed / max(total_sources, 1) * 100),
                     done=completed,
                     total=total_sources,
                     label=f"已采集 {completed}/{total_sources} 个来源",
@@ -1949,12 +2206,125 @@ class StudioStore:
                     self._write(state)
         merged = sorted(existing + collected, key=lambda item: parse_time(item.get("collected_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
         state["raw_items"] = merged[:MAX_RAW_ITEMS]
-        candidates = self._rebuild_candidates_for_state(state)
+        active_work_scope = str(runtime.get("work_scope") or self._work_scope(state) or "collect_events_alerts")
+        self._append_log(
+            state,
+            "info",
+            "runtime",
+            f"阶段 {collect_stage_no}/{stage_total} 完成：采集 {len(state['raw_items'])} 条素材",
+            stream="system_runtime" if triggered_by == "scheduler" else "business_event",
+            actor=triggered_by,
+        )
+        if active_work_scope == "collect_only":
+            candidates = self._rebuild_candidates_for_state(
+                state,
+                work_scope_override=active_work_scope,
+                apply_llm_judgement=False,
+            )
+            self._set_runtime_progress(
+                runtime,
+                percent=self._stage_progress_percent(runtime, "collecting", 100),
+                done=total_sources,
+                total=total_sources,
+                label="采集完成，即将完成",
+            )
+            self._heartbeat_runtime_run(runtime, stage="collecting:complete", now=datetime.now(UTC))
+        else:
+            self._append_log(
+                state,
+                "info",
+                "runtime",
+                f"阶段 {cluster_stage_no}/{stage_total}：开始聚合热点事件...",
+                stream="system_runtime" if triggered_by == "scheduler" else "business_event",
+                actor=triggered_by,
+            )
+            runtime["current_cycle"] = "clustering"
+            self._progress_snapshot["cycle"] = "clustering"
+            self._set_runtime_progress(
+                runtime,
+                percent=self._stage_progress_percent(runtime, "clustering", 10),
+                done=0,
+                total=0,
+                label="采集完成，正在聚合热点事件",
+            )
+            self._heartbeat_runtime_run(runtime, stage="clustering", now=datetime.now(UTC))
+            with self._lock:
+                self._write(state)
+
+            candidates = self._rebuild_candidates_for_state(
+                state,
+                work_scope_override=active_work_scope,
+                apply_llm_judgement=False,
+            )
+            self._append_log(
+                state,
+                "info",
+                "runtime",
+                f"阶段 {cluster_stage_no}/{stage_total} 完成：形成 {len(state.get('intel_events', []))} 个热点事件",
+                stream="system_runtime" if triggered_by == "scheduler" else "business_event",
+                actor=triggered_by,
+            )
+            self._set_runtime_progress(
+                runtime,
+                percent=self._stage_progress_percent(runtime, "clustering", 100),
+                done=0,
+                total=0,
+                label="热点事件聚合完成",
+            )
+
+            stage_three_message = (
+                f"阶段 {scoring_stage_no}/{stage_total}：开始整理热点排序..."
+                if active_work_scope == "collect_events"
+                else f"阶段 {scoring_stage_no}/{stage_total}：开始判断热度与预警..."
+            )
+            self._append_log(
+                state,
+                "info",
+                "runtime",
+                stage_three_message,
+                stream="system_runtime" if triggered_by == "scheduler" else "business_event",
+                actor=triggered_by,
+            )
+            runtime["current_cycle"] = "scoring"
+            self._progress_snapshot["cycle"] = "scoring"
+            scoring_label = "热点事件已聚合，正在整理热点排序" if active_work_scope == "collect_events" else "热点事件已聚合，正在判断热度与预警"
+            self._set_runtime_progress(
+                runtime,
+                percent=self._stage_progress_percent(runtime, "scoring", 10),
+                done=0,
+                total=0,
+                label=scoring_label,
+            )
+            self._heartbeat_runtime_run(runtime, stage="scoring", now=datetime.now(UTC))
+            with self._lock:
+                self._write(state)
+
+            stage_three_done = (
+                f"阶段 {scoring_stage_no}/{stage_total} 完成：更新 {len(candidates)} 条重点观察"
+                if active_work_scope == "collect_events"
+                else f"阶段 {scoring_stage_no}/{stage_total} 完成：生成 {len(state.get('intel_alerts', []))} 条预警，更新 {len(candidates)} 条重点观察"
+            )
+            self._append_log(
+                state,
+                "info",
+                "runtime",
+                stage_three_done,
+                stream="system_runtime" if triggered_by == "scheduler" else "business_event",
+                actor=triggered_by,
+            )
+            self._set_runtime_progress(
+                runtime,
+                percent=self._stage_progress_percent(runtime, "scoring", 100),
+                done=0,
+                total=0,
+                label="热度结果已更新，即将完成",
+            )
+            self._heartbeat_runtime_run(runtime, stage="scoring:complete", now=datetime.now(UTC))
+            with self._lock:
+                self._write(state)
         runtime["last_collect_at"] = stamp
         if collected:
             runtime["last_successful_sync_at"] = stamp
-        self._set_runtime_progress(runtime, percent=72, done=total_sources, total=total_sources, label="采集完成，正在整理结果")
-        self._heartbeat_runtime_run(runtime, stage="collecting:complete", now=datetime.now(UTC))
         runtime["next_collect_at"] = self._calculate_next_collect_at(state, minimum_interval_minutes=self._collect_interval_for_profile(state))
         level = "success"
         message = f"自动同步 {len(due_sources)} 个来源，新增 {len(collected)} 条素材，候选池现有 {len(candidates)} 条。"
@@ -1974,7 +2344,6 @@ class StudioStore:
         )
         for warning in warnings[:6]:
             self._append_log(state, "warning", "collection", warning, stream="system_runtime" if triggered_by == "scheduler" else "business_event", actor=triggered_by)
-        state["reference_projects"] = write_reference_baseline()
         return SourceSyncResponse(
             raw_count=len(state["raw_items"]),
             normalized_count=len(state["normalized_items"]),
@@ -1983,7 +2352,12 @@ class StudioStore:
             warnings=warnings,
         )
 
-    def _sync_sources_internal(self, state: dict[str, Any], triggered_by: str) -> SourceSyncResponse:
+    def _sync_sources_internal(
+        self,
+        state: dict[str, Any],
+        triggered_by: str,
+        work_scope_override: str | None = None,
+    ) -> SourceSyncResponse:
         max_workers = state.get("settings", {}).get("max_workers", 8)
         raw_items, warnings = collect_enabled_sources(state["sources"], max_workers=max_workers)
         sources_by_key = self._sources_by_key(state)
@@ -2007,8 +2381,7 @@ class StudioStore:
             self._finalize_source_health(source, now=now)
 
         state["raw_items"] = raw_items
-        candidates = self._rebuild_candidates_for_state(state)
-        state["reference_projects"] = write_reference_baseline()
+        candidates = self._rebuild_candidates_for_state(state, work_scope_override=work_scope_override)
         runtime = self._runtime(state)
         runtime["last_collect_at"] = stamp
         if raw_items:
@@ -2255,6 +2628,8 @@ class StudioStore:
             recovered_run_id = self._recover_stale_runtime_run(state, actor="runtime_status")
             runtime = self._runtime(state)
             run = self._runtime_run(runtime)
+            last_cycle_issue_count, last_cycle_issue_summary = self._last_cycle_issue_snapshot(state, runtime)
+            last_cycle_summary = runtime.get("last_cycle_summary") or self._build_last_cycle_summary(state, runtime)
             plan_launch = self._runtime_plan(state).get("launch_mode", "interval_now")
             next_at = self._calculate_next_collect_at(state)
             running = runtime.get("control_state", "stopped") != "stopped"
@@ -2287,6 +2662,7 @@ class StudioStore:
             done = int(snapshot.get("done", 0))
             total = int(snapshot.get("total", 0))
             label = snapshot.get("label")
+        stage_key, stage_label, stage_index, stage_total = self._stage_status(runtime, cycle)
         return SchedulerStatus(
             running=running,
             control_state=control_state,
@@ -2302,6 +2678,10 @@ class StudioStore:
             current_cycle_progress_done=done,
             current_cycle_progress_total=total,
             current_cycle_progress_label=label,
+            stage_key=stage_key,
+            stage_label=stage_label,
+            stage_index=stage_index,
+            stage_total=stage_total,
             enabled_at=enabled_at,
             scheduled_start_at=scheduled_start_at,
             current_cycle_started_at=cycle_started_at,
@@ -2312,6 +2692,8 @@ class StudioStore:
             completed_cycles_today=completed_cycles_today,
             failed_cycles_today=failed_cycles_today,
             last_error=last_error,
+            last_cycle_issue_count=last_cycle_issue_count,
+            last_cycle_issue_summary=last_cycle_issue_summary,
             run_id=run.get("run_id"),
             run_status=str(run.get("status") or "idle"),
             run_stage=str(run.get("stage") or "idle"),
@@ -2322,11 +2704,16 @@ class StudioStore:
             run_error=run.get("error"),
             recovered_run_id=run.get("recovered_run_id"),
             run_stale=self._runtime_run_is_stale(run),
+            run_intent=str(run.get("intent") or DEFAULT_RUNTIME_INTENT),
+            last_run_outcome=run.get("last_run_outcome"),
+            last_cycle_summary=RuntimeCycleSummary(**last_cycle_summary) if isinstance(last_cycle_summary, dict) else None,
         )
 
     def _scheduler_status_from_state(self, state: dict[str, Any]) -> SchedulerStatus:
         runtime = self._runtime(state)
         run = self._runtime_run(runtime)
+        last_cycle_issue_count, last_cycle_issue_summary = self._last_cycle_issue_snapshot(state, runtime)
+        last_cycle_summary = runtime.get("last_cycle_summary") or self._build_last_cycle_summary(state, runtime)
         snapshot = self._progress_snapshot
         now_mono = time.monotonic()
         in_completion_hold = now_mono < self._completion_hold_until
@@ -2348,6 +2735,7 @@ class StudioStore:
             progress_done = int(snapshot.get("done", runtime.get("current_cycle_progress_done", 0)) or 0)
             progress_total = int(snapshot.get("total", runtime.get("current_cycle_progress_total", 0)) or 0)
             progress_label = snapshot.get("label") or runtime.get("current_cycle_progress_label")
+        stage_key, stage_label, stage_index, stage_total = self._stage_status(runtime, current_cycle)
         return SchedulerStatus(
             running=control_state != "stopped",
             control_state=control_state,
@@ -2363,6 +2751,10 @@ class StudioStore:
             current_cycle_progress_done=progress_done,
             current_cycle_progress_total=progress_total,
             current_cycle_progress_label=progress_label,
+            stage_key=stage_key,
+            stage_label=stage_label,
+            stage_index=stage_index,
+            stage_total=stage_total,
             enabled_at=runtime.get("enabled_at"),
             scheduled_start_at=runtime.get("scheduled_start_at"),
             current_cycle_started_at=runtime.get("current_cycle_started_at"),
@@ -2373,6 +2765,8 @@ class StudioStore:
             completed_cycles_today=int(runtime.get("completed_cycles_today", 0) or 0),
             failed_cycles_today=int(runtime.get("failed_cycles_today", 0) or 0),
             last_error=runtime.get("last_error"),
+            last_cycle_issue_count=last_cycle_issue_count,
+            last_cycle_issue_summary=last_cycle_issue_summary,
             run_id=run.get("run_id"),
             run_status=str(run.get("status") or "idle"),
             run_stage=str(run.get("stage") or "idle"),
@@ -2383,6 +2777,9 @@ class StudioStore:
             run_error=run.get("error"),
             recovered_run_id=run.get("recovered_run_id"),
             run_stale=self._runtime_run_is_stale(run),
+            run_intent=str(run.get("intent") or DEFAULT_RUNTIME_INTENT),
+            last_run_outcome=run.get("last_run_outcome"),
+            last_cycle_summary=RuntimeCycleSummary(**last_cycle_summary) if isinstance(last_cycle_summary, dict) else None,
         )
 
     def set_scheduler_running(self, running: bool) -> None:
@@ -2409,6 +2806,7 @@ class StudioStore:
             state = self._upgrade_state(self._read())
             runtime = self._runtime(state)
             self._finish_runtime_run(runtime, status="idle", stage="idle", error=None, recovered_run_id=None)
+            self._set_runtime_run_intent(runtime, DEFAULT_RUNTIME_INTENT)
             runtime["scheduler_running"] = False
             runtime["control_state"] = "stopped"
             runtime["current_cycle"] = "idle"
@@ -2452,6 +2850,7 @@ class StudioStore:
             runtime["launch_mode"] = plan["launch_mode"]
             runtime["work_scope"] = plan.get("work_scope", "collect_events_alerts")
             runtime["last_error"] = None
+            self._set_runtime_run_intent(runtime, DEFAULT_RUNTIME_INTENT)
             runtime["enabled_at"] = now.replace(microsecond=0).isoformat()
             runtime["scheduled_start_at"] = plan.get("start_at") if plan["launch_mode"] in {"once_at", "interval_at"} else None
             runtime["active_interval_minutes"] = plan.get("interval_minutes")
@@ -2497,11 +2896,164 @@ class StudioStore:
                 self._reset_runtime_progress(runtime)
                 runtime["current_cycle_started_at"] = None
                 runtime["enabled_at"] = None
-                self._finish_runtime_run(runtime, status="idle", stage="idle", error=None, recovered_run_id=None)
+                self._finish_runtime_run(runtime, status="idle", stage="idle", error=None, recovered_run_id=None, last_run_outcome="stopped")
             runtime["scheduled_start_at"] = None
             runtime["next_collect_at"] = None if runtime.get("control_state") != "running" else runtime.get("next_collect_at")
             self._append_log(state, "warning", "runtime", "后台自动调度器已暂停。", stream="system_runtime", actor=actor)
             self._append_log(state, "warning", "runtime", "已从前端暂停自动运行。", stream="business_event", actor=actor)
+            self._write(state)
+            return self._scheduler_status_from_state(state)
+
+    def run_runtime_intent(self, intent: RuntimeIntent, actor: str = "dashboard") -> SchedulerStatus:
+        work_scope = INTENT_TO_WORK_SCOPE.get(str(intent))
+        if not work_scope:
+            raise ValueError("未知的维护动作。")
+
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            runtime = self._runtime(state)
+            run = self._runtime_run(runtime)
+            now = datetime.now(UTC)
+            self._recover_stale_runtime_run(state, actor=actor, now=now)
+            if str(runtime.get("control_state") or "stopped") != "stopped":
+                raise ValueError("监测已启用，请先停止后再执行维护动作。")
+            if str(run.get("status") or "idle") == "running" and not self._runtime_run_is_stale(run, now):
+                raise ValueError("当前已有运行中的轮次，请稍后再试。")
+
+            runtime["scheduler_running"] = False
+            runtime["control_state"] = "running"
+            runtime["current_mode"] = state["automation_mode"]
+            runtime["launch_mode"] = "once_now"
+            runtime["work_scope"] = work_scope
+            runtime["last_error"] = None
+            runtime["enabled_at"] = now.replace(microsecond=0).isoformat()
+            runtime["scheduled_start_at"] = None
+            runtime["active_interval_minutes"] = None
+            runtime["current_cycle"] = "starting"
+            runtime["current_cycle_started_at"] = now.replace(microsecond=0).isoformat()
+            self._reset_runtime_cycle_context(runtime)
+            runtime["next_collect_at"] = None
+            self._set_runtime_progress(runtime, percent=2, done=0, total=0, label="正在启动维护任务")
+            self._progress_snapshot["cycle"] = "starting"
+            self._set_runtime_run_intent(runtime, str(intent))
+            self._finish_runtime_run(runtime, status="idle", stage="starting", error=None, recovered_run_id=None, now=now)
+            self._append_log(state, "info", "runtime", f"已启动维护动作：{intent}", stream="business_event", actor=actor)
+            self._write(state)
+
+        if work_scope == "collect_only":
+            try:
+                self._run_automation_cycle_locked(state, triggered_by=actor, force=True)
+            finally:
+                with self._lock:
+                    state = self._upgrade_state(self._read())
+                    runtime = self._runtime(state)
+                    plan = self._runtime_plan(state)
+                    runtime["launch_mode"] = plan.get("launch_mode", "interval_now")
+                    runtime["work_scope"] = plan.get("work_scope", "collect_events_alerts")
+                    self._write(state)
+        else:
+            with self._lock:
+                state = self._upgrade_state(self._read())
+                runtime = self._runtime(state)
+                now = datetime.now(UTC)
+                runtime["control_state"] = "running"
+                runtime["current_cycle"] = "clustering" if work_scope == "collect_events" else "scoring"
+                runtime["current_cycle_started_at"] = now.replace(microsecond=0).isoformat()
+                runtime["last_cycle_started_at"] = runtime["current_cycle_started_at"]
+                progress_label = "正在重建热点事件" if work_scope == "collect_events" else "正在重算预警"
+                progress_cycle = "clustering" if work_scope == "collect_events" else "scoring"
+                self._set_runtime_progress(runtime, percent=35, done=0, total=0, label=progress_label)
+                self._progress_snapshot["cycle"] = progress_cycle
+                self._start_runtime_run(runtime, stage=progress_cycle, triggered_by=actor, intent=str(intent), now=now)
+                self._write(state)
+            start = datetime.now(UTC)
+            try:
+                with self._lock:
+                    state = self._upgrade_state(self._read())
+                    runtime = self._runtime(state)
+                    candidates = self._rebuild_candidates_for_state(state, work_scope_override=work_scope)
+                    finish = datetime.now(UTC)
+                    duration = round((finish - start).total_seconds(), 1)
+                    runtime["last_cycle_finished_at"] = finish.replace(microsecond=0).isoformat()
+                    runtime["last_cycle_duration_seconds"] = duration
+                    runtime["current_cycle_started_at"] = None
+                    runtime["completed_cycles_today"] = int(runtime.get("completed_cycles_today", 0) or 0) + 1
+                    runtime["control_state"] = "stopped"
+                    runtime["current_cycle"] = "idle"
+                    runtime["enabled_at"] = None
+                    runtime["next_collect_at"] = None
+                    self._set_runtime_progress(runtime, percent=100, done=1, total=1, label="本轮已完成")
+                    self._finish_runtime_run(
+                        runtime,
+                        status="completed",
+                        stage="done",
+                        error=None,
+                        last_run_outcome="completed",
+                        now=finish,
+                    )
+                    runtime["last_cycle_summary"] = self._build_last_cycle_summary(state, runtime)
+                    self._append_job(
+                        state,
+                        "rebuild_candidates",
+                        f"已完成维护动作：{intent}，当前 {len(candidates)} 个候选主题。",
+                        triggered_by=actor,
+                    )
+                    self._reset_runtime_progress(runtime)
+                    plan = self._runtime_plan(state)
+                    runtime["launch_mode"] = plan.get("launch_mode", "interval_now")
+                    runtime["work_scope"] = plan.get("work_scope", "collect_events_alerts")
+                    self._write(state)
+            except Exception as exc:
+                with self._lock:
+                    state = self._upgrade_state(self._read())
+                    runtime = self._runtime(state)
+                    finish = datetime.now(UTC)
+                    duration = round((finish - start).total_seconds(), 1)
+                    runtime["last_cycle_finished_at"] = finish.replace(microsecond=0).isoformat()
+                    runtime["last_cycle_duration_seconds"] = duration
+                    runtime["current_cycle_started_at"] = None
+                    runtime["failed_cycles_today"] = int(runtime.get("failed_cycles_today", 0) or 0) + 1
+                    runtime["last_error"] = str(exc)
+                    runtime["control_state"] = "stopped"
+                    runtime["current_cycle"] = "failed"
+                    self._set_runtime_progress(runtime, percent=100, done=1, total=1, label=f"本轮失败：{exc}")
+                    self._progress_snapshot["cycle"] = "failed"
+                    self._finish_runtime_run(
+                        runtime,
+                        status="failed",
+                        stage="failed",
+                        error=str(exc),
+                        last_run_outcome="failed",
+                        now=finish,
+                    )
+                    runtime["last_cycle_summary"] = self._build_last_cycle_summary(state, runtime)
+                    self._append_log(
+                        state,
+                        "error",
+                        "runtime",
+                        f"维护动作失败：{intent} - {exc}",
+                        stream="system_runtime",
+                        actor=actor,
+                    )
+                    self._append_job(
+                        state,
+                        "rebuild_candidates",
+                        f"维护动作失败：{intent} - {exc}",
+                        status="failed",
+                        triggered_by=actor,
+                    )
+                    plan = self._runtime_plan(state)
+                    runtime["launch_mode"] = plan.get("launch_mode", "interval_now")
+                    runtime["work_scope"] = plan.get("work_scope", "collect_events_alerts")
+                    self._write(state)
+                raise
+
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            runtime = self._runtime(state)
+            plan = self._runtime_plan(state)
+            runtime["launch_mode"] = plan.get("launch_mode", "interval_now")
+            runtime["work_scope"] = plan.get("work_scope", "collect_events_alerts")
             self._write(state)
             return self._scheduler_status_from_state(state)
 
@@ -2529,6 +3081,12 @@ class StudioStore:
         plan = self._runtime_plan(state)
         mode = self._current_automation_mode_def(state)
         profile = self._current_automation_profile(state)
+        stage_plan = self._stage_plan(runtime)
+        stage_positions = {item["key"]: index + 1 for index, item in enumerate(stage_plan)}
+        stage_total = len(stage_plan)
+        collect_stage_no = stage_positions.get("collecting", 1)
+        draft_stage_no = stage_positions.get("drafting", stage_total)
+        deliver_stage_no = stage_positions.get("wechat_sync", stage_total)
         control_state = str(runtime.get("control_state") or "stopped")
 
         if not force:
@@ -2566,9 +3124,16 @@ class StudioStore:
         runtime["current_cycle"] = "collecting"
         runtime["current_cycle_started_at"] = now.replace(microsecond=0).isoformat()
         runtime["last_cycle_started_at"] = runtime["current_cycle_started_at"]
+        self._reset_runtime_cycle_context(runtime)
         self._set_runtime_progress(runtime, percent=5, done=0, total=0, label="正在准备采集来源")
         self._progress_snapshot["cycle"] = "collecting"
-        self._start_runtime_run(runtime, stage="collecting", triggered_by=triggered_by, now=now)
+        self._start_runtime_run(
+            runtime,
+            stage="collecting",
+            triggered_by=triggered_by,
+            intent=str(run.get("intent") or DEFAULT_RUNTIME_INTENT),
+            now=now,
+        )
         if recovered_run_id:
             self._runtime_run(runtime)["recovered_run_id"] = recovered_run_id
         runtime["launch_mode"] = str(runtime.get("launch_mode") or plan.get("launch_mode") or "interval_now")
@@ -2580,7 +3145,14 @@ class StudioStore:
 
         start = datetime.now(UTC)
         try:
-            self._append_log(state, "info", "runtime", "阶段 1/4：开始采集到期来源...", stream="system_runtime", actor=triggered_by)
+            self._append_log(
+                state,
+                "info",
+                "runtime",
+                f"阶段 {collect_stage_no}/{stage_total}：开始采集到期来源...",
+                stream="system_runtime",
+                actor=triggered_by,
+            )
             self._heartbeat_runtime_run(runtime, stage="collecting", now=start)
             with self._lock:
                 self._write(state)
@@ -2589,7 +3161,6 @@ class StudioStore:
                 triggered_by="scheduler",
                 minimum_interval_minutes=None,
             )
-            self._append_log(state, "info", "runtime", f"阶段 1/4 完成：采集 {sync_response.raw_count} 条素材", stream="system_runtime", actor=triggered_by)
             with self._lock:
                 self._write(state)
             drafted_count = 0
@@ -2601,9 +3172,22 @@ class StudioStore:
                 elif profile.get("draft_trigger") == "scheduled":
                     should_build_drafts = self._is_slot_due(runtime.get("last_draft_at"), str(profile.get("draft_schedule_time") or ""))
                 if should_build_drafts:
-                    self._append_log(state, "info", "runtime", "阶段 2/4：开始生成稿件...", stream="system_runtime", actor=triggered_by)
+                    self._append_log(
+                        state,
+                        "info",
+                        "runtime",
+                        f"阶段 {draft_stage_no}/{stage_total}：开始生成稿件...",
+                        stream="system_runtime",
+                        actor=triggered_by,
+                    )
                     runtime["current_cycle"] = "drafting"
-                    self._set_runtime_progress(runtime, percent=80, done=0, total=0, label="正在生成事件稿件")
+                    self._set_runtime_progress(
+                        runtime,
+                        percent=self._stage_progress_percent(runtime, "drafting", 10),
+                        done=0,
+                        total=0,
+                        label="正在生成事件稿件",
+                    )
                     self._progress_snapshot["cycle"] = "drafting"
                     self._heartbeat_runtime_run(runtime, stage="drafting")
                     with self._lock:
@@ -2615,11 +3199,40 @@ class StudioStore:
                         selection_mode=str(profile.get("draft_selection") or "all_new"),
                     )
                     drafted_count = len(drafted)
-                    self._append_log(state, "info", "runtime", f"阶段 2/4 完成：生成 {drafted_count} 篇稿件", stream="system_runtime", actor=triggered_by)
+                    self._set_runtime_cycle_metric(runtime, "draft_count", drafted_count)
+                    self._append_log(
+                        state,
+                        "info",
+                        "runtime",
+                        f"阶段 {draft_stage_no}/{stage_total} 完成：生成 {drafted_count} 篇稿件",
+                        stream="system_runtime",
+                        actor=triggered_by,
+                    )
+                    self._set_runtime_progress(
+                        runtime,
+                        percent=self._stage_progress_percent(runtime, "drafting", 100),
+                        done=0,
+                        total=0,
+                        label="稿件生成完成",
+                    )
                     if profile.get("draft_delivery") == "wechat_draft" and drafted:
-                        self._append_log(state, "info", "runtime", f"阶段 3/4：开始同步 {len(drafted)} 篇到微信...", stream="system_runtime", actor=triggered_by)
+                        stage_no = deliver_stage_no if state.get("automation_mode") == "full_pipeline" else draft_stage_no
+                        self._append_log(
+                            state,
+                            "info",
+                            "runtime",
+                            f"阶段 {stage_no}/{stage_total}：开始同步 {len(drafted)} 篇到微信...",
+                            stream="system_runtime",
+                            actor=triggered_by,
+                        )
                         runtime["current_cycle"] = "wechat_sync"
-                        self._set_runtime_progress(runtime, percent=90, done=0, total=max(len(drafted), 1), label="正在同步到微信草稿箱")
+                        self._set_runtime_progress(
+                            runtime,
+                            percent=self._stage_progress_percent(runtime, "wechat_sync", 10),
+                            done=0,
+                            total=max(len(drafted), 1),
+                            label="正在同步到微信草稿箱",
+                        )
                         self._progress_snapshot["cycle"] = "wechat_sync"
                         self._heartbeat_runtime_run(runtime, stage="wechat_sync")
                         with self._lock:
@@ -2629,14 +3242,25 @@ class StudioStore:
                             synced_to_wechat += 1
                             self._set_runtime_progress(
                                 runtime,
-                                percent=90 + round(synced_to_wechat / max(len(drafted), 1) * 10),
+                                percent=self._stage_progress_percent(
+                                    runtime,
+                                    "wechat_sync",
+                                    synced_to_wechat / max(len(drafted), 1) * 100,
+                                ),
                                 done=synced_to_wechat,
                                 total=max(len(drafted), 1),
                                 label=f"已同步微信草稿 {synced_to_wechat}/{max(len(drafted), 1)}",
                             )
-                        self._append_log(state, "info", "runtime", f"阶段 3/4 完成：同步 {synced_to_wechat} 篇到微信", stream="system_runtime", actor=triggered_by)
+                        self._set_runtime_cycle_metric(runtime, "wechat_sync_count", synced_to_wechat)
+                        self._append_log(
+                            state,
+                            "info",
+                            "runtime",
+                            f"阶段 {stage_no}/{stage_total} 完成：已同步 {synced_to_wechat} 篇到微信",
+                            stream="system_runtime",
+                            actor=triggered_by,
+                        )
 
-            self._append_log(state, "info", "runtime", "阶段 4/4：收尾...", stream="system_runtime", actor=triggered_by)
             finish = datetime.now(UTC)
             duration = round((finish - start).total_seconds(), 1)
             self._append_log(state, "info", "runtime", f"轮次完成，总耗时 {duration}s", stream="system_runtime", actor=triggered_by)
@@ -2644,7 +3268,15 @@ class StudioStore:
             runtime["last_cycle_duration_seconds"] = duration
             runtime["current_cycle_started_at"] = None
             self._set_runtime_progress(runtime, percent=100, done=1, total=1, label="本轮已完成")
-            self._finish_runtime_run(runtime, status="completed", stage="done", error=None, now=finish)
+            self._finish_runtime_run(
+                runtime,
+                status="completed",
+                stage="done",
+                error=None,
+                last_run_outcome="completed",
+                now=finish,
+            )
+            runtime["last_cycle_summary"] = self._build_last_cycle_summary(state, runtime)
             self._completion_hold_until = time.monotonic() + 5
             runtime["completed_cycles_today"] = int(runtime.get("completed_cycles_today", 0) or 0) + 1
             launch_mode = str(runtime.get("launch_mode") or plan.get("launch_mode") or "interval_now")
@@ -2691,7 +3323,15 @@ class StudioStore:
             runtime["failed_cycles_today"] = int(runtime.get("failed_cycles_today", 0) or 0) + 1
             runtime["last_error"] = str(exc)
             runtime["current_cycle"] = "failed"
-            self._finish_runtime_run(runtime, status="failed", stage="failed", error=str(exc), now=finish)
+            self._finish_runtime_run(
+                runtime,
+                status="failed",
+                stage="failed",
+                error=str(exc),
+                last_run_outcome="failed",
+                now=finish,
+            )
+            runtime["last_cycle_summary"] = self._build_last_cycle_summary(state, runtime)
             if not runtime.get("scheduler_running") or str(runtime.get("launch_mode") or plan.get("launch_mode")) in {"once_now", "once_at"}:
                 runtime["scheduler_running"] = False
                 runtime["control_state"] = "stopped"
@@ -2739,6 +3379,38 @@ class StudioStore:
                 try:
                     with self._lock:
                         state = self._upgrade_state(self._read())
+                        runtime = self._runtime(state)
+                        run = self._runtime_run(runtime)
+                        finish = datetime.now(UTC)
+                        if str(run.get("status") or "idle") == "running":
+                            started_at = parse_time(runtime.get("last_cycle_started_at")) or finish
+                            runtime["last_cycle_finished_at"] = finish.replace(microsecond=0).isoformat()
+                            runtime["last_cycle_duration_seconds"] = round((finish - started_at).total_seconds(), 1)
+                            runtime["current_cycle_started_at"] = None
+                            runtime["current_cycle"] = "failed"
+                            runtime["last_error"] = str(exc)
+                            runtime["failed_cycles_today"] = int(runtime.get("failed_cycles_today", 0) or 0) + 1
+                            self._finish_runtime_run(
+                                runtime,
+                                status="failed",
+                                stage="failed",
+                                error=str(exc),
+                                last_run_outcome="failed",
+                                now=finish,
+                            )
+                            runtime["last_cycle_summary"] = self._build_last_cycle_summary(state, runtime)
+                            launch_mode = str(runtime.get("launch_mode") or self._runtime_plan(state).get("launch_mode") or "interval_now")
+                            runtime["scheduler_running"] = False if launch_mode in {"once_now", "once_at"} else bool(runtime.get("scheduler_running"))
+                            runtime["control_state"] = "stopped" if launch_mode in {"once_now", "once_at"} else "waiting"
+                            runtime["current_cycle"] = "idle"
+                            self._reset_runtime_progress(runtime)
+                            if launch_mode in {"once_now", "once_at"}:
+                                runtime["enabled_at"] = None
+                                runtime["scheduled_start_at"] = None
+                                runtime["active_interval_minutes"] = None
+                                runtime["next_collect_at"] = None
+                            else:
+                                runtime["next_collect_at"] = self._calculate_runtime_next_collect_at(state, finish)
                         self._append_job(
                             state,
                             "collect_news",
@@ -3766,8 +4438,17 @@ class StudioStore:
             if recovered_run_id:
                 self._write(state)
 
-        alerts = [IntelAlert(**item) for item in state.get("intel_alerts", [])]
-        events = [IntelEvent(**item) for item in state.get("intel_events", [])]
+        alert_dicts = [item for item in state.get("intel_alerts", []) if isinstance(item, dict)]
+        event_dicts = [item for item in state.get("intel_events", []) if isinstance(item, dict)]
+        alerts = [IntelAlert(**item) for item in alert_dicts]
+        events = [IntelEvent(**item) for item in event_dicts]
+        featured_alerts = [item for item in alerts if item.level in {"breakout", "rising"}]
+        engagement_threshold = self._featured_event_engagement_threshold(event_dicts)
+        featured_events = [
+            IntelEvent(**item)
+            for item in event_dicts
+            if self._is_featured_event(item, engagement_threshold)
+        ]
         discovery_items = state.get("discovery_items", [])
         enabled_sources = [item for item in state["sources"] if item.get("enabled")]
         healthy_sources = len([item for item in enabled_sources if item.get("health_status") == "healthy"])
@@ -3806,8 +4487,8 @@ class StudioStore:
             next_run_at=self._calculate_next_collect_at(state),
             running=runtime.get("control_state") != "stopped",
             work_scope=self._work_scope(state),
-            top_alerts=alerts[:6],
-            top_events=events[:8],
+            top_alerts=featured_alerts[:6],
+            top_events=featured_events[:8],
             source_alerts=source_alerts[:6],
         )
 
@@ -3826,6 +4507,117 @@ class StudioStore:
     def list_intel_alerts(self) -> list[IntelAlert]:
         state = self._upgrade_state(self._read())
         return [IntelAlert(**item) for item in state.get("intel_alerts", [])]
+
+    def _normalize_entity_watchlist_item(
+        self,
+        item: dict[str, Any],
+        existing: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        existing = existing or {}
+        entity_name = str(item.get("entity_name") or "").strip()
+        entity_id = str(item.get("entity_id") or "").strip()
+        if not entity_name and entity_id and entity_id in existing:
+            entity_name = str(existing[entity_id].get("entity_name") or "").strip()
+        if not entity_name:
+            return None
+        if not entity_id:
+            entity_id = entity_id_for_name(entity_name)
+        previous = existing.get(entity_id, {})
+        entity_type = str(item.get("entity_type") or previous.get("entity_type") or entity_type_for_name(entity_name) or "").strip().upper()
+        if not entity_type:
+            return None
+        return {
+            "entity_id": entity_id,
+            "entity_name": entity_name,
+            "entity_type": entity_type,
+            "watchlisted": bool(item.get("watchlisted", previous.get("watchlisted", True))),
+            "added_at": item.get("added_at") or previous.get("added_at") or now_iso(),
+        }
+
+    def _entity_watchlist(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        settings = state.setdefault("settings", {})
+        items = settings.setdefault("entity_watchlist", [])
+        if not isinstance(items, list):
+            settings["entity_watchlist"] = []
+            return settings["entity_watchlist"]
+        return items
+
+    def list_entity_watchlist(self) -> list[EntityWatchlistItem]:
+        state = self._upgrade_state(self._read())
+        return [EntityWatchlistItem(**item) for item in self._entity_watchlist(state)]
+
+    def update_entity_watchlist(self, items: list[dict[str, Any]]) -> list[EntityWatchlistItem]:
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            existing_items = {str(item.get("entity_id") or ""): item for item in self._entity_watchlist(state) if item.get("entity_id")}
+            normalized: list[dict[str, Any]] = []
+            seen_ids: set[str] = set()
+            for raw_item in items:
+                if not isinstance(raw_item, dict):
+                    continue
+                item = self._normalize_entity_watchlist_item(raw_item, existing=existing_items)
+                if not item:
+                    continue
+                entity_id = str(item.get("entity_id") or "")
+                if not entity_id or entity_id in seen_ids:
+                    continue
+                seen_ids.add(entity_id)
+                normalized.append(item)
+            state.setdefault("settings", {})["entity_watchlist"] = normalized
+            self._append_log(state, "info", "settings", f"已更新重点监控实体，共 {len(normalized)} 个。", actor="dashboard")
+            self._write(state)
+            return [EntityWatchlistItem(**item) for item in normalized]
+
+    def _build_entity_watchlist_summary(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        watchlist = [item for item in self._entity_watchlist(state) if item.get("watchlisted")]
+        if not watchlist:
+            return []
+        events = state.get("intel_events", [])
+        alerts = state.get("intel_alerts", [])
+        summaries: list[dict[str, Any]] = []
+        for item in watchlist:
+            entity_id = str(item.get("entity_id") or "")
+            entity_name = str(item.get("entity_name") or "")
+            matched_events = [
+                event for event in events
+                if entity_id in event.get("entity_ids", []) or entity_name in event.get("entity_names", [])
+            ]
+            matched_alerts = [
+                alert for alert in alerts
+                if entity_id in alert.get("entity_ids", []) or entity_name in alert.get("entity_names", [])
+            ]
+            last_seen_candidates = [
+                event.get("last_seen_at") or event.get("latest_collected_at") or event.get("first_seen_at")
+                for event in matched_events
+            ]
+            last_seen = max(
+                last_seen_candidates,
+                key=lambda value: parse_time(value) or datetime.min.replace(tzinfo=UTC),
+                default=None,
+            )
+            summaries.append(
+                {
+                    "entity_id": entity_id,
+                    "entity_name": entity_name,
+                    "entity_type": str(item.get("entity_type") or entity_type_for_name(entity_name)),
+                    "watchlisted": True,
+                    "added_at": item.get("added_at"),
+                    "event_count": len(matched_events),
+                    "alert_count": len(matched_alerts),
+                    "rising_count": len([alert for alert in matched_alerts if alert.get("level") == "rising"]),
+                    "breakout_count": len([alert for alert in matched_alerts if alert.get("level") == "breakout"]),
+                    "last_seen_at": last_seen,
+                }
+            )
+        summaries.sort(
+            key=lambda current: (
+                int(current.get("breakout_count", 0) or 0),
+                int(current.get("rising_count", 0) or 0),
+                parse_time(current.get("last_seen_at")) or datetime.min.replace(tzinfo=UTC),
+            ),
+            reverse=True,
+        )
+        return summaries
 
     def list_intel_sources(self) -> list[SourceConnector]:
         state = self._upgrade_state(self._read())
@@ -3882,11 +4674,54 @@ class StudioStore:
             current_profile_id = str(active_profile.get("id") or "")
         if active_profile:
             active_profile["enabled"] = bool(str(active_profile.get("api_key") or "").strip())
+
+        # Use submitted tasks from config, falling back to profile-derived tasks for missing keys
+        incoming_tasks = [t for t in config.get("tasks", []) if isinstance(t, dict)]
+        existing_tasks = {t["task_key"]: t for t in existing.get("tasks", []) if isinstance(t, dict)}
+        profile_tasks = build_tasks_from_profile(active_profile) if active_profile else []
+        profile_tasks_by_key = {t["task_key"]: t for t in profile_tasks}
+
+        merged_tasks = []
+        for task in incoming_tasks:
+            task_key = task.get("task_key", "")
+            profile_task = profile_tasks_by_key.get(task_key, {})
+            merged_tasks.append({
+                **profile_task,
+                **task,
+                # Ensure provider_key/model_id come from incoming task if specified, else from profile
+                "provider_key": task.get("provider_key") or profile_task.get("provider_key", ""),
+                "model_id": task.get("model_id") or profile_task.get("model_id", ""),
+            })
+        # Add any profile tasks not in incoming (e.g., new task keys)
+        for task in profile_tasks:
+            if task["task_key"] not in {t["task_key"] for t in merged_tasks}:
+                merged_tasks.append(task)
+
+        # Build providers list: active profile provider + all providers referenced by task primary/fallback
+        referenced_provider_keys = set()
+        for task in merged_tasks:
+            if task.get("provider_key"):
+                referenced_provider_keys.add(task["provider_key"])
+            if task.get("fallback_provider_key"):
+                referenced_provider_keys.add(task["fallback_provider_key"])
+
+        providers_map: dict[str, dict[str, Any]] = {}
+        # Add active profile provider first
+        if active_profile:
+            active_provider = build_provider_from_profile(active_profile)
+            if active_provider.get("key"):
+                providers_map[active_provider["key"]] = active_provider
+        # Add providers from existing profiles that are referenced by tasks
+        for profile in profiles:
+            provider_key = str(profile.get("provider_key") or "")
+            if provider_key in referenced_provider_keys and provider_key not in providers_map:
+                providers_map[provider_key] = build_provider_from_profile(profile)
+
         state["llm"] = {
             "current_profile_id": current_profile_id,
             "profiles": profiles,
-            "providers": [build_provider_from_profile(active_profile)] if active_profile else [],
-            "tasks": build_tasks_from_profile(active_profile) if active_profile else [],
+            "providers": list(providers_map.values()),
+            "tasks": merged_tasks,
             "usage_today": existing.get("usage_today", {}),
         }
         self._write(state)
@@ -3927,6 +4762,8 @@ class StudioStore:
     def get_dashboard(self) -> DashboardResponse:
         state = self._upgrade_state(self._read())
         recovered_run_id = self._recover_stale_runtime_run(state, actor="dashboard")
+        if recovered_run_id:
+            self._write(state)
         previous_browser = deepcopy(state.get("browser", {}).get("wechat", {}))
         browser = self._refresh_browser_session(state)
         backends = self._publish_backends(state)
@@ -3934,12 +4771,14 @@ class StudioStore:
         runtime["next_collect_at"] = self._calculate_next_collect_at(state)
         runtime["launch_mode"] = self._runtime_plan(state).get("launch_mode", "interval_now")
         runtime_status = self._scheduler_status_from_state(state)
+        last_cycle_summary = runtime.get("last_cycle_summary") or self._build_last_cycle_summary(state, runtime)
         freshness = self._freshness_snapshot(state)
         top_bar = self._dashboard_top_bar(state, freshness)
         intel_stream = self._intel_stream(state)
         hot_clusters = self._hot_clusters(state)
         github_watch = self._github_watch(state)
         execution_chain = self._execution_chain(state, browser)
+        entity_watchlist_summary = self._build_entity_watchlist_summary(state)
         stats = {
             "current_mode": state["current_mode"],
             "mode_label": self._current_automation_mode_def(state)["label"],
@@ -3957,8 +4796,6 @@ class StudioStore:
             "last_job_at": (state["jobs"][0]["finished_at"] if state["jobs"] else None),
         }
         state["browser"]["wechat"] = browser
-        if recovered_run_id or browser != previous_browser:
-            self._write(state)
         return DashboardResponse(
             stats=DashboardStats(**stats),
             top_bar=top_bar,
@@ -3972,6 +4809,8 @@ class StudioStore:
             automation_profiles=[AutomationModeProfile(**item) for item in state["automation_profiles"]],
             runtime_plan=self._runtime_plan_from_state(state),
             runtime_status=runtime_status,
+            last_cycle_summary=RuntimeCycleSummary(**last_cycle_summary) if isinstance(last_cycle_summary, dict) else None,
+            entity_watchlist_summary=[EntityWatchlistSummaryItem(**item) for item in entity_watchlist_summary],
             current_mode=ModeDefinition(**self._current_mode_def(state)),
             drafts=[DraftItem(**item) for item in state["drafts"][:6]],
             recent_jobs=[JobItem(**item) for item in state["jobs"][:8]],

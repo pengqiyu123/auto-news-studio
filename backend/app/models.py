@@ -4,6 +4,18 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from .models_llm import (
+    LLMConfig,
+    LLMConfigResponse,
+    LLMProfileConfig,
+    LLMProviderConfig,
+    LLMProviderPayload,
+    LLMTaskConfig,
+    LLMTaskPayload,
+    LLMTestResult,
+    LLMUsageResponse,
+)
+
 
 PublishMode = Literal[
     "draft_only",
@@ -64,6 +76,8 @@ ArticleVariant = Literal["flash_explainer"]
 RuntimeControlState = Literal["stopped", "armed", "running", "waiting"]
 RuntimeLaunchMode = Literal["once_now", "once_at", "interval_now", "interval_at"]
 IntelWorkScope = Literal["collect_only", "collect_events", "collect_events_alerts"]
+RuntimeIntent = Literal["normal_monitoring", "collect_validation", "event_rebuild", "alert_rebuild"]
+RuntimeRunOutcome = Literal["completed", "failed", "abandoned", "stopped"]
 IntelEventState = Literal["new", "watch", "rising", "breakout", "cooling"]
 IntelAlertLevel = Literal["watch", "rising", "breakout", "cooling"]
 IntelItemChangeState = Literal["new_item", "seen_item", "updated_item"]
@@ -446,6 +460,9 @@ class IntelEvent(BaseModel):
     platform_count: int = 0
     source_count: int = 0
     member_count: int = 0
+    story_count: int = 0
+    member_delta: int = 0
+    platform_delta: int = 0
     published_at: Optional[str] = None
     latest_collected_at: Optional[str] = None
     first_seen_at: Optional[str] = None
@@ -460,6 +477,9 @@ class IntelEvent(BaseModel):
     alert_state: IntelEventState = "new"
     change_state: IntelEventChangeState = "new_event"
     alert_reason: str = ""
+    entity_ids: list[str] = Field(default_factory=list)
+    entity_names: list[str] = Field(default_factory=list)
+    summary_translated: Optional[str] = None
     watchlisted: bool = False
     ignored: bool = False
 
@@ -492,6 +512,57 @@ class IntelAlert(BaseModel):
     source_count: int = 0
     representative_link: str
     triggered_at: str
+    entity_ids: list[str] = Field(default_factory=list)
+    entity_names: list[str] = Field(default_factory=list)
+    summary_translated: Optional[str] = None
+
+
+class EntityWatchlistItem(BaseModel):
+    entity_id: str
+    entity_name: str
+    entity_type: str
+    watchlisted: bool = True
+    added_at: Optional[str] = None
+
+
+class EntityWatchlistSummaryItem(EntityWatchlistItem):
+    event_count: int = 0
+    alert_count: int = 0
+    rising_count: int = 0
+    breakout_count: int = 0
+    last_seen_at: Optional[str] = None
+
+
+class RuntimeSlowSource(BaseModel):
+    source_key: str
+    source_name: str
+    duration_ms: int = 0
+    status: str = "success"
+
+
+class RuntimeIssueItem(BaseModel):
+    source_key: Optional[str] = None
+    source_name: Optional[str] = None
+    error_kind: str
+    message: str
+
+
+class RuntimeCycleSummary(BaseModel):
+    run_id: Optional[str] = None
+    mode_key: AutomationMode = "radar_only"
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    duration_ms: int = 0
+    success_source_count: int = 0
+    failed_source_count: int = 0
+    new_items_count: int = 0
+    new_events_count: int = 0
+    growing_events_count: int = 0
+    slow_sources: list[RuntimeSlowSource] = Field(default_factory=list)
+    issues: list[RuntimeIssueItem] = Field(default_factory=list)
+    draft_count: int = 0
+    wechat_sync_count: int = 0
+    publish_count: int = 0
 
 
 class IntelOverviewSummary(BaseModel):
@@ -613,6 +684,10 @@ class SchedulerStatus(BaseModel):
     current_cycle_progress_done: int = 0
     current_cycle_progress_total: int = 0
     current_cycle_progress_label: Optional[str] = None
+    stage_key: str = "idle"
+    stage_label: str = "空闲"
+    stage_index: int = 0
+    stage_total: int = 0
     enabled_at: Optional[str] = None
     scheduled_start_at: Optional[str] = None
     current_cycle_started_at: Optional[str] = None
@@ -623,6 +698,8 @@ class SchedulerStatus(BaseModel):
     completed_cycles_today: int = 0
     failed_cycles_today: int = 0
     last_error: Optional[str] = None
+    last_cycle_issue_count: int = 0
+    last_cycle_issue_summary: Optional[str] = None
     run_id: Optional[str] = None
     run_status: AutomationRunStatus = "idle"
     run_stage: str = "idle"
@@ -633,6 +710,13 @@ class SchedulerStatus(BaseModel):
     run_error: Optional[str] = None
     recovered_run_id: Optional[str] = None
     run_stale: bool = False
+    run_intent: RuntimeIntent = "normal_monitoring"
+    last_run_outcome: Optional[RuntimeRunOutcome] = None
+    last_cycle_summary: Optional[RuntimeCycleSummary] = None
+
+
+class RuntimeIntentPayload(BaseModel):
+    intent: RuntimeIntent
 
 
 class DashboardStats(BaseModel):
@@ -687,6 +771,8 @@ class DashboardResponse(BaseModel):
     automation_profiles: list[AutomationModeProfile]
     runtime_plan: RuntimePlan
     runtime_status: SchedulerStatus
+    last_cycle_summary: Optional[RuntimeCycleSummary] = None
+    entity_watchlist_summary: list[EntityWatchlistSummaryItem] = Field(default_factory=list)
     current_mode: ModeDefinition
     drafts: list[DraftItem]
     recent_jobs: list[JobItem]
@@ -715,6 +801,14 @@ class RuntimePlanPayload(BaseModel):
     interval_minutes: Optional[int] = Field(default=None, ge=5, le=360)
     timezone: str = "Asia/Shanghai"
     work_scope: IntelWorkScope = "collect_events_alerts"
+
+
+class EntityWatchlistPayload(BaseModel):
+    items: list[EntityWatchlistItem] = Field(default_factory=list)
+
+
+class EntityWatchlistResponse(BaseModel):
+    items: list[EntityWatchlistItem] = Field(default_factory=list)
 
 
 class JobRunPayload(BaseModel):
@@ -830,79 +924,7 @@ class RuntimePlanResponse(BaseModel):
     item: RuntimePlan
 
 
-class LLMProviderConfig(BaseModel):
-    key: str
-    api_key: str = ""
-    base_url: str = ""
-    model_id: str = ""
-    enabled: bool = False
-    last_tested_at: Optional[str] = None
-    last_test_result: Optional[str] = None
-
-
-class LLMTaskConfig(BaseModel):
-    task_key: str
-    label: str = ""
-    provider_key: str = ""
-    model_id: str = ""
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=4096, ge=64, le=32768)
-    system_prompt: str = ""
-
-
-class LLMProfileConfig(BaseModel):
-    id: str
-    label: str
-    description: str = ""
-    provider_key: str
-    api_key: str = ""
-    base_url: str = ""
-    model_id: str = ""
-    enabled: bool = False
-    last_tested_at: Optional[str] = None
-    last_test_result: Optional[str] = None
-
-
-class LLMConfig(BaseModel):
-    current_profile_id: str = ""
-    profiles: list[LLMProfileConfig] = Field(default_factory=list)
-    providers: list[LLMProviderConfig] = Field(default_factory=list)
-    tasks: list[LLMTaskConfig] = Field(default_factory=list)
-    usage_today: dict[str, dict[str, int]] = Field(default_factory=dict)
-
-
-class LLMConfigResponse(BaseModel):
-    item: LLMConfig
-
-
-class LLMProviderPayload(BaseModel):
-    key: str
-    api_key: str = ""
-    base_url: str = ""
-    model_id: str = ""
-    enabled: bool = False
-
-
-class LLMTaskPayload(BaseModel):
-    task_key: str
-    label: str = ""
-    provider_key: str = ""
-    model_id: str = ""
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=4096, ge=64, le=32768)
-    system_prompt: str = ""
-
-
-class LLMTestResult(BaseModel):
-    ok: bool
-    model: str = ""
-    content: str = ""
-    latency_ms: float = 0.0
-    error: str = ""
-
-
-class LLMUsageResponse(BaseModel):
-    item: dict[str, dict[str, int]]
+# LLM models have been moved to models_llm.py
 
 
 class DictEnvelope(BaseModel):

@@ -53,6 +53,8 @@ export type ArticleVariant = "flash_explainer";
 export type RuntimeControlState = "stopped" | "armed" | "running" | "waiting";
 export type RuntimeLaunchMode = "once_now" | "once_at" | "interval_now" | "interval_at";
 export type IntelWorkScope = "collect_only" | "collect_events" | "collect_events_alerts";
+export type RuntimeIntent = "normal_monitoring" | "collect_validation" | "event_rebuild" | "alert_rebuild";
+export type RuntimeRunOutcome = "completed" | "failed" | "abandoned" | "stopped";
 export type IntelEventState = "new" | "watch" | "rising" | "breakout" | "cooling";
 export type IntelAlertLevel = "watch" | "rising" | "breakout" | "cooling";
 export type IntelItemChangeState = "new_item" | "seen_item" | "updated_item";
@@ -419,6 +421,9 @@ export interface IntelEvent {
   platform_count: number;
   source_count: number;
   member_count: number;
+  story_count: number;
+  member_delta: number;
+  platform_delta: number;
   published_at?: string | null;
   latest_collected_at?: string | null;
   first_seen_at?: string | null;
@@ -433,6 +438,9 @@ export interface IntelEvent {
   alert_state: IntelEventState;
   change_state: IntelEventChangeState;
   alert_reason: string;
+  entity_ids: string[];
+  entity_names: string[];
+  summary_translated?: string;
   watchlisted: boolean;
   ignored: boolean;
 }
@@ -451,6 +459,57 @@ export interface IntelAlert {
   source_count: number;
   representative_link: string;
   triggered_at: string;
+  entity_ids: string[];
+  entity_names: string[];
+  summary_translated?: string;
+}
+
+export interface EntityWatchlistItem {
+  entity_id: string;
+  entity_name: string;
+  entity_type: string;
+  watchlisted: boolean;
+  added_at?: string | null;
+}
+
+export interface EntityWatchlistSummaryItem extends EntityWatchlistItem {
+  event_count: number;
+  alert_count: number;
+  rising_count: number;
+  breakout_count: number;
+  last_seen_at?: string | null;
+}
+
+export interface RuntimeSlowSource {
+  source_key: string;
+  source_name: string;
+  duration_ms: number;
+  status: string;
+}
+
+export interface RuntimeIssueItem {
+  source_key?: string | null;
+  source_name?: string | null;
+  error_kind: string;
+  message: string;
+}
+
+export interface RuntimeCycleSummary {
+  run_id?: string | null;
+  mode_key: AutomationMode;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_ms: number;
+  success_source_count: number;
+  failed_source_count: number;
+  new_items_count: number;
+  new_events_count: number;
+  growing_events_count: number;
+  slow_sources: RuntimeSlowSource[];
+  issues: RuntimeIssueItem[];
+  draft_count: number;
+  wechat_sync_count: number;
+  publish_count: number;
 }
 
 export interface IntelOverviewSummary {
@@ -552,6 +611,10 @@ export interface SchedulerStatus {
   current_cycle_progress_done: number;
   current_cycle_progress_total: number;
   current_cycle_progress_label?: string | null;
+  stage_key: string;
+  stage_label: string;
+  stage_index: number;
+  stage_total: number;
   enabled_at?: string | null;
   scheduled_start_at?: string | null;
   current_cycle_started_at?: string | null;
@@ -562,6 +625,8 @@ export interface SchedulerStatus {
   completed_cycles_today: number;
   failed_cycles_today: number;
   last_error?: string | null;
+  last_cycle_issue_count: number;
+  last_cycle_issue_summary?: string | null;
   run_id?: string | null;
   run_status: AutomationRunStatus;
   run_stage: string;
@@ -572,6 +637,9 @@ export interface SchedulerStatus {
   run_error?: string | null;
   recovered_run_id?: string | null;
   run_stale: boolean;
+  run_intent: RuntimeIntent;
+  last_run_outcome?: RuntimeRunOutcome | null;
+  last_cycle_summary?: RuntimeCycleSummary | null;
 }
 
 export interface BatchDraftResult {
@@ -613,6 +681,8 @@ export interface LLMTaskConfig {
   label: string;
   provider_key: string;
   model_id: string;
+  fallback_provider_key: string;
+  fallback_model_id: string;
   temperature: number;
   max_tokens: number;
   system_prompt: string;
@@ -662,6 +732,8 @@ export interface DashboardResponse {
   automation_profiles: AutomationModeProfile[];
   runtime_plan: RuntimePlan;
   runtime_status: SchedulerStatus;
+  last_cycle_summary?: RuntimeCycleSummary | null;
+  entity_watchlist_summary: EntityWatchlistSummaryItem[];
   current_mode: ModeDefinition;
   drafts: DraftItem[];
   recent_jobs: JobItem[];
