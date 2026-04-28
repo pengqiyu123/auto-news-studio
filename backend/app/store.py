@@ -4,7 +4,6 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
 import json
 import time
 import traceback
@@ -13,6 +12,32 @@ import re
 from threading import RLock, Thread
 from typing import Any
 from uuid import uuid4
+
+from .store_base import (
+    DATA_FILE,
+    INTENT_STAGE_PLANS,
+    INTENT_TO_WORK_SCOPE,
+    LOCAL_TZ,
+    LOCAL_TZ as LTZ,
+    MAX_RAW_ITEMS,
+    MODE_STAGE_PLANS,
+    RUN_STALE_SECONDS,
+    SLOW_SOURCE_WARNING_SECONDS,
+    SOURCE_TIMEOUT_SECONDS,
+    SYNTHETIC_MARKERS,
+    UTC,
+    UNSUPPORTED_SOURCE_DRIVERS,
+    _contains_synthetic_marker,
+    _extract_json_payload,
+    _is_synthetic_raw_item,
+    freshness_bucket,
+    local_now,
+    minutes_between,
+    now_iso,
+    parse_clock_time,
+    parse_time,
+    schedule_to_minutes,
+)
 
 from .composer import _markdown_to_html, _wechat_html, compose_draft
 from .connectors import _collect_with_retry, collect_enabled_sources, collect_from_source
@@ -78,6 +103,12 @@ from .store_llm import (
     DEFAULT_LLM_PROFILES,
     DEFAULT_LLM_TASK_TEMPLATE,
 )
+from .store_defaults import (
+    DEFAULT_SOURCES,
+    AUTOMATION_MODE_DEFINITIONS,
+    DEFAULT_AUTOMATION_PROFILES,
+    MODE_DEFINITIONS,
+)
 from .pipeline import build_candidates, normalize_raw_items
 from .publishers import (
     build_preview_url,
@@ -94,175 +125,6 @@ from .publishers import (
 )
 from .reference_projects import write_reference_baseline
 from .sources import discover_sources
-
-
-DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "state.json"
-UTC = timezone.utc
-LOCAL_TZ = timezone(timedelta(hours=8))
-MAX_RAW_ITEMS = 480
-SYNTHETIC_MARKERS = (
-    "example.com/",
-    "当前为回退样例",
-    "已回退到样例素材",
-    "可用样例素材",
-    "样例数据",
-)
-UNSUPPORTED_SOURCE_DRIVERS = {
-    "legacy_bilibili",
-    "legacy_toutiao",
-    "legacy_youtube",
-    "newsnow_pool",
-}
-SOURCE_TIMEOUT_SECONDS = 12
-SLOW_SOURCE_WARNING_SECONDS = 8
-RUN_STALE_SECONDS = 180
-DEFAULT_RUNTIME_INTENT = "normal_monitoring"
-INTENT_TO_WORK_SCOPE: dict[str, str] = {
-    "normal_monitoring": "collect_events_alerts",
-    "collect_validation": "collect_only",
-    "event_rebuild": "collect_events",
-    "alert_rebuild": "collect_events_alerts",
-}
-
-MODE_STAGE_PLANS: dict[str, list[dict[str, str]]] = {
-    "radar_only": [
-        {"key": "collecting", "label": "采集素材"},
-        {"key": "clustering", "label": "聚合热点事件"},
-        {"key": "scoring", "label": "判断热度与预警"},
-    ],
-    "radar_and_draft": [
-        {"key": "collecting", "label": "采集素材"},
-        {"key": "clustering", "label": "聚合热点事件"},
-        {"key": "scoring", "label": "判断热度与预警"},
-        {"key": "drafting", "label": "生成稿件"},
-    ],
-    "full_pipeline": [
-        {"key": "collecting", "label": "采集素材"},
-        {"key": "clustering", "label": "聚合热点事件"},
-        {"key": "scoring", "label": "判断热度与预警"},
-        {"key": "drafting", "label": "生成稿件"},
-        {"key": "wechat_sync", "label": "分发与同步"},
-    ],
-}
-
-INTENT_STAGE_PLANS: dict[str, list[dict[str, str]]] = {
-    "collect_validation": [{"key": "collecting", "label": "采集素材"}],
-    "event_rebuild": [{"key": "clustering", "label": "重建热点事件"}],
-    "alert_rebuild": [{"key": "scoring", "label": "重算预警"}],
-}
-
-
-def now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
-
-
-def local_now() -> datetime:
-    return datetime.now(LOCAL_TZ)
-
-
-def parse_time(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
-    except ValueError:
-        try:
-            return parsedate_to_datetime(value).astimezone(UTC)
-        except (TypeError, ValueError, IndexError, OverflowError):
-            return None
-
-
-def minutes_between(start: str | None, end: str | None) -> float | None:
-    start_dt = parse_time(start)
-    end_dt = parse_time(end)
-    if not start_dt or not end_dt:
-        return None
-    return round(max((end_dt - start_dt).total_seconds() / 60, 0.0), 1)
-
-
-def schedule_to_minutes(schedule: str | None) -> int | None:
-    if not schedule:
-        return None
-    compact = schedule.strip()
-    fixed = {
-        "*/15 * * * *": 15,
-        "*/20 * * * *": 20,
-        "*/30 * * * *": 30,
-        "*/45 * * * *": 45,
-        "0 * * * *": 60,
-        "0 */4 * * *": 240,
-    }
-    if compact in fixed:
-        return fixed[compact]
-    match = re.fullmatch(r"\*/(\d+)\s+\*\s+\*\s+\*\s+\*", compact)
-    if match:
-        return max(int(match.group(1)), 1)
-    return None
-
-
-def parse_clock_time(value: str | None) -> tuple[int, int] | None:
-    compact = str(value or "").strip()
-    match = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", compact)
-    if not match:
-        return None
-    return int(match.group(1)), int(match.group(2))
-
-
-def freshness_bucket(collected_at: str | None) -> str:
-    collected_dt = parse_time(collected_at)
-    if not collected_dt:
-        return "unknown"
-    delta_minutes = (datetime.now(UTC) - collected_dt).total_seconds() / 60
-    if delta_minutes <= 15:
-        return "fresh"
-    if delta_minutes <= 60:
-        return "recent"
-    if delta_minutes <= 360:
-        return "aging"
-    return "stale"
-
-
-def _contains_synthetic_marker(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, (dict, list, tuple, set)):
-        try:
-            text = json.dumps(value, ensure_ascii=False)
-        except TypeError:
-            text = str(value)
-    else:
-        text = str(value)
-    return any(marker in text for marker in SYNTHETIC_MARKERS)
-
-
-def _is_synthetic_raw_item(item: dict[str, Any]) -> bool:
-    metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
-    return bool(
-        metadata.get("fallback")
-        or _contains_synthetic_marker(item.get("link"))
-        or _contains_synthetic_marker(item.get("summary"))
-        or _contains_synthetic_marker(item.get("content"))
-        or _contains_synthetic_marker(metadata)
-    )
-
-
-def _extract_json_payload(text: str) -> Any | None:
-    compact = str(text or "").strip()
-    if not compact:
-        return None
-    if compact.startswith("```"):
-        compact = re.sub(r"^```(?:json)?\s*", "", compact)
-        compact = re.sub(r"\s*```$", "", compact)
-    try:
-        return json.loads(compact)
-    except json.JSONDecodeError:
-        match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", compact)
-        if not match:
-            return None
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            return None
 
 
 def default_image_slots(draft: dict[str, Any]) -> list[dict[str, Any]]:
@@ -349,268 +211,6 @@ def automation_to_publish_mode(mode: str) -> str:
     if mode == "full_pipeline":
         return "draft_preview_browser"
     return "draft_only"
-
-
-MODE_DEFINITIONS: list[dict[str, Any]] = [
-    {
-        "key": "draft_only",
-        "label": "仅初稿",
-        "description": "先采集、先写初稿、允许排入微信草稿队列，但不自动预览、不自动发送。",
-        "auto_collect": True,
-        "auto_draft": True,
-        "sync_to_wechat_draft": True,
-        "auto_open_preview": False,
-        "requires_human_review": True,
-        "allow_auto_send": False,
-        "allow_auto_retry": True,
-    },
-    {
-        "key": "draft_and_preview",
-        "label": "草稿加预览",
-        "description": "自动准备系统草稿和预览入口，人工看过后再决定是否推进。",
-        "auto_collect": True,
-        "auto_draft": True,
-        "sync_to_wechat_draft": True,
-        "auto_open_preview": True,
-        "requires_human_review": True,
-        "allow_auto_send": False,
-        "allow_auto_retry": True,
-    },
-    {
-        "key": "draft_preview_browser",
-        "label": "草稿加浏览器预览",
-        "description": "自动打开公众号后台和预览链路，但不自动点击最终发布。",
-        "auto_collect": True,
-        "auto_draft": True,
-        "sync_to_wechat_draft": True,
-        "auto_open_preview": True,
-        "requires_human_review": True,
-        "allow_auto_send": False,
-        "allow_auto_retry": True,
-    },
-    {
-        "key": "auto_send_guarded",
-        "label": "自动发送(带守卫)",
-        "description": "通过审核、风控和浏览器健康检查后，允许进入自动发布尝试。",
-        "auto_collect": True,
-        "auto_draft": True,
-        "sync_to_wechat_draft": True,
-        "auto_open_preview": True,
-        "requires_human_review": True,
-        "allow_auto_send": True,
-        "allow_auto_retry": True,
-    },
-    {
-        "key": "full_auto",
-        "label": "全自动",
-        "description": "保留接口用于后续扩展，不作为当前默认运行档位。",
-        "auto_collect": True,
-        "auto_draft": True,
-        "sync_to_wechat_draft": True,
-        "auto_open_preview": True,
-        "requires_human_review": False,
-        "allow_auto_send": True,
-        "allow_auto_retry": True,
-    },
-]
-
-AUTOMATION_MODE_DEFINITIONS: list[dict[str, Any]] = [
-    {
-        "key": "radar_only",
-        "label": "雷达捕获",
-        "description": "只做信息发现、标准化和候选池更新，不自动成稿，也不触发微信链路。",
-        "auto_collect": True,
-        "auto_generate_candidates": True,
-        "auto_generate_drafts": False,
-        "auto_publish_enabled": False,
-        "available": True,
-    },
-    {
-        "key": "radar_and_draft",
-        "label": "稿件撰写",
-        "description": "持续抓取、自动成稿，并按设置决定先留在项目本地还是同步进微信公众号草稿箱。",
-        "auto_collect": True,
-        "auto_generate_candidates": True,
-        "auto_generate_drafts": True,
-        "auto_publish_enabled": False,
-        "available": True,
-    },
-    {
-        "key": "full_pipeline",
-        "label": "自动全流程",
-        "description": "从抓取、成稿、微信草稿箱到受控发表的完整链路，适合做定时运营策略。",
-        "auto_collect": True,
-        "auto_generate_candidates": True,
-        "auto_generate_drafts": True,
-        "auto_publish_enabled": True,
-        "available": False,
-    },
-]
-
-DEFAULT_AUTOMATION_PROFILES: list[dict[str, Any]] = [
-    {
-        "mode": "radar_only",
-        "collect_interval_minutes": 30,
-        "draft_trigger": "manual",
-        "draft_schedule_time": None,
-        "draft_delivery": "local_only",
-        "draft_selection": "top_scored",
-        "draft_limit": 8,
-        "publish_strategy": "disabled",
-        "publish_schedule_time": None,
-        "require_approval": True,
-        "notes": "适合先把消息抓全、看全，不自动成稿。",
-    },
-    {
-        "mode": "radar_and_draft",
-        "collect_interval_minutes": 20,
-        "draft_trigger": "after_sync",
-        "draft_schedule_time": None,
-        "draft_delivery": "local_only",
-        "draft_selection": "top_scored",
-        "draft_limit": 6,
-        "publish_strategy": "wechat_draft_only",
-        "publish_schedule_time": "10:30",
-        "require_approval": True,
-        "notes": "适合自动搜集后快速出稿，默认先留在项目本地，可切到微信草稿箱。",
-    },
-    {
-        "mode": "full_pipeline",
-        "collect_interval_minutes": 15,
-        "draft_trigger": "scheduled",
-        "draft_schedule_time": "09:30",
-        "draft_delivery": "wechat_draft",
-        "draft_selection": "top_scored",
-        "draft_limit": 4,
-        "publish_strategy": "guarded_send",
-        "publish_schedule_time": "18:00",
-        "require_approval": True,
-        "notes": "适合固定时间批量运营，首版仍建议保留人工审核守卫。",
-    },
-]
-
-# DEFAULT_LLM_PROFILES, DEFAULT_LLM_TASK_TEMPLATE, build_provider_from_profile,
-# build_tasks_from_profile, default_llm_state, merge_llm_profiles
-# have been moved to store_llm.py
-
-
-def _rss(
-    key: str,
-    name: str,
-    url: str,
-    *,
-    priority: int = 7,
-    schedule: str = "*/30 * * * *",
-    enabled: bool = True,
-    tags: list[str] | None = None,
-    language: str = "en",
-) -> dict[str, Any]:
-    return {
-        "key": key,
-        "name": name,
-        "kind": "rss",
-        "driver": "feedparser",
-        "enabled": enabled,
-        "schedule": schedule,
-        "priority": priority,
-        "auth": {},
-        "url": url,
-        "tags": tags or [language],
-        "capabilities": ["rss"],
-        "origin_repo": "curated",
-        "origin_license": "rss",
-        "health_status": "idle",
-        "health_detail": "等待首次同步",
-        "item_count": 0,
-        "last_synced_at": None,
-        "last_error": None,
-        "updated_at": None,
-    }
-
-
-def _api_source(
-    key: str,
-    name: str,
-    driver: str,
-    *,
-    url: str | None = None,
-    priority: int = 7,
-    schedule: str = "*/30 * * * *",
-    enabled: bool = True,
-    tags: list[str] | None = None,
-    auth: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return {
-        "key": key,
-        "name": name,
-        "kind": driver.split("_")[0],
-        "driver": driver,
-        "enabled": enabled,
-        "schedule": schedule,
-        "priority": priority,
-        "auth": auth or {},
-        "url": url,
-        "tags": tags or ["api"],
-        "capabilities": ["api"],
-        "origin_repo": "curated",
-        "origin_license": "api",
-        "health_status": "idle",
-        "health_detail": "等待首次同步",
-        "item_count": 0,
-        "last_synced_at": None,
-        "last_error": None,
-        "updated_at": None,
-    }
-
-
-DEFAULT_SOURCES: list[dict[str, Any]] = [
-    # ── AI / LLM 厂商官方博客（英文，优先级最高） ──
-    _rss("rss-openai", "OpenAI Blog", "https://openai.com/blog/rss.xml", priority=9, tags=["ai", "models"]),
-    _rss("rss-anthropic", "Anthropic News", "https://www.anthropic.com/news/rss.xml", priority=9, tags=["ai", "safety"]),
-    _rss("rss-google-ai", "Google AI Blog", "https://blog.google/technology/ai/rss/", priority=9, tags=["ai", "google"]),
-    _rss("rss-deepmind", "DeepMind Blog", "https://deepmind.google/blog/rss.xml", priority=9, tags=["ai", "research"]),
-    _rss("rss-huggingface", "Hugging Face Blog", "https://huggingface.co/blog/feed.xml", priority=8, tags=["ai", "oss"]),
-    _rss("rss-openai-cookbook", "OpenAI Cookbook", "https://cookbook.openai.com/rss.xml", priority=8, tags=["ai", "dev"]),
-    _rss("rss-meta-ai", "Meta AI Blog", "https://ai.meta.com/blog/rss/", priority=8, tags=["ai", "meta"]),
-    _rss("rss-nvidia-ai", "NVIDIA AI Blog", "https://blogs.nvidia.com/feed/", priority=8, tags=["ai", "chip"]),
-    _rss("rss-mistral", "Mistral AI Blog", "https://mistral.ai/news/feed.xml", priority=8, tags=["ai", "europe"]),
-    # ── 英文科技媒体 ──
-    _rss("rss-techcrunch", "TechCrunch", "https://techcrunch.com/feed/", priority=8, schedule="*/20 * * * *"),
-    _rss("rss-theverge", "The Verge", "https://www.theverge.com/rss/index.xml", priority=8),
-    _rss("rss-arstechnica", "Ars Technica", "https://feeds.arstechnica.com/arstechnica/features", priority=8),
-    _rss("rss-wired", "Wired", "https://www.wired.com/feed/rss", priority=7),
-    _rss("rss-mit-tech", "MIT Technology Review", "https://www.technologyreview.com/feed/", priority=8, tags=["ai", "research"]),
-    _rss("rss-github-blog", "GitHub Blog", "https://github.blog/feed/", priority=7, tags=["oss", "github"]),
-    _rss("rss-hn-front", "Hacker News (RSS)", "https://hnrss.org/frontpage", priority=8, tags=["community", "hn"]),
-    # ── 中文科技媒体 ──
-    _rss("rss-36kr", "36氪", "https://36kr.com/feed", priority=8, tags=["cn", "startup"], language="zh"),
-    _rss("rss-sspai", "少数派", "https://sspai.com/feed", priority=7, tags=["cn", "digital"], language="zh"),
-    _rss("rss-jiqizhixin", "机器之心", "https://www.jiqizhixin.com/rss", priority=8, tags=["cn", "ai"], language="zh"),
-    _rss("rss-ithome", "IT之家", "https://www.ithome.com/rss/", priority=7, tags=["cn", "tech"], language="zh"),
-    _rss("rss-ifanr", "爱范儿", "https://www.ifanr.com/feed", priority=7, tags=["cn", "digital"], language="zh"),
-    _rss("rss-ruanyifeng", "阮一峰的网络日志", "https://www.ruanyifeng.com/blog/atom.xml", priority=6, tags=["cn", "dev"], language="zh"),
-    # ── AI/ML 研究前沿 ──
-    _rss("rss-arxiv-cs-ai", "arXiv CS.AI", "http://export.arxiv.org/rss/cs.AI", priority=7, tags=["research", "arxiv"]),
-    _rss("rss-arxiv-cs-cl", "arXiv CS.CL (NLP)", "http://export.arxiv.org/rss/cs.CL", priority=7, tags=["research", "nlp"]),
-    _rss("rss-arxiv-cs-cv", "arXiv CS.CV", "http://export.arxiv.org/rss/cs.CV", priority=7, tags=["research", "vision"]),
-    _rss("rss-distill", "Distill.pub", "https://distill.pub/feed.xml", priority=7, tags=["research", "viz"]),
-    # ── Reddit 社区（JSON API） ──
-    _api_source("reddit-chatgpt", "Reddit r/ChatGPT", "reddit_hot", priority=7, tags=["community", "ai"], auth={"subreddit": "ChatGPT"}),
-    _api_source("reddit-claudeai", "Reddit r/ClaudeAI", "reddit_hot", priority=7, tags=["community", "ai"], auth={"subreddit": "ClaudeAI"}),
-    _api_source("reddit-local-llama", "Reddit r/LocalLLaMA", "reddit_hot", priority=6, tags=["community", "oss"], auth={"subreddit": "LocalLLaMA"}),
-    _api_source("reddit-machinelearning", "Reddit r/MachineLearning", "reddit_hot", priority=7, tags=["community", "research"], auth={"subreddit": "MachineLearning"}),
-    _api_source("reddit-singularity", "Reddit r/singularity", "reddit_hot", priority=6, tags=["community", "future"], auth={"subreddit": "singularity"}),
-    # ── API / 爬虫数据源 ──
-    _api_source("hn-frontpage", "Hacker News Front Page", "hackernews_frontpage", priority=8, tags=["community", "hn"]),
-    _api_source("github-trending", "GitHub Trending", "github_trending", priority=7, tags=["oss", "github"]),
-    _api_source("vvhan-hotlist", "VVhan 热榜聚合", "vvhan_hotlist", priority=7, schedule="*/15 * * * *", tags=["cn", "hot"]),
-    # ── RSSHub 路由（中文社交平台，依赖 rsshub.app 公共实例） ──
-    _rss("rsshub-weibo-hot", "微博热搜 (RSSHub)", "https://rsshub.app/weibo/hot", priority=7, schedule="*/15 * * * *", tags=["cn", "weibo"], language="zh"),
-    _rss("rsshub-zhihu-hot", "知乎热榜 (RSSHub)", "https://rsshub.app/zhihu/hotlist", priority=7, schedule="*/15 * * * *", tags=["cn", "zhihu"], language="zh"),
-    _rss("rsshub-juejin-trend", "掘金前端趋势 (RSSHub)", "https://rsshub.app/juejin/trending/frontend/monthly", priority=6, schedule="0 */4 * * *", tags=["cn", "dev"], language="zh"),
-    _rss("rsshub-github-trending", "GitHub Trending (RSSHub)", "https://rsshub.app/github/trending/daily", priority=7, tags=["oss", "github"]),
-    _rss("rsshub-producthunt", "Product Hunt (RSSHub)", "https://rsshub.app/producthunt/daily", priority=6, tags=["startup", "product"]),
-]
 
 
 JOB_LABELS = {
