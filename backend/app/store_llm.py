@@ -81,11 +81,11 @@ DEFAULT_LLM_PROFILES: list[dict[str, Any]] = [
 ]
 
 DEFAULT_LLM_TASK_TEMPLATE: list[dict[str, Any]] = [
+    # 3 任务配置：judgement(判断)、translation(翻译)、article(生成)
+    # outline/title 合并到 article；summary 改名为 translation
     {"task_key": "judgement", "label": "初步判断", "temperature": 0.2, "max_tokens": 2048, "fallback_provider_key": "", "fallback_model_id": ""},
-    {"task_key": "outline", "label": "写作提纲", "temperature": 0.4, "max_tokens": 2048, "fallback_provider_key": "", "fallback_model_id": ""},
-    {"task_key": "article", "label": "正文生成", "temperature": 0.7, "max_tokens": 4096, "fallback_provider_key": "", "fallback_model_id": ""},
-    {"task_key": "title", "label": "标题润色", "temperature": 0.8, "max_tokens": 512, "fallback_provider_key": "", "fallback_model_id": ""},
-    {"task_key": "summary", "label": "摘要生成", "temperature": 0.5, "max_tokens": 1024, "fallback_provider_key": "", "fallback_model_id": ""},
+    {"task_key": "translation", "label": "事件翻译", "temperature": 0.3, "max_tokens": 512, "fallback_provider_key": "", "fallback_model_id": ""},
+    {"task_key": "article", "label": "稿件生成", "temperature": 0.7, "max_tokens": 4096, "fallback_provider_key": "", "fallback_model_id": ""},
 ]
 
 

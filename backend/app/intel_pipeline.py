@@ -720,7 +720,7 @@ def _translate_summary(text: str, llm_service: LLMService | None) -> str:
     try:
         messages = [{"role": "user", "content": f"翻译成中文，只返回译文：\n{truncated}"}]
         # Use 15 second timeout for translation to avoid blocking the pipeline
-        result = llm_service.generate("summary", messages, temperature=0.3, max_tokens=256, timeout=15.0)
+        result = llm_service.generate("translation", messages, temperature=0.3, max_tokens=256, timeout=15.0)
         translated = result.get("content", "").strip()
         if translated:
             if len(_translation_cache) >= _MAX_CACHE_SIZE:

@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from .store_base import (
     DATA_FILE,
+    DEFAULT_RUNTIME_INTENT,
     INTENT_STAGE_PLANS,
     INTENT_TO_WORK_SCOPE,
     LOCAL_TZ,
@@ -205,6 +206,31 @@ def legacy_brief(draft: dict[str, Any]) -> dict[str, Any]:
             "collected_at_label": "采集时间未知",
         },
     }
+
+
+def _migrate_tasks_to_three(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """将 5 任务配置迁移为 3 任务：summary→translation, outline/title→忽略"""
+    if not tasks:
+        return tasks
+    # 如果已经是 3 个任务，直接返回
+    task_keys = {t.get("task_key") for t in tasks if t.get("task_key")}
+    target_keys = {"judgement", "translation", "article"}
+    if task_keys <= target_keys or task_keys == target_keys:
+        return tasks
+    # 迁移：summary→translation，outline/title→忽略
+    result: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for task in tasks:
+        key = task.get("task_key", "")
+        if key == "summary":
+            key = "translation"
+        if key in {"outline", "title"}:
+            continue  # 忽略，合并到 article
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        result.append(task)
+    return result
 
 
 def automation_to_publish_mode(mode: str) -> str:
@@ -604,6 +630,8 @@ class StudioStore:
                 llm["providers"] = []
             if not llm.get("tasks"):
                 llm["tasks"] = []
+        # Migration: 5 tasks → 3 tasks (summary→translation, outline/title→ignore)
+        llm["tasks"] = _migrate_tasks_to_three(llm.get("tasks", []))
         llm.setdefault("usage_today", {})
         state.setdefault("automation_mode", "radar_only")
         state.setdefault("automation_mode_definitions", deepcopy(AUTOMATION_MODE_DEFINITIONS))

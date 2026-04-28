@@ -1,4 +1,4 @@
-import { CheckCircle, Copy, Eye, EyeOff, Loader2, Plus, Save, Trash2, Zap } from "lucide-react";
+import { CheckCircle, Copy, Edit, Eye, EyeOff, Loader2, Plus, Save, TestTube2, Trash2, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../lib/api";
@@ -61,12 +61,12 @@ const PROVIDER_REGISTRY: Record<string, { label: string; base_url: string; model
   },
 };
 
+// 3 任务配置：judgement(判断)、translation(翻译)、article(生成)
+// outline/title 合并到 article；summary 改名为 translation
 const DEFAULT_TASKS: LLMTaskConfig[] = [
   { task_key: "judgement", label: "初步判断", provider_key: "", model_id: "", fallback_provider_key: "", fallback_model_id: "", temperature: 0.2, max_tokens: 2048, system_prompt: "" },
-  { task_key: "outline", label: "写作提纲", provider_key: "", model_id: "", fallback_provider_key: "", fallback_model_id: "", temperature: 0.4, max_tokens: 2048, system_prompt: "" },
-  { task_key: "article", label: "正文生成", provider_key: "", model_id: "", fallback_provider_key: "", fallback_model_id: "", temperature: 0.7, max_tokens: 4096, system_prompt: "" },
-  { task_key: "title", label: "标题润色", provider_key: "", model_id: "", fallback_provider_key: "", fallback_model_id: "", temperature: 0.8, max_tokens: 512, system_prompt: "" },
-  { task_key: "summary", label: "摘要生成", provider_key: "", model_id: "", fallback_provider_key: "", fallback_model_id: "", temperature: 0.5, max_tokens: 1024, system_prompt: "" },
+  { task_key: "translation", label: "事件翻译", provider_key: "", model_id: "", fallback_provider_key: "", fallback_model_id: "", temperature: 0.3, max_tokens: 512, system_prompt: "" },
+  { task_key: "article", label: "稿件生成", provider_key: "", model_id: "", fallback_provider_key: "", fallback_model_id: "", temperature: 0.7, max_tokens: 4096, system_prompt: "" },
 ];
 
 const DEFAULT_PROFILES: LLMProfileConfig[] = [
@@ -532,26 +532,54 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: LL
                       <button
                         type="button"
                         className="ghost-button compact"
+                        title="编辑档位"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedProfileId(profile.id);
+                        }}
+                      >
+                        <Edit size={14} />
+                      </button>
+
+                      <button
+                        type="button"
+                        className="ghost-button compact"
+                        title="测试连接"
+                        disabled={!profile.api_key.trim() || testing}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedProfileId(profile.id);
+                          void handleTest();
+                        }}
+                      >
+                        {testing ? <Loader2 size={14} className="spin-icon" /> : <TestTube2 size={14} />}
+                      </button>
+
+                      <button
+                        type="button"
+                        className="ghost-button compact"
+                        title="复制档位"
                         onClick={(event) => {
                           event.stopPropagation();
                           handleDuplicateProfile(profile);
                         }}
                       >
                         <Copy size={14} />
-                        复制
                       </button>
 
                       {!preset ? (
                         <button
                           type="button"
                           className="ghost-button compact danger"
+                          title="删除档位"
                           onClick={(event) => {
                             event.stopPropagation();
-                            handleDeleteProfile(profile.id);
+                            if (window.confirm(`确定要删除档位"${profile.label}"吗？`)) {
+                              handleDeleteProfile(profile.id);
+                            }
                           }}
                         >
                           <Trash2 size={14} />
-                          删除
                         </button>
                       ) : null}
                     </div>

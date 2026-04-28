@@ -79,11 +79,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
 }
 
 DEFAULT_TASK_CONFIGS: dict[str, dict[str, Any]] = {
+    # 3 任务配置：judgement(判断)、translation(翻译)、article(生成)
     "judgement": {"label": "初步判断", "temperature": 0.2, "max_tokens": 2048},
-    "outline": {"label": "大纲生成", "temperature": 0.4, "max_tokens": 2048},
-    "article": {"label": "正文撰写", "temperature": 0.7, "max_tokens": 4096},
-    "title": {"label": "标题优化", "temperature": 0.8, "max_tokens": 512},
-    "summary": {"label": "摘要生成", "temperature": 0.5, "max_tokens": 1024},
+    "translation": {"label": "事件翻译", "temperature": 0.3, "max_tokens": 512},
+    "article": {"label": "稿件生成", "temperature": 0.7, "max_tokens": 4096},
 }
 
 
