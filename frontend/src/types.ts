@@ -18,6 +18,7 @@ export type PipelineStage =
   | "collected"
   | "curated"
   | "drafted"
+  | "draft_synced"
   | "preview_ready"
   | "approved"
   | "published"
@@ -59,6 +60,7 @@ export type IntelEventState = "new" | "watch" | "rising" | "breakout" | "cooling
 export type IntelAlertLevel = "watch" | "rising" | "breakout" | "cooling";
 export type IntelItemChangeState = "new_item" | "seen_item" | "updated_item";
 export type IntelEventChangeState = "new_event" | "growing_event" | "stable_event" | "cooling_event";
+export type HistoryRecordStatus = "active" | "cooled" | "source_uncertain";
 
 export interface ModeDefinition {
   key: PublishMode;
@@ -169,12 +171,29 @@ export interface CandidateTopic {
   freshness_bucket: string;
   draft_exists: boolean;
   normalized_score: number;
+  evidence_pack?: Array<{
+    discovery_item_id: string;
+    source_name: string;
+    title: string;
+    summary: string;
+    link: string;
+    published_at?: string | null;
+    collected_at?: string | null;
+    entity_names?: string[];
+  }>;
+  entity_names?: string[];
+  alert_state?: IntelEventState | null;
+  alert_reason?: string;
   updated_at: string;
 }
 
 export interface DraftItem {
   id: string;
   candidate_topic_id: string;
+  source_event_id?: string | null;
+  source_alert_level?: string | null;
+  generation_mode?: "manual" | "automation";
+  draft_window_id?: string | null;
   title: string;
   section: string;
   source_count: number;
@@ -188,10 +207,23 @@ export interface DraftItem {
     one_line?: string;
     facts?: string[];
     evidence_links?: string[];
+    evidence_pack?: Array<{
+      discovery_item_id: string;
+      source_name: string;
+      title: string;
+      summary: string;
+      link: string;
+      published_at?: string | null;
+      collected_at?: string | null;
+      entity_names?: string[];
+    }>;
     source_names?: string[];
     source_count?: number;
     published_at?: string | null;
     collected_at?: string | null;
+    entity_names?: string[];
+    alert_state?: IntelEventState | null;
+    alert_reason?: string;
     event_judgement?: string;
     risk_notes?: string[];
     time_context?: {
@@ -241,6 +273,16 @@ export interface DraftItem {
     selected_angle?: string;
     titles?: string[];
     evidence?: string[];
+    evidence_pack?: Array<{
+      discovery_item_id: string;
+      source_name: string;
+      title: string;
+      summary: string;
+      link: string;
+      published_at?: string | null;
+      collected_at?: string | null;
+      entity_names?: string[];
+    }>;
     generated_at?: string;
   };
   render_backend: string;
@@ -404,6 +446,8 @@ export interface DiscoveryItem {
   tags: string[];
   engagement_score: number;
   item_state: IntelItemChangeState;
+  entity_ids: string[];
+  entity_names: string[];
   metadata: Record<string, unknown>;
 }
 
@@ -440,9 +484,13 @@ export interface IntelEvent {
   alert_reason: string;
   entity_ids: string[];
   entity_names: string[];
-  summary_translated?: string;
   watchlisted: boolean;
   ignored: boolean;
+  draft_ready: boolean;
+  draft_score: number;
+  draft_reason: string;
+  draft_exists: boolean;
+  draft_id?: string | null;
 }
 
 export interface IntelAlert {
@@ -461,7 +509,54 @@ export interface IntelAlert {
   triggered_at: string;
   entity_ids: string[];
   entity_names: string[];
-  summary_translated?: string;
+  draft_ready: boolean;
+  draft_score: number;
+  draft_reason: string;
+  draft_exists: boolean;
+  draft_id?: string | null;
+}
+
+export interface IntelEventHistoryItem {
+  history_id: string;
+  event_id: string;
+  title: string;
+  summary: string;
+  representative_link: string;
+  entity_ids: string[];
+  entity_names: string[];
+  discovered_at: string;
+  last_seen_at: string;
+  expires_at: string;
+  status: HistoryRecordStatus;
+  latest_alert_state: IntelEventState;
+  platform_count: number;
+  source_count: number;
+  member_count: number;
+  member_delta: number;
+  platform_delta: number;
+  composite_score: number;
+}
+
+export interface IntelAlertHistoryItem {
+  history_id: string;
+  event_id: string;
+  title: string;
+  representative_link: string;
+  entity_ids: string[];
+  entity_names: string[];
+  first_triggered_at: string;
+  last_triggered_at: string;
+  expires_at: string;
+  highest_level: IntelAlertLevel;
+  latest_level: IntelAlertLevel;
+  status: HistoryRecordStatus;
+  reason: string;
+  platform_count: number;
+  source_count: number;
+  velocity_score: number;
+  coverage_score: number;
+  freshness_score: number;
+  composite_score: number;
 }
 
 export interface EntityWatchlistItem {
@@ -530,13 +625,29 @@ export interface IntelOverviewSummary {
   error_sources: number;
   healthy_sources: number;
   total_sources: number;
+  recent_alert_count_24h: number;
+  recent_event_count_24h: number;
+  recent_breakout_count_24h: number;
+  recent_rising_count_24h: number;
   last_sync_at?: string | null;
   next_run_at?: string | null;
   running: boolean;
   work_scope: IntelWorkScope;
   top_alerts: IntelAlert[];
   top_events: IntelEvent[];
+  recent_alerts_24h: IntelAlertHistoryItem[];
+  recent_events_24h: IntelEventHistoryItem[];
   source_alerts: string[];
+}
+
+export interface IntelEventsResponse {
+  items: IntelEvent[];
+  history_items: IntelEventHistoryItem[];
+}
+
+export interface IntelAlertsResponse {
+  items: IntelAlert[];
+  history_items: IntelAlertHistoryItem[];
 }
 
 export interface HotClusterCard {
@@ -674,25 +785,45 @@ export interface LLMProfileConfig {
   enabled: boolean;
   last_tested_at?: string | null;
   last_test_result?: string | null;
+  source?: string;
+  cc_app_type?: string | null;
+  cc_api_format?: "openai_chat" | "openai_responses" | "anthropic" | "gemini_native" | null;
+  cc_is_full_url?: boolean | null;
+  cc_endpoint_auto_select?: boolean | null;
+  cc_endpoint_candidates?: string[];
+  cc_base_url_raw?: string | null;
+  cc_usage_base_url?: string | null;
+  cc_last_verified_endpoint?: string | null;
+  cc_last_verified_format?: string | null;
+  cc_last_verified_model?: string | null;
+  cc_probe_status?: string | null;
+  cc_probe_message?: string | null;
 }
 
-export interface LLMTaskConfig {
-  task_key: string;
+export interface CCSwitchProviderInfo {
+  id: string;
   label: string;
+  description: string;
   provider_key: string;
+  base_url: string;
+  has_api_key: boolean;
+  api_key_preview: string;
   model_id: string;
-  fallback_provider_key: string;
-  fallback_model_id: string;
-  temperature: number;
-  max_tokens: number;
-  system_prompt: string;
+  cc_app_type: string;
+  cc_category: string;
+  cc_is_current: boolean;
+  cc_api_format?: string | null;
+  cc_is_full_url?: boolean | null;
+  cc_endpoint_auto_select?: boolean | null;
+  cc_endpoint_candidates?: string[];
+  cc_health?: { is_healthy: boolean; consecutive_failures: number; last_error?: string | null } | null;
 }
 
 export interface LLMConfig {
   current_profile_id: string;
+  fallback_profile_id?: string | null;
   profiles: LLMProfileConfig[];
   providers: LLMProviderConfig[];
-  tasks: LLMTaskConfig[];
   usage_today: Record<string, Record<string, number>>;
 }
 
@@ -702,6 +833,12 @@ export interface LLMTestResult {
   content: string;
   latency_ms: number;
   error: string;
+  probe_status: string;
+  probe_message: string;
+  resolved_endpoint: string;
+  resolved_format: string;
+  resolved_model: string;
+  supports_generation: boolean;
 }
 
 export interface DashboardResponse {
@@ -733,6 +870,8 @@ export interface DashboardResponse {
   runtime_plan: RuntimePlan;
   runtime_status: SchedulerStatus;
   last_cycle_summary?: RuntimeCycleSummary | null;
+  recent_alerts_24h: IntelAlertHistoryItem[];
+  recent_events_24h: IntelEventHistoryItem[];
   entity_watchlist_summary: EntityWatchlistSummaryItem[];
   current_mode: ModeDefinition;
   drafts: DraftItem[];

@@ -181,6 +181,23 @@ def _cover_suggestion(candidate: dict[str, Any]) -> str:
 
 
 def _pick_facts(candidate: dict[str, Any], normalized_item: dict[str, Any]) -> list[str]:
+    evidence_pack = [item for item in candidate.get("evidence_pack", []) if isinstance(item, dict)]
+    if evidence_pack:
+        facts_from_evidence: list[str] = []
+        for item in evidence_pack:
+            source_name = str(item.get("source_name") or "").strip()
+            title = str(item.get("title") or "").strip()
+            summary = str(item.get("summary") or "").strip("。 ")
+            if title:
+                fact = f"{source_name or '信源'}提到：{title}"
+                if summary and summary != title:
+                    fact = f"{fact}；{summary[:80]}"
+                facts_from_evidence.append(fact)
+            if len(facts_from_evidence) >= 5:
+                break
+        if facts_from_evidence:
+            return facts_from_evidence[:5]
+
     facts = [str(item).strip(" \n-") for item in candidate.get("facts", []) if str(item).strip()]
     public_facts = [fact for fact in facts if not any(marker.lower() in fact.lower() for marker in INTERNAL_FACT_MARKERS)]
     if public_facts:
@@ -261,6 +278,7 @@ def _build_intel_brief(candidate: dict[str, Any], normalized_item: dict[str, Any
     collected_at = candidate.get("collected_at")
     facts = _pick_facts(candidate, normalized_item)
     evidence_links = list(candidate.get("evidence_links", []))
+    evidence_pack = [item for item in candidate.get("evidence_pack", []) if isinstance(item, dict)]
     risk_notes: list[str] = []
     if not evidence_links:
         risk_notes.append("缺少证据链接，建议补充后再推进。")
@@ -273,10 +291,14 @@ def _build_intel_brief(candidate: dict[str, Any], normalized_item: dict[str, Any
         "one_line": candidate["summary"],
         "facts": facts,
         "evidence_links": evidence_links,
+        "evidence_pack": evidence_pack,
         "source_names": list(candidate.get("source_names", [])),
         "source_count": int(candidate.get("source_count", 0) or 0),
         "published_at": published_at,
         "collected_at": collected_at,
+        "entity_names": list(candidate.get("entity_names", [])),
+        "alert_state": candidate.get("alert_state"),
+        "alert_reason": str(candidate.get("alert_reason") or ""),
         "event_judgement": "可按快讯解读处理，先交代事实，再给读者一个稳妥判断。",
         "risk_notes": risk_notes,
         "time_context": {
@@ -467,12 +489,18 @@ def _llm_generate_outline(
 ) -> list[dict[str, str]]:
     facts_text = "\n".join(f"- {f}" for f in brief.get("facts", []))
     source_text = ", ".join(brief.get("source_names", []))
+    evidence_pack_text = "\n".join(
+        f"- {str(item.get('source_name') or '信源')}: {str(item.get('title') or '')} | {str(item.get('summary') or '')} | {str(item.get('link') or '')}"
+        for item in brief.get("evidence_pack", [])[:5]
+        if isinstance(item, dict)
+    )
     user_msg = (
         f"## 候选主题\n{candidate['title']}\n\n"
         f"## 摘要\n{candidate['summary']}\n\n"
         f"## 推荐角度\n{candidate.get('recommended_angle', '')}\n\n"
         f"## 已确认事实\n{facts_text}\n\n"
         f"## 信源\n{source_text}（共 {brief.get('source_count', 0)} 个）\n\n"
+        f"## 证据包\n{evidence_pack_text or '暂无结构化证据包'}\n\n"
         f"## 发布时间\n{brief.get('time_context', {}).get('published_at_label', '未知')}"
     )
     result = llm.generate(
@@ -511,11 +539,17 @@ def _llm_generate_article(
     )
     facts_text = "\n".join(f"- {f}" for f in brief.get("facts", []))
     evidence_links = brief.get("evidence_links", [])
+    evidence_pack_text = "\n".join(
+        f"- {str(item.get('source_name') or '信源')}: {str(item.get('title') or '')} | {str(item.get('summary') or '')} | {str(item.get('link') or '')}"
+        for item in brief.get("evidence_pack", [])[:5]
+        if isinstance(item, dict)
+    )
     user_msg = (
         f"## 主题\n{candidate['title']}\n\n"
         f"## 摘要\n{candidate['summary']}\n\n"
         f"## 大纲\n{sections_text}\n\n"
         f"## 事实依据\n{facts_text}\n\n"
+        f"## 证据包\n{evidence_pack_text or '暂无结构化证据包'}\n\n"
         f"## 证据链接\n" + "\n".join(f"- {link}" for link in evidence_links[:5])
     )
     result = llm.generate(
@@ -562,7 +596,19 @@ def _llm_generate_summary(
         "summary",
         [
             {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-            {"role": "user", "content": f"主题：{candidate['title']}\n摘要：{candidate['summary']}\n信源：{', '.join(brief.get('source_names', []))}"},
+            {
+                "role": "user",
+                "content": (
+                    f"主题：{candidate['title']}\n"
+                    f"摘要：{candidate['summary']}\n"
+                    f"信源：{', '.join(brief.get('source_names', []))}\n"
+                    f"证据包：\n" + "\n".join(
+                        f"- {str(item.get('source_name') or '信源')}: {str(item.get('title') or '')} | {str(item.get('summary') or '')}"
+                        for item in brief.get("evidence_pack", [])[:5]
+                        if isinstance(item, dict)
+                    )
+                ),
+            },
         ],
     )
     return result["content"].strip()
@@ -650,6 +696,7 @@ def compose_draft(
         "selected_angle": candidate.get("selected_angle") or candidate.get("recommended_angle"),
         "titles": title_options,
         "evidence": brief["evidence_links"],
+        "evidence_pack": brief.get("evidence_pack", []),
         "generated_at": now_iso(),
         "brief": brief,
         "outline": outline if not use_llm else {"title_options": title_options, "key_points": [b.get("content", "") for b in body_blocks[:3]]},

@@ -1,12 +1,24 @@
-import type { RuntimeIntent, RuntimeRunOutcome, SchedulerStatus } from "../types";
+import type { RuntimeIntent, RuntimeRunOutcome, RuntimeLaunchMode, SchedulerStatus } from "../types";
 
 export type RuntimeDisplayStatus =
   | "监测中"
+  | "等待执行"
+  | "等待启动"
   | "等待下一轮"
   | "已停止"
   | "本轮完成"
   | "本轮失败"
   | "维护任务执行中";
+
+export type RuntimeVisualState =
+  | "stopped"
+  | "waiting_start_once"
+  | "waiting_start_loop"
+  | "running"
+  | "waiting_next"
+  | "one_shot_done"
+  | "one_shot_failed"
+  | "maintenance_running";
 
 export const RUNTIME_INTENT_LABELS: Record<RuntimeIntent, string> = {
   normal_monitoring: "正常监测",
@@ -75,6 +87,73 @@ export function isMaintenanceIntent(intent: RuntimeIntent) {
   return intent !== "normal_monitoring";
 }
 
+export function isOneShotLaunchMode(launchMode?: RuntimeLaunchMode | string | null) {
+  return launchMode === "once_now" || launchMode === "once_at";
+}
+
+export function isLoopLaunchMode(launchMode?: RuntimeLaunchMode | string | null) {
+  return launchMode === "interval_now" || launchMode === "interval_at";
+}
+
+export function hasRuntimeStarted(runtime: SchedulerStatus) {
+  return Boolean(
+    runtime.run_started_at ||
+    runtime.run_finished_at ||
+    runtime.last_cycle_started_at ||
+    runtime.last_cycle_finished_at ||
+    runtime.completed_cycles_today > 0 ||
+    runtime.failed_cycles_today > 0
+  );
+}
+
+export function deriveRuntimeVisualState(runtime: SchedulerStatus): RuntimeVisualState {
+  const launchMode = runtime.launch_mode;
+  const oneShot = isOneShotLaunchMode(launchMode);
+  const loop = isLoopLaunchMode(launchMode);
+  const intent = runtime.run_intent ?? "normal_monitoring";
+  const hasStarted = hasRuntimeStarted(runtime);
+  const outcome = runtime.last_run_outcome ?? null;
+
+  if (runtime.run_status === "running" || runtime.control_state === "running" || isRuntimeActivelyProcessing(runtime)) {
+    return isMaintenanceIntent(intent) ? "maintenance_running" : "running";
+  }
+
+  if (runtime.control_state === "armed") {
+    if (loop) {
+      return hasStarted ? "waiting_next" : "waiting_start_loop";
+    }
+    if (oneShot) {
+      return "waiting_start_once";
+    }
+  }
+
+  if (runtime.control_state === "waiting") {
+    if (loop) {
+      return hasStarted ? "waiting_next" : "waiting_start_loop";
+    }
+    if (oneShot) {
+      if (runtime.run_status === "completed" || outcome === "completed") {
+        return "one_shot_done";
+      }
+      if (runtime.run_status === "failed" || outcome === "failed" || outcome === "abandoned") {
+        return "one_shot_failed";
+      }
+      return "waiting_start_once";
+    }
+  }
+
+  if (oneShot) {
+    if (runtime.run_status === "failed" || outcome === "failed" || outcome === "abandoned") {
+      return "one_shot_failed";
+    }
+    if (runtime.run_status === "completed" || outcome === "completed") {
+      return "one_shot_done";
+    }
+  }
+
+  return "stopped";
+}
+
 export function getRuntimeStageLabel(runtime: SchedulerStatus) {
   if (runtime.stage_label?.trim()) {
     if (runtime.run_status === "failed") {
@@ -100,31 +179,29 @@ export function getRuntimeStageLabel(runtime: SchedulerStatus) {
 }
 
 export function deriveRuntimeDisplayStatus(runtime: SchedulerStatus): RuntimeDisplayStatus {
-  const intent = runtime.run_intent ?? "normal_monitoring";
-  const outcome = runtime.last_run_outcome ?? null;
-
-  if (runtime.run_status === "running" || runtime.control_state === "running") {
-    return isMaintenanceIntent(intent) ? "维护任务执行中" : "监测中";
+  switch (deriveRuntimeVisualState(runtime)) {
+    case "maintenance_running":
+      return "维护任务执行中";
+    case "running":
+      return "监测中";
+    case "waiting_start_once":
+      return "等待执行";
+    case "waiting_start_loop":
+      return "等待启动";
+    case "waiting_next":
+      return "等待下一轮";
+    case "one_shot_done":
+      return "本轮完成";
+    case "one_shot_failed":
+      return "本轮失败";
+    default:
+      return "已停止";
   }
-
-  if (runtime.control_state === "armed" || runtime.control_state === "waiting") {
-    return "等待下一轮";
-  }
-
-  if (runtime.run_status === "failed" || outcome === "failed" || outcome === "abandoned") {
-    return "本轮失败";
-  }
-
-  if (runtime.run_status === "completed" || outcome === "completed") {
-    return "本轮完成";
-  }
-
-  return "已停止";
 }
 
 export function runtimeDisplayTone(status: RuntimeDisplayStatus) {
   if (status === "本轮失败") return "danger";
-  if (status === "等待下一轮") return "warning";
+  if (status === "等待下一轮" || status === "等待执行" || status === "等待启动") return "warning";
   if (status === "监测中" || status === "维护任务执行中") return "success";
   return "neutral";
 }
@@ -137,28 +214,26 @@ export function isRuntimeActivelyProcessing(runtime: SchedulerStatus) {
 }
 
 export function getRuntimeProgressMeta(runtime: SchedulerStatus): RuntimeProgressMeta {
+  const visualState = deriveRuntimeVisualState(runtime);
   const active = isRuntimeActivelyProcessing(runtime);
   const hasProgressSignal =
-    runtime.current_cycle !== "idle" ||
-    runtime.run_status === "failed" ||
-    runtime.run_status === "abandoned" ||
-    runtime.current_cycle_progress_percent > 0 ||
-    Boolean(runtime.current_cycle_progress_label);
+    active ||
+    visualState === "maintenance_running";
   const showCounters = runtime.current_cycle_progress_total > 0;
   const stageLabel = getRuntimeStageLabel(runtime);
   let tone: RuntimeProgressMeta["tone"] = "neutral";
-  if (runtime.run_status === "failed" || runtime.current_cycle === "failed") {
+  if (visualState === "one_shot_failed" || runtime.run_status === "failed" || runtime.current_cycle === "failed") {
     tone = "danger";
-  } else if (active) {
+  } else if (active || visualState === "maintenance_running") {
     tone = isMaintenanceIntent(runtime.run_intent) ? "warning" : "success";
-  } else if (runtime.current_cycle === "completed" || runtime.run_status === "completed") {
+  } else if (visualState === "one_shot_done") {
     tone = "success";
   }
 
   return {
     visible: hasProgressSignal,
     active,
-    meterVisible: hasProgressSignal && runtime.current_cycle_progress_percent > 0,
+    meterVisible: active && runtime.current_cycle_progress_percent > 0,
     stageLabel,
     tone,
     showCounters,
@@ -286,9 +361,9 @@ export function explainStreamEmptyState() {
 }
 
 export function describeLastOutcome(outcome?: RuntimeRunOutcome | null) {
-  if (outcome === "completed") return "上轮已完成";
-  if (outcome === "failed") return "上轮失败";
-  if (outcome === "abandoned") return "上轮被接管";
+  if (outcome === "completed") return "上一轮完成";
+  if (outcome === "failed") return "上一轮失败";
+  if (outcome === "abandoned") return "上一轮被接管";
   if (outcome === "stopped") return "已手动停止";
   return "尚未执行";
 }

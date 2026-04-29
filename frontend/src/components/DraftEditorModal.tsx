@@ -47,6 +47,7 @@ const STAGE_LABELS: Record<PipelineStage, string> = {
   collected: "已采集",
   curated: "已筛选",
   drafted: "已生成",
+  draft_synced: "已进草稿箱",
   preview_ready: "预览就绪",
   approved: "已审核",
   published: "已发布",

@@ -39,6 +39,7 @@ PipelineStage = Literal[
     "collected",
     "curated",
     "drafted",
+    "draft_synced",
     "preview_ready",
     "approved",
     "published",
@@ -82,6 +83,7 @@ IntelEventState = Literal["new", "watch", "rising", "breakout", "cooling"]
 IntelAlertLevel = Literal["watch", "rising", "breakout", "cooling"]
 IntelItemChangeState = Literal["new_item", "seen_item", "updated_item"]
 IntelEventChangeState = Literal["new_event", "growing_event", "stable_event", "cooling_event"]
+HistoryRecordStatus = Literal["active", "cooled", "source_uncertain"]
 
 
 class ModeDefinition(BaseModel):
@@ -245,6 +247,10 @@ class CandidateTopic(BaseModel):
     freshness_bucket: str = "unknown"
     draft_exists: bool = False
     normalized_score: float = 0.0
+    evidence_pack: list[dict[str, Any]] = Field(default_factory=list)
+    entity_names: list[str] = Field(default_factory=list)
+    alert_state: Optional[IntelEventState] = None
+    alert_reason: str = ""
     updated_at: str
 
 
@@ -269,6 +275,10 @@ class ImageSlot(BaseModel):
 class DraftItem(BaseModel):
     id: str
     candidate_topic_id: str
+    source_event_id: Optional[str] = None
+    source_alert_level: Optional[str] = None
+    generation_mode: Literal["manual", "automation"] = "manual"
+    draft_window_id: Optional[str] = None
     title: str
     section: str
     source_count: int = Field(ge=0)
@@ -443,6 +453,8 @@ class DiscoveryItem(BaseModel):
     tags: list[str] = Field(default_factory=list)
     engagement_score: float = 0.0
     item_state: IntelItemChangeState = "new_item"
+    entity_ids: list[str] = Field(default_factory=list)
+    entity_names: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -479,9 +491,13 @@ class IntelEvent(BaseModel):
     alert_reason: str = ""
     entity_ids: list[str] = Field(default_factory=list)
     entity_names: list[str] = Field(default_factory=list)
-    summary_translated: Optional[str] = None
     watchlisted: bool = False
     ignored: bool = False
+    draft_ready: bool = False
+    draft_score: float = 0.0
+    draft_reason: str = ""
+    draft_exists: bool = False
+    draft_id: Optional[str] = None
 
 
 class EventSnapshot(BaseModel):
@@ -514,7 +530,54 @@ class IntelAlert(BaseModel):
     triggered_at: str
     entity_ids: list[str] = Field(default_factory=list)
     entity_names: list[str] = Field(default_factory=list)
-    summary_translated: Optional[str] = None
+    draft_ready: bool = False
+    draft_score: float = 0.0
+    draft_reason: str = ""
+    draft_exists: bool = False
+    draft_id: Optional[str] = None
+
+
+class IntelEventHistoryItem(BaseModel):
+    history_id: str
+    event_id: str
+    title: str
+    summary: str
+    representative_link: str
+    entity_ids: list[str] = Field(default_factory=list)
+    entity_names: list[str] = Field(default_factory=list)
+    discovered_at: str
+    last_seen_at: str
+    expires_at: str
+    status: HistoryRecordStatus = "active"
+    latest_alert_state: IntelEventState = "new"
+    platform_count: int = 0
+    source_count: int = 0
+    member_count: int = 0
+    member_delta: int = 0
+    platform_delta: int = 0
+    composite_score: float = 0.0
+
+
+class IntelAlertHistoryItem(BaseModel):
+    history_id: str
+    event_id: str
+    title: str
+    representative_link: str
+    entity_ids: list[str] = Field(default_factory=list)
+    entity_names: list[str] = Field(default_factory=list)
+    first_triggered_at: str
+    last_triggered_at: str
+    expires_at: str
+    highest_level: IntelAlertLevel = "watch"
+    latest_level: IntelAlertLevel = "watch"
+    status: HistoryRecordStatus = "active"
+    reason: str
+    platform_count: int = 0
+    source_count: int = 0
+    velocity_score: float = 0.0
+    coverage_score: float = 0.0
+    freshness_score: float = 0.0
+    composite_score: float = 0.0
 
 
 class EntityWatchlistItem(BaseModel):
@@ -583,12 +646,18 @@ class IntelOverviewSummary(BaseModel):
     error_sources: int = 0
     healthy_sources: int = 0
     total_sources: int = 0
+    recent_alert_count_24h: int = 0
+    recent_event_count_24h: int = 0
+    recent_breakout_count_24h: int = 0
+    recent_rising_count_24h: int = 0
     last_sync_at: Optional[str] = None
     next_run_at: Optional[str] = None
     running: bool = False
     work_scope: IntelWorkScope = "collect_events_alerts"
     top_alerts: list[IntelAlert] = Field(default_factory=list)
     top_events: list[IntelEvent] = Field(default_factory=list)
+    recent_alerts_24h: list[IntelAlertHistoryItem] = Field(default_factory=list)
+    recent_events_24h: list[IntelEventHistoryItem] = Field(default_factory=list)
     source_alerts: list[str] = Field(default_factory=list)
 
 
@@ -602,10 +671,12 @@ class DiscoveryItemsResponse(BaseModel):
 
 class IntelEventsResponse(BaseModel):
     items: list[IntelEvent]
+    history_items: list[IntelEventHistoryItem] = Field(default_factory=list)
 
 
 class IntelAlertsResponse(BaseModel):
     items: list[IntelAlert]
+    history_items: list[IntelAlertHistoryItem] = Field(default_factory=list)
 
 
 class IntelEventResponse(BaseModel):
@@ -772,6 +843,8 @@ class DashboardResponse(BaseModel):
     runtime_plan: RuntimePlan
     runtime_status: SchedulerStatus
     last_cycle_summary: Optional[RuntimeCycleSummary] = None
+    recent_alerts_24h: list[IntelAlertHistoryItem] = Field(default_factory=list)
+    recent_events_24h: list[IntelEventHistoryItem] = Field(default_factory=list)
     entity_watchlist_summary: list[EntityWatchlistSummaryItem] = Field(default_factory=list)
     current_mode: ModeDefinition
     drafts: list[DraftItem]

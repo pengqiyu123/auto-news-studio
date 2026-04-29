@@ -60,6 +60,7 @@ from .store import StudioStore
 store = StudioStore()
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+SCHEDULER_TICK_SECONDS = 10
 
 app = FastAPI(
     title="Auto News Studio API",
@@ -113,7 +114,10 @@ def get_intel_stream():
 
 @app.get("/api/admin/intel/events", response_model=IntelEventsResponse)
 def get_intel_events():
-    return IntelEventsResponse(items=store.list_intel_events())
+    return IntelEventsResponse(
+        items=store.list_intel_events(),
+        history_items=store.list_intel_event_history(),
+    )
 
 
 @app.get("/api/admin/intel/events/{event_id}", response_model=IntelEventResponse)
@@ -126,7 +130,10 @@ def get_intel_event(event_id: str):
 
 @app.get("/api/admin/intel/alerts", response_model=IntelAlertsResponse)
 def get_intel_alerts():
-    return IntelAlertsResponse(items=store.list_intel_alerts())
+    return IntelAlertsResponse(
+        items=store.list_intel_alerts(),
+        history_items=store.list_intel_alert_history(),
+    )
 
 
 @app.get("/api/admin/entities/watchlist", response_model=EntityWatchlistResponse)
@@ -167,7 +174,9 @@ async def startup_scheduler() -> None:
     scheduler.add_job(
         store.run_automation_cycle,
         "interval",
-        seconds=60,
+        # Keep the polling cadence short so scheduled starts and loop reruns
+        # transition promptly after their due time instead of feeling "stuck".
+        seconds=SCHEDULER_TICK_SECONDS,
         id="automation-cycle",
         max_instances=1,
         coalesce=True,
@@ -348,6 +357,15 @@ def create_draft_from_candidate(candidate_id: str, payload: CandidateDraftPayloa
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.post("/api/admin/intel/events/{event_id}/draft")
+def create_draft_from_event(event_id: str, payload: CandidateDraftPayload | None = None):
+    try:
+        mode = payload.publish_mode if payload else None
+        return {"item": store.create_draft_from_event(event_id, publish_mode=mode)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/admin/candidates/drafts/batch", response_model=BatchDraftResponse)
 def batch_create_drafts():
     return store.batch_create_drafts()
@@ -356,6 +374,15 @@ def batch_create_drafts():
 @app.get("/api/admin/drafts", response_model=DraftsResponse)
 def list_drafts():
     return DraftsResponse(items=store.list_drafts())
+
+
+@app.delete("/api/admin/drafts/{draft_id}")
+def delete_draft(draft_id: str):
+    try:
+        store.delete_draft(draft_id)
+        return {"ok": True}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/admin/drafts/{draft_id}/regenerate")
@@ -519,3 +546,71 @@ def test_llm_provider(provider_key: str):
 @app.get("/api/admin/llm/usage", response_model=LLMUsageResponse)
 def get_llm_usage():
     return LLMUsageResponse(item=store.get_llm_usage())
+
+
+@app.post("/api/admin/llm/cc-switch/open")
+def open_cc_switch():
+    import subprocess, ctypes
+    from pathlib import Path
+
+    # 1. Windows registry: read InstallLocation from Uninstall key
+    import winreg
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            key = winreg.OpenKey(hive, r"Software\Microsoft\Windows\CurrentVersion\Uninstall")
+            for i in range(winreg.QueryInfoKey(key)[0]):
+                sub = winreg.EnumKey(key, i)
+                try:
+                    with winreg.OpenKey(key, sub) as sk:
+                        name = winreg.QueryValueEx(sk, "DisplayName")[0] or ""
+                        if "cc switch" in name.lower():
+                            loc = winreg.QueryValueEx(sk, "InstallLocation")[0]
+                            if loc:
+                                exe = Path(loc) / "cc-switch.exe"
+                                if exe.exists():
+                                    subprocess.Popen([str(exe)], creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS)
+                                    return {"ok": True}
+                except (OSError, FileNotFoundError):
+                    pass
+            winreg.CloseKey(key)
+        except (OSError, FileNotFoundError):
+            pass
+
+    # 2. Desktop shortcut fallback
+    desktop = Path.home() / "Desktop"
+    for lnk in desktop.glob("*CC*Switch*"):
+        if lnk.suffix == ".lnk":
+            ctypes.windll.shell32.ShellExecuteW(None, "open", str(lnk), None, None, 1)
+            return {"ok": True}
+
+    raise HTTPException(status_code=404, detail="未找到 CC-Switch，请确认已安装")
+
+
+@app.get("/api/admin/llm/cc-switch/providers")
+def list_cc_switch_providers():
+    from .cc_switch_bridge import get_cc_switch_db_path, read_cc_switch_providers
+    db_path = get_cc_switch_db_path()
+    providers = read_cc_switch_providers(db_path) if db_path else []
+    masked = []
+    for p in providers:
+        key = p.get("api_key", "")
+        masked.append({
+            **{k: v for k, v in p.items() if k != "api_key"},
+            "has_api_key": bool(key.strip()),
+            "api_key_preview": f"{key[:6]}...{key[-4:]}" if len(key) > 10 else "****" if key else "",
+        })
+    return {"providers": masked, "db_available": db_path is not None}
+
+
+@app.post("/api/admin/llm/cc-switch/import")
+def import_cc_switch_providers(payload: dict):
+    from .cc_switch_bridge import get_cc_switch_db_path, read_cc_switch_providers
+    selected_ids = payload.get("provider_ids", [])
+    db_path = get_cc_switch_db_path()
+    if not db_path:
+        raise HTTPException(status_code=400, detail="未找到 CC-Switch 数据库，请确认 CC-Switch 已安装")
+    all_providers = read_cc_switch_providers(db_path)
+    selected = [p for p in all_providers if p.get("id") in selected_ids]
+    if not selected:
+        raise HTTPException(status_code=400, detail="未找到选中的 provider")
+    return LLMConfigResponse(item=store.import_cc_switch_profiles(selected))

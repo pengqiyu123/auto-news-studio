@@ -87,6 +87,31 @@ def _add_entity(results: dict[str, dict[str, str]], canonical: str, entity_type:
     }
 
 
+def _extract_keyword_entities(content: str, limit: int) -> list[dict[str, str]]:
+    results: dict[str, dict[str, str]] = {}
+    lowered = content.lower()
+    try:
+        for pattern, canonical in KEYWORD_PATTERNS:
+            if not pattern.search(lowered):
+                continue
+            entity_type = CANONICAL_ENTITIES.get(canonical)
+            if not entity_type:
+                continue
+            _add_entity(results, canonical, entity_type)
+            if len(results) >= limit:
+                break
+    except Exception:
+        logger.warning("entity extraction via keywords failed", exc_info=True)
+    return list(results.values())[:limit]
+
+
+def extract_keyword_entities(text: str, limit: int = 10) -> list[dict[str, str]]:
+    content = str(text or "").strip()
+    if not content:
+        return []
+    return _extract_keyword_entities(content, limit)
+
+
 def extract_entities(text: str, limit: int = 10) -> list[dict[str, str]]:
     content = str(text or "").strip()
     if not content:
@@ -113,18 +138,9 @@ def extract_entities(text: str, limit: int = 10) -> list[dict[str, str]]:
     except Exception:
         logger.warning("entity extraction via spaCy failed", exc_info=True)
 
-    lowered = content.lower()
-    try:
-        for pattern, canonical in KEYWORD_PATTERNS:
-            if not pattern.search(lowered):
-                continue
-            entity_type = CANONICAL_ENTITIES.get(canonical)
-            if not entity_type:
-                continue
-            _add_entity(results, canonical, entity_type)
-            if len(results) >= limit:
-                break
-    except Exception:
-        logger.warning("entity extraction via keywords failed", exc_info=True)
+    for item in _extract_keyword_entities(content, limit):
+        _add_entity(results, str(item.get("entity_name") or ""), str(item.get("entity_type") or ""))
+        if len(results) >= limit:
+            break
 
     return list(results.values())[:limit]

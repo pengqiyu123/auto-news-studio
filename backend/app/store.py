@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
@@ -24,6 +24,7 @@ from .store_base import (
     MODE_STAGE_PLANS,
     RUN_STALE_SECONDS,
     SLOW_SOURCE_WARNING_SECONDS,
+    SOURCE_COLLECTION_STALL_SECONDS,
     SOURCE_TIMEOUT_SECONDS,
     SYNTHETIC_MARKERS,
     UTC,
@@ -98,8 +99,9 @@ from .models import (
 )
 from .store_llm import (
     build_provider_from_profile,
-    build_tasks_from_profile,
+    build_runtime_tasks,
     default_llm_state,
+    infer_fallback_profile_id_from_tasks,
     merge_llm_profiles,
     DEFAULT_LLM_PROFILES,
     DEFAULT_LLM_TASK_TEMPLATE,
@@ -208,29 +210,42 @@ def legacy_brief(draft: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _migrate_tasks_to_three(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """将 5 任务配置迁移为 3 任务：summary→translation, outline/title→忽略"""
+def _migrate_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """将旧任务配置折叠为 article。"""
     if not tasks:
         return tasks
-    # 如果已经是 3 个任务，直接返回
-    task_keys = {t.get("task_key") for t in tasks if t.get("task_key")}
-    target_keys = {"judgement", "translation", "article"}
-    if task_keys <= target_keys or task_keys == target_keys:
+
+    templates_by_key = {task["task_key"]: deepcopy(task) for task in DEFAULT_LLM_TASK_TEMPLATE}
+    task_keys = {str(t.get("task_key") or "") for t in tasks if t.get("task_key")}
+    target_keys = {"article"}
+    if task_keys <= target_keys:
         return tasks
-    # 迁移：summary→translation，outline/title→忽略
-    result: list[dict[str, Any]] = []
-    seen_keys: set[str] = set()
+
+    result_by_key: dict[str, dict[str, Any]] = {}
     for task in tasks:
-        key = task.get("task_key", "")
-        if key == "summary":
-            key = "translation"
-        if key in {"outline", "title"}:
-            continue  # 忽略，合并到 article
-        if key in seen_keys:
+        key = str(task.get("task_key") or "")
+        if not key:
             continue
-        seen_keys.add(key)
-        result.append(task)
-    return result
+        if key in {"outline", "title", "summary", "translation", "judgement"}:
+            key = "article"
+        if key not in target_keys:
+            continue
+        base = deepcopy(templates_by_key.get(key, {}))
+        current = result_by_key.get(key, {})
+        result_by_key[key] = {
+            **base,
+            **current,
+            **task,
+            "task_key": key,
+            "label": str((task.get("label") or current.get("label") or base.get("label") or key)),
+        }
+
+    ordered: list[dict[str, Any]] = []
+    for key in ("article",):
+        task = result_by_key.get(key)
+        if task:
+            ordered.append(task)
+    return ordered
 
 
 def automation_to_publish_mode(mode: str) -> str:
@@ -294,6 +309,8 @@ class StudioStore:
             "intel_events": [],
             "event_snapshots": [],
             "intel_alerts": [],
+            "intel_event_history": [],
+            "intel_alert_history": [],
             "normalized_items": [],
             "candidates": [],
             "drafts": [],
@@ -473,8 +490,15 @@ class StudioStore:
 
         drafts_before = list(state.get("drafts", []))
         drafts: list[dict[str, Any]] = []
+        event_ids = {
+            str(item.get("id") or "")
+            for item in state.get("intel_events", [])
+            if isinstance(item, dict) and item.get("id")
+        }
         for draft in drafts_before:
-            if draft.get("candidate_topic_id") not in candidate_ids:
+            candidate_id = str(draft.get("candidate_topic_id") or "")
+            source_event_id = str(draft.get("source_event_id") or "").strip() or self._event_id_from_candidate_id(candidate_id) or ""
+            if candidate_id not in candidate_ids and (not source_event_id or source_event_id not in event_ids):
                 continue
             if (
                 _contains_synthetic_marker(draft.get("evidence_links"))
@@ -490,6 +514,8 @@ class StudioStore:
             candidate["draft_exists"] = candidate["id"] in draft_candidate_ids
             if candidate["draft_exists"]:
                 candidate["status"] = "drafted"
+            elif candidate.get("status") == "drafted":
+                candidate["status"] = "new"
 
         kept_draft_ids = {draft["id"] for draft in drafts}
         publish_tasks = [task for task in state.get("publish_tasks", []) if task.get("draft_id") in kept_draft_ids]
@@ -617,21 +643,25 @@ class StudioStore:
             active_profile = llm["profiles"][0]
             current_profile_id = active_profile["id"]
         llm["current_profile_id"] = current_profile_id
-        if active_profile:
-            active_profile["enabled"] = bool(str(active_profile.get("api_key") or "").strip()) and bool(active_profile.get("enabled"))
-            # Preserve existing providers and tasks if they exist (saved by update_llm_config)
-            # Only build from profile if not present (for initial migration)
-            if not llm.get("providers"):
-                llm["providers"] = [build_provider_from_profile(active_profile)]
-            if not llm.get("tasks"):
-                llm["tasks"] = build_tasks_from_profile(active_profile)
-        else:
-            if not llm.get("providers"):
-                llm["providers"] = []
-            if not llm.get("tasks"):
-                llm["tasks"] = []
-        # Migration: 5 tasks → 3 tasks (summary→translation, outline/title→ignore)
-        llm["tasks"] = _migrate_tasks_to_three(llm.get("tasks", []))
+        for profile in llm.get("profiles", []):
+            profile["enabled"] = bool(str(profile.get("api_key") or "").strip())
+        legacy_tasks = _migrate_tasks(llm.get("tasks", []))
+        fallback_profile_id = str(llm.get("fallback_profile_id") or "").strip()
+        if not fallback_profile_id and legacy_tasks:
+            inferred_fallback_id = infer_fallback_profile_id_from_tasks(legacy_tasks, llm.get("profiles", []))
+            fallback_profile_id = str(inferred_fallback_id or "").strip()
+        if fallback_profile_id == current_profile_id:
+            fallback_profile_id = ""
+        fallback_profile = next((item for item in llm.get("profiles", []) if item.get("id") == fallback_profile_id), None)
+        if fallback_profile and not bool(str(fallback_profile.get("api_key") or "").strip()):
+            fallback_profile_id = ""
+        llm["fallback_profile_id"] = fallback_profile_id or None
+        llm["providers"] = [
+            build_provider_from_profile(profile)
+            for profile in llm.get("profiles", [])
+            if bool(str(profile.get("api_key") or "").strip())
+        ]
+        llm.pop("tasks", None)
         llm.setdefault("usage_today", {})
         state.setdefault("automation_mode", "radar_only")
         state.setdefault("automation_mode_definitions", deepcopy(AUTOMATION_MODE_DEFINITIONS))
@@ -640,6 +670,8 @@ class StudioStore:
         state.setdefault("intel_events", [])
         state.setdefault("event_snapshots", [])
         state.setdefault("intel_alerts", [])
+        state.setdefault("intel_event_history", [])
+        state.setdefault("intel_alert_history", [])
         settings = state.setdefault("settings", {})
         settings.setdefault("max_workers", 8)
         settings.setdefault("entity_watchlist", [])
@@ -727,9 +759,21 @@ class StudioStore:
         for event in state.get("intel_events", []):
             event.setdefault("entity_ids", [])
             event.setdefault("entity_names", [])
+            event.setdefault("draft_ready", False)
+            event.setdefault("draft_score", 0.0)
+            event.setdefault("draft_reason", "")
+            event.setdefault("draft_exists", False)
+            event.setdefault("draft_id", None)
         for alert in state.get("intel_alerts", []):
             alert.setdefault("entity_ids", [])
             alert.setdefault("entity_names", [])
+            alert.setdefault("draft_ready", False)
+            alert.setdefault("draft_score", 0.0)
+            alert.setdefault("draft_reason", "")
+            alert.setdefault("draft_exists", False)
+            alert.setdefault("draft_id", None)
+        state["intel_event_history"] = self._prune_intel_event_history(state.get("intel_event_history", []))
+        state["intel_alert_history"] = self._prune_intel_alert_history(state.get("intel_alert_history", []))
         sanitized_watchlist: list[dict[str, Any]] = []
         for raw_item in settings.get("entity_watchlist", []):
             if not isinstance(raw_item, dict):
@@ -758,6 +802,12 @@ class StudioStore:
             candidate.setdefault("draft_exists", False)
             candidate.setdefault("normalized_score", float(candidate.get("score", 0)))
         for draft in state.get("drafts", []):
+            if draft.get("pipeline_stage") == "drafted" and draft.get("wechat_draft_id"):
+                draft["pipeline_stage"] = "draft_synced"
+            draft.setdefault("source_event_id", None)
+            draft.setdefault("source_alert_level", None)
+            draft.setdefault("generation_mode", "manual")
+            draft.setdefault("draft_window_id", None)
             draft.setdefault("brief", legacy_brief(draft))
             draft.setdefault("outline", {
                 "title_options": list(draft.get("title_options", [])),
@@ -785,6 +835,7 @@ class StudioStore:
                 draft["brief"] = legacy_brief(draft)
             if not draft.get("body_blocks"):
                 draft["body_blocks"] = legacy_body_blocks(draft)
+        self._sync_draft_metadata(state)
         profiles_by_mode = {item["mode"]: item for item in state.get("automation_profiles", []) if isinstance(item, dict)}
         merged_profiles: list[dict[str, Any]] = []
         for default_profile in deepcopy(DEFAULT_AUTOMATION_PROFILES):
@@ -1010,6 +1061,329 @@ class StudioStore:
                 return draft
         raise ValueError(f"Draft not found: {draft_id}")
 
+    def _candidate_id_for_event(self, event_id: str) -> str:
+        return f"cand-{event_id}"
+
+    def _normalized_id_for_event(self, event_id: str) -> str:
+        return f"norm-{event_id}"
+
+    def _event_id_from_candidate_id(self, candidate_id: str | None) -> str | None:
+        candidate_id = str(candidate_id or "").strip()
+        if candidate_id.startswith("cand-"):
+            return candidate_id[5:] or None
+        return None
+
+    def _draft_window_id_for_event(self, state: dict[str, Any], event: dict[str, Any]) -> str:
+        event_id = str(event.get("id") or "").strip()
+        if not event_id:
+            return f"window-{now_iso()[:10]}"
+        for item in state.get("intel_event_history", []):
+            if not isinstance(item, dict) or str(item.get("event_id") or "") != event_id:
+                continue
+            discovered_at = parse_time(item.get("discovered_at"))
+            if discovered_at:
+                return f"window-{event_id}-{discovered_at.astimezone(UTC).strftime('%Y-%m-%d')}"
+        first_seen = parse_time(event.get("first_seen_at")) or parse_time(event.get("published_at")) or datetime.now(UTC)
+        return f"window-{event_id}-{first_seen.astimezone(UTC).strftime('%Y-%m-%d')}"
+
+    def _draft_metrics_for_event(self, event: dict[str, Any]) -> tuple[bool, float, str]:
+        alert_state = str(event.get("alert_state") or "new")
+        platform_count = int(event.get("platform_count", 0) or 0)
+        source_count = int(event.get("source_count", 0) or 0)
+        member_count = int(event.get("member_count", 0) or 0)
+        representative_link = str(event.get("representative_link") or "").strip()
+        ignored = bool(event.get("ignored"))
+        composite_score = float(event.get("composite_score", 0) or 0)
+        entity_count = len(event.get("entity_ids", []) or [])
+
+        ready = (
+            alert_state in {"rising", "breakout"}
+            and bool(representative_link)
+            and not ignored
+            and (platform_count >= 2 or source_count >= 2 or member_count >= 3)
+        )
+
+        score = composite_score
+        if alert_state == "breakout":
+            score += 12
+        elif alert_state == "rising":
+            score += 6
+        score += min(platform_count * 4, 12)
+        score += min(source_count * 3, 12)
+        if member_count == 1:
+            score -= 18
+        elif member_count >= 3:
+            score += min(member_count * 2, 10)
+        if not representative_link:
+            score -= 10
+        if entity_count == 0:
+            score -= 6
+        score = round(max(0.0, min(score, 100.0)), 1)
+
+        if ignored:
+            reason = "该事件已被忽略，不进入稿件优先队列。"
+        elif not representative_link:
+            reason = "缺少代表链接，建议补充证据后再生成稿件。"
+        elif alert_state not in {"rising", "breakout"}:
+            reason = "当前仍非上升或爆发态，更适合继续观察。"
+        elif platform_count < 2 and source_count < 2 and member_count < 3:
+            reason = "当前扩散范围仍偏窄，建议继续观察信号。"
+        else:
+            reason = f"{'爆发' if alert_state == 'breakout' else '上升'}事件，覆盖 {platform_count} 平台 / {source_count} 来源，已具备写稿条件。"
+        return ready, score, reason
+
+    def _build_normalized_item_from_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": self._normalized_id_for_event(str(event.get("id") or "")),
+            "raw_item_ids": list(event.get("discovery_item_ids", [])),
+            "title": event.get("title", ""),
+            "link": event.get("representative_link", ""),
+            "summary": event.get("summary", ""),
+            "published_at": event.get("published_at"),
+            "cluster_id": event.get("id"),
+            "cluster_members": list(event.get("discovery_item_ids", [])),
+            "dedupe_key": str(event.get("id") or ""),
+            "source_names": list(event.get("source_names", [])),
+            "origin_sources": list(event.get("source_keys", [])),
+            "source_weight": round(min(float(event.get("coverage_score", 0) or 0) / 100.0, 1.0), 2),
+            "trend_score": float(event.get("velocity_score", 0) or 0),
+            "final_score": float(event.get("composite_score", 0) or 0),
+            "signals": [str(event.get("alert_reason") or "多平台聚合事件")],
+            "score_breakdown": {
+                "velocity": float(event.get("velocity_score", 0) or 0),
+                "coverage": float(event.get("coverage_score", 0) or 0),
+                "freshness": float(event.get("freshness_score", 0) or 0),
+            },
+            "collected_at": event.get("latest_collected_at"),
+            "freshness_bucket": freshness_bucket(event.get("latest_collected_at")),
+        }
+
+    def _event_evidence_pack(self, state: dict[str, Any], event: dict[str, Any]) -> list[dict[str, Any]]:
+        discovery_by_id = {
+            str(item.get("id") or ""): item
+            for item in state.get("discovery_items", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        representative_id = str(event.get("representative_discovery_item_id") or "").strip()
+        seen_links: set[str] = set()
+        evidence_pack: list[dict[str, Any]] = []
+
+        def sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+            return (
+                parse_time(item.get("published_at")) or datetime.min.replace(tzinfo=UTC),
+                parse_time(item.get("collected_at")) or datetime.min.replace(tzinfo=UTC),
+                float(item.get("engagement_score", 0) or 0),
+            )
+
+        candidate_items = [
+            discovery_by_id[item_id]
+            for item_id in event.get("discovery_item_ids", [])
+            if item_id in discovery_by_id
+        ]
+        candidate_items.sort(key=sort_key, reverse=True)
+        if representative_id in discovery_by_id:
+            candidate_items.sort(key=lambda item: str(item.get("id") or "") != representative_id)
+
+        for item in candidate_items:
+            link = str(item.get("link") or "").strip()
+            if not link or link in seen_links:
+                continue
+            seen_links.add(link)
+            evidence_pack.append(
+                {
+                    "discovery_item_id": str(item.get("id") or ""),
+                    "source_name": str(item.get("source_name") or ""),
+                    "title": str(item.get("title") or ""),
+                    "summary": str(item.get("summary") or ""),
+                    "link": link,
+                    "published_at": item.get("published_at"),
+                    "collected_at": item.get("collected_at"),
+                    "entity_names": list(item.get("entity_names", [])),
+                }
+            )
+            if len(evidence_pack) >= 5:
+                break
+        return evidence_pack
+
+    def _build_candidate_from_event(
+        self,
+        state: dict[str, Any],
+        event: dict[str, Any],
+        normalized_item: dict[str, Any],
+    ) -> dict[str, Any]:
+        candidate_id = self._candidate_id_for_event(str(event.get("id") or ""))
+        evidence_pack = self._event_evidence_pack(state, event)
+        return {
+            "id": candidate_id,
+            "normalized_item_id": normalized_item["id"],
+            "title": event.get("title", ""),
+            "summary": event.get("summary", ""),
+            "recommended_angle": "持续追踪事件变化、平台扩散和下一步影响。",
+            "article_type": "专题" if float(event.get("composite_score", 0) or 0) >= 75 else "快讯",
+            "rationale": event.get("alert_reason") or "已从事件聚合结果进入写稿链路。",
+            "evidence_links": [item["link"] for item in evidence_pack if item.get("link")],
+            "evidence_pack": evidence_pack,
+            "source_names": list(event.get("source_names", [])),
+            "source_count": int(event.get("source_count", 0) or 0),
+            "score": float(event.get("composite_score", 0) or 0),
+            "status": "new",
+            "recommended_mode": state["current_mode"],
+            "facts": [
+                f"30 分钟速度分 {event.get('velocity_score', 0)}",
+                f"覆盖 {event.get('platform_count', 0)} 个平台 / {event.get('source_count', 0)} 个来源",
+                str(event.get("alert_reason") or ""),
+            ],
+            "entity_names": list(event.get("entity_names", [])),
+            "alert_state": event.get("alert_state"),
+            "alert_reason": str(event.get("alert_reason") or ""),
+            "angles": [
+                {
+                    "name": "热点快评",
+                    "tone": "克制",
+                    "focus": "先说事件本身，再说它为什么值得继续跟。",
+                    "why": "适合公众号运营做持续观察。",
+                }
+            ],
+            "selected_angle": "先说事件本身，再说它为什么值得继续跟。",
+            "score_breakdown": {
+                "velocity": float(event.get("velocity_score", 0) or 0),
+                "coverage": float(event.get("coverage_score", 0) or 0),
+                "freshness": float(event.get("freshness_score", 0) or 0),
+            },
+            "published_at": event.get("published_at"),
+            "collected_at": event.get("latest_collected_at"),
+            "freshness_bucket": freshness_bucket(event.get("latest_collected_at")),
+            "draft_exists": False,
+            "normalized_score": float(event.get("composite_score", 0) or 0),
+            "updated_at": now_iso(),
+        }
+
+    def _upsert_event_compat_records(self, state: dict[str, Any], event: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        normalized_item = self._build_normalized_item_from_event(event)
+        normalized_id = normalized_item["id"]
+        normalized_items = state.setdefault("normalized_items", [])
+        normalized_index = next((index for index, item in enumerate(normalized_items) if item.get("id") == normalized_id), None)
+        if normalized_index is None:
+            normalized_items.insert(0, normalized_item)
+        else:
+            normalized_items[normalized_index] = {**normalized_items[normalized_index], **normalized_item}
+            normalized_item = normalized_items[normalized_index]
+
+        candidate = self._build_candidate_from_event(state, event, normalized_item)
+        candidate_id = candidate["id"]
+        candidates = state.setdefault("candidates", [])
+        candidate_index = next((index for index, item in enumerate(candidates) if item.get("id") == candidate_id), None)
+        if candidate_index is None:
+            candidates.insert(0, candidate)
+        else:
+            candidates[candidate_index] = {**candidates[candidate_index], **candidate}
+            candidate = candidates[candidate_index]
+        return candidate, normalized_item
+
+    def _find_existing_draft_for_event_window(
+        self,
+        state: dict[str, Any],
+        event_id: str,
+        draft_window_id: str,
+    ) -> dict[str, Any] | None:
+        matches = [
+            item for item in state.get("drafts", [])
+            if isinstance(item, dict)
+            and str(item.get("source_event_id") or "").strip() == event_id
+            and str(item.get("draft_window_id") or "").strip() == draft_window_id
+        ]
+        if not matches:
+            return None
+        matches.sort(
+            key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        return matches[0]
+
+    def _compose_draft_for_event(
+        self,
+        state: dict[str, Any],
+        event: dict[str, Any],
+        publish_mode: PublishMode,
+        *,
+        generation_mode: str,
+        llm_service: LLMService | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        event_id = str(event.get("id") or "").strip()
+        if not event_id:
+            raise ValueError("Event ID is missing.")
+        candidate, normalized_item = self._upsert_event_compat_records(state, event)
+        draft_window_id = self._draft_window_id_for_event(state, event)
+        existing = self._find_existing_draft_for_event_window(state, event_id, draft_window_id)
+        if existing:
+            return existing, False
+        draft = compose_draft(
+            candidate,
+            normalized_item,
+            publish_mode,
+            state["channels"]["wechat"]["risk_keywords"],
+            llm_service=llm_service,
+        )
+        draft["source_event_id"] = event_id
+        draft["source_alert_level"] = str(event.get("alert_state") or "") or None
+        draft["generation_mode"] = generation_mode
+        draft["draft_window_id"] = draft_window_id
+        state["drafts"].insert(0, draft)
+        self._sync_draft_metadata(state)
+        return draft, True
+
+    def _sync_draft_metadata(self, state: dict[str, Any]) -> None:
+        drafts_by_event: dict[str, list[dict[str, Any]]] = {}
+        candidate_to_draft: dict[str, dict[str, Any]] = {}
+        for draft in state.get("drafts", []):
+            if not isinstance(draft, dict):
+                continue
+            candidate_id = str(draft.get("candidate_topic_id") or "").strip()
+            event_id = str(draft.get("source_event_id") or "").strip() or self._event_id_from_candidate_id(candidate_id) or ""
+            if event_id and not draft.get("source_event_id"):
+                draft["source_event_id"] = event_id
+            if event_id:
+                drafts_by_event.setdefault(event_id, []).append(draft)
+            if candidate_id:
+                candidate_to_draft[candidate_id] = draft
+        for bucket in drafts_by_event.values():
+            bucket.sort(key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
+
+        for event in state.get("intel_events", []):
+            if not isinstance(event, dict):
+                continue
+            ready, score, reason = self._draft_metrics_for_event(event)
+            event_id = str(event.get("id") or "").strip()
+            matching_drafts = drafts_by_event.get(event_id, [])
+            latest_draft = matching_drafts[0] if matching_drafts else None
+            event["draft_ready"] = ready
+            event["draft_score"] = score
+            event["draft_reason"] = reason
+            event["draft_exists"] = latest_draft is not None
+            event["draft_id"] = latest_draft.get("id") if latest_draft else None
+
+        alert_by_event: dict[str, dict[str, Any]] = {str(item.get("event_id") or ""): item for item in state.get("intel_alerts", []) if isinstance(item, dict)}
+        for event_id, alert in alert_by_event.items():
+            event = next((item for item in state.get("intel_events", []) if isinstance(item, dict) and str(item.get("id") or "") == event_id), None)
+            if not event:
+                continue
+            alert["draft_ready"] = bool(event.get("draft_ready"))
+            alert["draft_score"] = float(event.get("draft_score", 0.0) or 0.0)
+            alert["draft_reason"] = str(event.get("draft_reason") or "")
+            alert["draft_exists"] = bool(event.get("draft_exists"))
+            alert["draft_id"] = event.get("draft_id")
+
+        for candidate in state.get("candidates", []):
+            if not isinstance(candidate, dict):
+                continue
+            candidate_id = str(candidate.get("id") or "").strip()
+            draft = candidate_to_draft.get(candidate_id)
+            candidate["draft_exists"] = draft is not None
+            if draft:
+                candidate["status"] = "drafted"
+            elif candidate.get("status") == "drafted":
+                candidate["status"] = "new"
+
     def _refresh_browser_session(self, state: dict[str, Any]) -> dict[str, Any]:
         current = state["browser"]["wechat"]
         channel = state["channels"]["wechat"]
@@ -1186,7 +1560,13 @@ class StudioStore:
         runtime["last_error"] = str(run.get("error") or f"轮次 {recovered_run_id or 'unknown'} 超时未完成，已标记异常。")
         runtime["current_cycle"] = "failed"
         runtime["current_cycle_progress_label"] = runtime["last_error"]
-        runtime["control_state"] = "waiting" if runtime.get("scheduler_running") else "stopped"
+        runtime["scheduler_running"] = False
+        runtime["control_state"] = "stopped"
+        runtime["current_cycle_started_at"] = None
+        runtime["enabled_at"] = None
+        runtime["scheduled_start_at"] = None
+        runtime["active_interval_minutes"] = None
+        runtime["next_collect_at"] = None
         self._progress_snapshot["cycle"] = "failed"
         self._progress_snapshot["label"] = runtime["last_error"]
         self._append_log(
@@ -1196,7 +1576,7 @@ class StudioStore:
             f"检测到异常轮次并已接管：{recovered_run_id or 'unknown'}",
             stream="system_runtime",
             actor=actor,
-            detail=runtime["last_error"],
+            detail=f"{runtime['last_error']}\n已自动停止监测，请人工确认后再重新启动。",
         )
         return recovered_run_id
 
@@ -1395,6 +1775,240 @@ class StudioStore:
         )
         return summary.model_dump()
 
+    def _prune_intel_event_history(
+        self,
+        items: list[dict[str, Any]] | None,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        now = now or datetime.now(UTC)
+        kept: list[dict[str, Any]] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            expires_at = parse_time(item.get("expires_at"))
+            if not expires_at or expires_at <= now:
+                continue
+            kept.append(item)
+        kept.sort(
+            key=lambda item: parse_time(item.get("last_seen_at")) or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        return kept
+
+    def _prune_intel_alert_history(
+        self,
+        items: list[dict[str, Any]] | None,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        now = now or datetime.now(UTC)
+        kept: list[dict[str, Any]] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            expires_at = parse_time(item.get("expires_at"))
+            if not expires_at or expires_at <= now:
+                continue
+            kept.append(item)
+        kept.sort(
+            key=lambda item: parse_time(item.get("last_triggered_at")) or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        return kept
+
+    def _has_recent_source_uncertainty(self, state: dict[str, Any]) -> bool:
+        runtime = self._runtime(state)
+        current_attempts = runtime.get("current_cycle_sources", [])
+        if any(str(item.get("status") or "success") != "success" for item in current_attempts if isinstance(item, dict)):
+            return True
+        summary = runtime.get("last_cycle_summary")
+        if isinstance(summary, dict):
+            if int(summary.get("failed_source_count", 0) or 0) > 0:
+                return True
+            if summary.get("issues"):
+                return True
+        return False
+
+    def _event_history_status(self, event: dict[str, Any] | None, *, source_uncertain: bool) -> str:
+        if event:
+            if str(event.get("alert_state") or "new") == "cooling":
+                return "cooled"
+            return "active"
+        return "source_uncertain" if source_uncertain else "cooled"
+
+    def _alert_history_status(self, alert: dict[str, Any] | None, *, source_uncertain: bool) -> str:
+        if alert:
+            return "active"
+        return "source_uncertain" if source_uncertain else "cooled"
+
+    def _history_alert_level_rank(self, level: str) -> int:
+        return {
+            "cooling": 0,
+            "watch": 1,
+            "rising": 2,
+            "breakout": 3,
+        }.get(str(level or "watch"), 1)
+
+    def _build_event_history_id(self, event_id: str, discovered_at: str) -> str:
+        seed = f"{event_id}|{discovered_at}|event"
+        return f"evh-{uuid4().hex[:8]}-{abs(hash(seed)) % 10000:04d}"
+
+    def _build_alert_history_id(self, event_id: str, first_triggered_at: str) -> str:
+        seed = f"{event_id}|{first_triggered_at}|alert"
+        return f"alh-{uuid4().hex[:8]}-{abs(hash(seed)) % 10000:04d}"
+
+    def _refresh_intel_histories(
+        self,
+        state: dict[str, Any],
+        now: datetime | None = None,
+        *,
+        update_event_history: bool = True,
+        update_alert_history: bool = True,
+    ) -> None:
+        now = now or datetime.now(UTC)
+        now_stamp = now.replace(microsecond=0).isoformat()
+        expires_at = (now + timedelta(hours=24)).replace(microsecond=0).isoformat()
+        source_uncertain = self._has_recent_source_uncertainty(state)
+
+        current_events = {
+            str(item.get("id") or ""): item
+            for item in state.get("intel_events", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        current_alerts = {
+            str(item.get("event_id") or ""): item
+            for item in state.get("intel_alerts", [])
+            if isinstance(item, dict) and item.get("event_id")
+        }
+
+        event_history = self._prune_intel_event_history(state.get("intel_event_history", []), now=now)
+        if update_event_history:
+            event_history_by_event = {
+                str(item.get("event_id") or ""): item
+                for item in event_history
+                if item.get("event_id")
+            }
+            for event_id, event in current_events.items():
+                existing = event_history_by_event.get(event_id)
+                status = self._event_history_status(event, source_uncertain=source_uncertain)
+                if existing:
+                    existing.update(
+                        {
+                            "title": str(event.get("title") or existing.get("title") or ""),
+                            "summary": str(event.get("summary") or existing.get("summary") or ""),
+                            "representative_link": str(event.get("representative_link") or existing.get("representative_link") or ""),
+                            "entity_ids": list(event.get("entity_ids", existing.get("entity_ids", []))),
+                            "entity_names": list(event.get("entity_names", existing.get("entity_names", []))),
+                            "last_seen_at": event.get("last_seen_at") or event.get("latest_collected_at") or now_stamp,
+                            "status": status,
+                            "latest_alert_state": str(event.get("alert_state") or existing.get("latest_alert_state") or "new"),
+                            "platform_count": int(event.get("platform_count", 0) or 0),
+                            "source_count": int(event.get("source_count", 0) or 0),
+                            "member_count": int(event.get("member_count", 0) or 0),
+                            "member_delta": int(event.get("member_delta", 0) or 0),
+                            "platform_delta": int(event.get("platform_delta", 0) or 0),
+                            "composite_score": float(event.get("composite_score", 0) or 0),
+                        }
+                    )
+                    continue
+                event_history.append(
+                    {
+                        "history_id": self._build_event_history_id(event_id, now_stamp),
+                        "event_id": event_id,
+                        "title": str(event.get("title") or ""),
+                        "summary": str(event.get("summary") or ""),
+                        "representative_link": str(event.get("representative_link") or ""),
+                        "entity_ids": list(event.get("entity_ids", [])),
+                        "entity_names": list(event.get("entity_names", [])),
+                        "discovered_at": now_stamp,
+                        "last_seen_at": event.get("last_seen_at") or event.get("latest_collected_at") or now_stamp,
+                        "expires_at": expires_at,
+                        "status": status,
+                        "latest_alert_state": str(event.get("alert_state") or "new"),
+                        "platform_count": int(event.get("platform_count", 0) or 0),
+                        "source_count": int(event.get("source_count", 0) or 0),
+                        "member_count": int(event.get("member_count", 0) or 0),
+                        "member_delta": int(event.get("member_delta", 0) or 0),
+                        "platform_delta": int(event.get("platform_delta", 0) or 0),
+                        "composite_score": float(event.get("composite_score", 0) or 0),
+                    }
+                )
+
+            for item in event_history:
+                event_id = str(item.get("event_id") or "")
+                if event_id in current_events:
+                    continue
+                item["status"] = self._event_history_status(None, source_uncertain=source_uncertain)
+
+        alert_history = self._prune_intel_alert_history(state.get("intel_alert_history", []), now=now)
+        if update_alert_history:
+            alert_history_by_event = {
+                str(item.get("event_id") or ""): item
+                for item in alert_history
+                if item.get("event_id")
+            }
+            for event_id, alert in current_alerts.items():
+                if str(alert.get("level") or "") not in {"rising", "breakout"}:
+                    continue
+                existing = alert_history_by_event.get(event_id)
+                status = self._alert_history_status(alert, source_uncertain=source_uncertain)
+                highest_level = str(alert.get("level") or "watch")
+                if existing:
+                    previous_highest = str(existing.get("highest_level") or highest_level)
+                    if self._history_alert_level_rank(previous_highest) > self._history_alert_level_rank(highest_level):
+                        highest_level = previous_highest
+                    existing.update(
+                        {
+                            "title": str(alert.get("title") or existing.get("title") or ""),
+                            "representative_link": str(alert.get("representative_link") or existing.get("representative_link") or ""),
+                            "entity_ids": list(alert.get("entity_ids", existing.get("entity_ids", []))),
+                            "entity_names": list(alert.get("entity_names", existing.get("entity_names", []))),
+                            "last_triggered_at": alert.get("triggered_at") or now_stamp,
+                            "highest_level": highest_level,
+                            "latest_level": str(alert.get("level") or existing.get("latest_level") or "watch"),
+                            "status": status,
+                            "reason": str(alert.get("reason") or existing.get("reason") or ""),
+                            "platform_count": int(alert.get("platform_count", 0) or 0),
+                            "source_count": int(alert.get("source_count", 0) or 0),
+                            "velocity_score": float(alert.get("velocity_score", 0) or 0),
+                            "coverage_score": float(alert.get("coverage_score", 0) or 0),
+                            "freshness_score": float(alert.get("freshness_score", 0) or 0),
+                            "composite_score": float(alert.get("composite_score", 0) or 0),
+                        }
+                    )
+                    continue
+                alert_history.append(
+                    {
+                        "history_id": self._build_alert_history_id(event_id, now_stamp),
+                        "event_id": event_id,
+                        "title": str(alert.get("title") or ""),
+                        "representative_link": str(alert.get("representative_link") or ""),
+                        "entity_ids": list(alert.get("entity_ids", [])),
+                        "entity_names": list(alert.get("entity_names", [])),
+                        "first_triggered_at": alert.get("triggered_at") or now_stamp,
+                        "last_triggered_at": alert.get("triggered_at") or now_stamp,
+                        "expires_at": expires_at,
+                        "highest_level": str(alert.get("level") or "watch"),
+                        "latest_level": str(alert.get("level") or "watch"),
+                        "status": status,
+                        "reason": str(alert.get("reason") or ""),
+                        "platform_count": int(alert.get("platform_count", 0) or 0),
+                        "source_count": int(alert.get("source_count", 0) or 0),
+                        "velocity_score": float(alert.get("velocity_score", 0) or 0),
+                        "coverage_score": float(alert.get("coverage_score", 0) or 0),
+                        "freshness_score": float(alert.get("freshness_score", 0) or 0),
+                        "composite_score": float(alert.get("composite_score", 0) or 0),
+                    }
+                )
+
+            for item in alert_history:
+                event_id = str(item.get("event_id") or "")
+                if event_id in current_alerts:
+                    continue
+                item["status"] = self._alert_history_status(None, source_uncertain=source_uncertain)
+
+        state["intel_event_history"] = self._prune_intel_event_history(event_history, now=now)
+        state["intel_alert_history"] = self._prune_intel_alert_history(alert_history, now=now)
+
     def _project_cycle_summary_text(self, summary: dict[str, Any] | None) -> str | None:
         if not isinstance(summary, dict):
             return None
@@ -1462,6 +2076,55 @@ class StudioStore:
             return 100
         return max(0, min(int(round(percent)), 99))
 
+    def _normalize_runtime_status_progress(
+        self,
+        runtime: dict[str, Any],
+        *,
+        cycle: str,
+        percent: int,
+        done: int,
+        total: int,
+        label: str | None,
+    ) -> tuple[str, int, int, int, str | None]:
+        run = self._runtime_run(runtime)
+        run_status = str(run.get("status") or "idle")
+        run_stage = str(run.get("stage") or "")
+        if run_status != "running":
+            return cycle, percent, done, total, label
+
+        derived_cycle = self._stage_display_key(runtime, run_stage or cycle)
+        if cycle in {"", "idle", "starting"} and derived_cycle not in {"", "idle"}:
+            cycle = derived_cycle
+
+        if label:
+            collected_match = re.search(r"已采集\s*(\d+)\s*/\s*(\d+)\s*个来源", label)
+            if collected_match:
+                done = max(done, int(collected_match.group(1)))
+                total = max(total, int(collected_match.group(2)))
+                if percent <= 0:
+                    percent = self._stage_progress_percent(
+                        runtime,
+                        "collecting",
+                        done / max(total, 1) * 100,
+                    )
+            elif percent <= 0:
+                pending_match = re.search(r"正在并发采集\s*(\d+)\s*个来源", label)
+                if pending_match:
+                    total = max(total, int(pending_match.group(1)))
+                    percent = self._stage_progress_percent(runtime, "collecting", 5)
+
+        if percent <= 0:
+            stage_baselines = {
+                "collecting": 5,
+                "clustering": self._stage_progress_percent(runtime, "clustering", 10),
+                "scoring": self._stage_progress_percent(runtime, "scoring", 10),
+                "drafting": self._stage_progress_percent(runtime, "drafting", 10),
+                "wechat_sync": self._stage_progress_percent(runtime, "wechat_sync", 10),
+            }
+            percent = stage_baselines.get(cycle, percent)
+
+        return cycle, percent, done, total, label
+
     def _featured_event_engagement_threshold(self, events: list[dict[str, Any]]) -> float:
         scores = sorted(
             float(item.get("representative_engagement_score", 0) or 0)
@@ -1508,6 +2171,16 @@ class StudioStore:
     def _reset_runtime_progress(self, runtime: dict[str, Any]) -> None:
         self._set_runtime_progress(runtime, percent=0, done=0, total=0, label=None)
         self._progress_snapshot["cycle"] = "idle"
+
+    def _write_runtime_checkpoint(self, state: dict[str, Any], timeout_seconds: float = 0.5) -> bool:
+        acquired = self._lock.acquire(timeout=timeout_seconds)
+        if not acquired:
+            return False
+        try:
+            self._write(state)
+            return True
+        finally:
+            self._lock.release()
 
     def _record_source_attempt(
         self,
@@ -1619,9 +2292,14 @@ class StudioStore:
 
     def _project_candidates_from_events(self, state: dict[str, Any]) -> list[dict[str, Any]]:
         normalized_by_event = {item.get("cluster_id"): item for item in state.get("normalized_items", [])}
+        drafted_event_ids = {
+            str(item.get("source_event_id") or "").strip() or self._event_id_from_candidate_id(item.get("candidate_topic_id"))
+            for item in state["drafts"]
+            if isinstance(item, dict)
+        }
         watched_events = [
             event for event in state.get("intel_events", [])
-            if event.get("watchlisted") and not event.get("ignored")
+            if ((event.get("watchlisted") and not event.get("ignored")) or str(event.get("id") or "") in drafted_event_ids)
         ]
         draft_candidate_ids = {draft["candidate_topic_id"] for draft in state["drafts"]}
         candidates: list[dict[str, Any]] = []
@@ -1630,6 +2308,7 @@ class StudioStore:
             if not normalized:
                 continue
             candidate_id = f"cand-{event['id']}"
+            evidence_pack = self._event_evidence_pack(state, event)
             candidates.append(
                 {
                     "id": candidate_id,
@@ -1639,7 +2318,8 @@ class StudioStore:
                     "recommended_angle": "持续追踪事件变化、平台扩散和下一步影响。",
                     "article_type": "专题" if float(event.get("composite_score", 0) or 0) >= 75 else "快讯",
                     "rationale": event.get("alert_reason") or "已人工加入重点观察。",
-                    "evidence_links": [event.get("representative_link", "")],
+                    "evidence_links": [item["link"] for item in evidence_pack if item.get("link")],
+                    "evidence_pack": evidence_pack,
                     "source_names": list(event.get("source_names", [])),
                     "source_count": int(event.get("source_count", 0) or 0),
                     "score": float(event.get("composite_score", 0) or 0),
@@ -1667,6 +2347,9 @@ class StudioStore:
                     "published_at": event.get("published_at"),
                     "collected_at": event.get("latest_collected_at"),
                     "freshness_bucket": freshness_bucket(event.get("latest_collected_at")),
+                    "entity_names": list(event.get("entity_names", [])),
+                    "alert_state": event.get("alert_state"),
+                    "alert_reason": str(event.get("alert_reason") or ""),
                     "draft_exists": candidate_id in draft_candidate_ids,
                     "normalized_score": float(event.get("composite_score", 0) or 0),
                     "updated_at": now_iso(),
@@ -1689,10 +2372,10 @@ class StudioStore:
             previous_events=state.get("intel_events", []),
             previous_snapshots=state.get("event_snapshots", []),
             captured_at=stamp or now_iso(),
-            llm_config=state.get("llm"),
         )
         state["discovery_items"] = intel["discovery_items"]
         if work_scope == "collect_only":
+            self._refresh_intel_histories(state, update_event_history=False, update_alert_history=False)
             state["intel_events"] = []
             state["intel_alerts"] = []
             state["event_snapshots"] = []
@@ -1703,12 +2386,16 @@ class StudioStore:
         state["intel_events"] = intel["intel_events"]
         if work_scope == "collect_events":
             state["intel_alerts"] = []
+            self._refresh_intel_histories(state, update_event_history=True, update_alert_history=False)
         elif work_scope == "collect_events_alerts":
             state["intel_alerts"] = intel["intel_alerts"]
+            self._refresh_intel_histories(state, update_event_history=True, update_alert_history=True)
         else:
             state["intel_alerts"] = []
+            self._refresh_intel_histories(state, update_event_history=False, update_alert_history=False)
         state["normalized_items"] = self._project_normalized_items_from_events(state)
         state["candidates"] = self._project_candidates_from_events(state)
+        self._sync_draft_metadata(state)
         runtime = self._runtime(state)
         runtime["last_candidate_at"] = now_iso()
 
@@ -1716,13 +2403,9 @@ class StudioStore:
         self,
         state: dict[str, Any],
         work_scope_override: str | None = None,
-        apply_llm_judgement: bool = False,
     ) -> list[dict[str, Any]]:
         self._rebuild_intel_for_state(state, work_scope_override=work_scope_override)
-        candidates = state.get("candidates", [])
-        if apply_llm_judgement and candidates:
-            self._apply_llm_candidate_judgement(state, candidates)
-        return candidates
+        return state.get("candidates", [])
 
     def _sync_due_sources(self, state: dict[str, Any], triggered_by: str, minimum_interval_minutes: int | None = None) -> SourceSyncResponse:
         now = datetime.now(UTC)
@@ -1769,8 +2452,7 @@ class StudioStore:
             label=f"正在并发采集 {total_sources} 个来源 ({max_workers} 线程)",
         )
         self._heartbeat_runtime_run(runtime, stage="collecting", now=now)
-        with self._lock:
-            self._write(state)
+        self._write_runtime_checkpoint(state)
 
         def _collect_one(source: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], str | None, str | None, datetime, datetime]:
             started_at = datetime.now(UTC)
@@ -1782,56 +2464,140 @@ class StudioStore:
                 return source, [], None, f"{source['name']}: 抓取器异常:\n{tb}", started_at, datetime.now(UTC)
 
         source_map: dict[str, dict[str, Any]] = {src["key"]: src for src in due_sources}
-        futures = {}
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        completed = 0
+        last_progress_at = now
+        next_wait_heartbeat_at = time.monotonic() + 5
+
+        def _finalize_source_result(
+            source: dict[str, Any],
+            *,
+            items: list[dict[str, Any]],
+            warning: str | None,
+            error: str | None,
+            started_at: datetime,
+            completed_at: datetime,
+        ) -> None:
+            nonlocal completed
+            collected.extend(items)
+            if warning:
+                warnings.append(f"{source['name']}: {warning}")
+            if error:
+                warnings.append(error)
+                self._append_log(state, "error", "collection", error, stream="system_runtime", actor=triggered_by)
+            warning_text = warning or (error.split("\n")[0][:200] if error else None)
+            self._record_source_attempt(
+                source,
+                started_at=started_at,
+                completed_at=completed_at,
+                items=items,
+                warning_text=warning_text,
+            )
+            duration_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
+            self._record_runtime_source_attempt(
+                runtime,
+                source=source,
+                duration_ms=duration_ms,
+                status="success" if not warning_text else ("warning" if items else "error"),
+                item_count=len(items),
+                warning_text=warning_text,
+                error_text=error.split("\n")[0][:200] if error else None,
+            )
+            self._finalize_source_health(source, now=completed_at)
+            completed += 1
+            self._set_runtime_progress(
+                runtime,
+                percent=self._stage_progress_percent(runtime, "collecting", completed / max(total_sources, 1) * 100),
+                done=completed,
+                total=total_sources,
+                label=f"已采集 {completed}/{total_sources} 个来源",
+            )
+            self._heartbeat_runtime_run(runtime, stage=f"collecting:{source['key']}", error=warning_text, now=completed_at)
+            self._write_runtime_checkpoint(state)
+
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        pending: dict[Any, dict[str, Any]] = {}
+        try:
             for src in due_sources:
-                futures[pool.submit(_collect_one, src)] = src["key"]
-            completed = 0
-            for future in as_completed(futures):
-                src_key = futures[future]
-                source = source_map[src_key]
-                try:
-                    src_collected, items, warning, error, started_at, completed_at = future.result()
-                except Exception:
-                    items, warning, error = [], None, f"{source['name']}: 未知异常"
-                    started_at = datetime.now(UTC)
-                    completed_at = started_at
-                collected.extend(items)
-                if warning:
-                    warnings.append(f"{source['name']}: {warning}")
-                if error:
-                    warnings.append(error)
-                    self._append_log(state, "error", "collection", error, stream="system_runtime", actor=triggered_by)
-                warning_text = warning or (error.split("\n")[0][:200] if error else None)
-                self._record_source_attempt(
-                    source,
-                    started_at=started_at,
-                    completed_at=completed_at,
-                    items=items,
-                    warning_text=warning_text,
-                )
-                duration_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
-                self._record_runtime_source_attempt(
-                    runtime,
-                    source=source,
-                    duration_ms=duration_ms,
-                    status="success" if not warning_text else ("warning" if items else "error"),
-                    item_count=len(items),
-                    warning_text=warning_text,
-                    error_text=error.split("\n")[0][:200] if error else None,
-                )
-                self._finalize_source_health(source, now=completed_at)
-                completed += 1
-                self._set_runtime_progress(
-                    runtime,
-                    percent=self._stage_progress_percent(runtime, "collecting", completed / max(total_sources, 1) * 100),
-                    done=completed,
-                    total=total_sources,
-                    label=f"已采集 {completed}/{total_sources} 个来源",
-                )
-                self._heartbeat_runtime_run(runtime, stage=f"collecting:{source['key']}", error=warning_text, now=completed_at)
-                with self._lock:
-                    self._write(state)
+                future = executor.submit(_collect_one, src)
+                pending[future] = {
+                    "source_key": src["key"],
+                    "submitted_at": datetime.now(UTC),
+                }
+
+            while pending:
+                done, _ = wait(tuple(pending.keys()), timeout=1, return_when=FIRST_COMPLETED)
+                current_time = datetime.now(UTC)
+                if done:
+                    for future in done:
+                        meta = pending.pop(future, None)
+                        if not meta:
+                            continue
+                        src_key = str(meta["source_key"])
+                        source = source_map[src_key]
+                        try:
+                            _src_collected, items, warning, error, started_at, completed_at = future.result()
+                        except Exception:
+                            items, warning, error = [], None, f"{source['name']}: 未知异常"
+                            started_at = current_time
+                            completed_at = current_time
+                        _finalize_source_result(
+                            source,
+                            items=items,
+                            warning=warning,
+                            error=error,
+                            started_at=started_at,
+                            completed_at=completed_at,
+                        )
+                    last_progress_at = current_time
+                    continue
+
+                if time.monotonic() >= next_wait_heartbeat_at:
+                    pending_count = len(pending)
+                    self._set_runtime_progress(
+                        runtime,
+                        percent=self._stage_progress_percent(runtime, "collecting", completed / max(total_sources, 1) * 100),
+                        done=completed,
+                        total=total_sources,
+                        label=f"正在等待剩余 {pending_count} 个来源返回",
+                    )
+                    self._heartbeat_runtime_run(runtime, stage="collecting:waiting", now=current_time)
+                    self._write_runtime_checkpoint(state)
+                    next_wait_heartbeat_at = time.monotonic() + 5
+
+                stalled_for = (current_time - last_progress_at).total_seconds()
+                if stalled_for < SOURCE_COLLECTION_STALL_SECONDS:
+                    continue
+
+                stalled_sources = []
+                for future, meta in list(pending.items()):
+                    src_key = str(meta["source_key"])
+                    source = source_map[src_key]
+                    pending.pop(future, None)
+                    future.cancel()
+                    stalled_sources.append(source["name"])
+                    timeout_message = (
+                        f"{source['name']}: 采集超时，已跳过该来源并继续本轮（连续 {int(stalled_for)}s 无进展）"
+                    )
+                    _finalize_source_result(
+                        source,
+                        items=[],
+                        warning=None,
+                        error=timeout_message,
+                        started_at=meta.get("submitted_at") or current_time,
+                        completed_at=current_time,
+                    )
+                if stalled_sources:
+                    self._append_log(
+                        state,
+                        "warning",
+                        "runtime",
+                        f"采集阶段长时间无进展，已跳过 {len(stalled_sources)} 个来源：{', '.join(stalled_sources)}",
+                        stream="system_runtime",
+                        actor=triggered_by,
+                    )
+                last_progress_at = current_time
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
         merged = sorted(existing + collected, key=lambda item: parse_time(item.get("collected_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
         state["raw_items"] = merged[:MAX_RAW_ITEMS]
         active_work_scope = str(runtime.get("work_scope") or self._work_scope(state) or "collect_events_alerts")
@@ -1847,7 +2613,6 @@ class StudioStore:
             candidates = self._rebuild_candidates_for_state(
                 state,
                 work_scope_override=active_work_scope,
-                apply_llm_judgement=False,
             )
             self._set_runtime_progress(
                 runtime,
@@ -1876,13 +2641,11 @@ class StudioStore:
                 label="采集完成，正在聚合热点事件",
             )
             self._heartbeat_runtime_run(runtime, stage="clustering", now=datetime.now(UTC))
-            with self._lock:
-                self._write(state)
+            self._write_runtime_checkpoint(state)
 
             candidates = self._rebuild_candidates_for_state(
                 state,
                 work_scope_override=active_work_scope,
-                apply_llm_judgement=False,
             )
             self._append_log(
                 state,
@@ -1924,8 +2687,7 @@ class StudioStore:
                 label=scoring_label,
             )
             self._heartbeat_runtime_run(runtime, stage="scoring", now=datetime.now(UTC))
-            with self._lock:
-                self._write(state)
+            self._write_runtime_checkpoint(state)
 
             stage_three_done = (
                 f"阶段 {scoring_stage_no}/{stage_total} 完成：更新 {len(candidates)} 条重点观察"
@@ -1948,8 +2710,7 @@ class StudioStore:
                 label="热度结果已更新，即将完成",
             )
             self._heartbeat_runtime_run(runtime, stage="scoring:complete", now=datetime.now(UTC))
-            with self._lock:
-                self._write(state)
+            self._write_runtime_checkpoint(state)
         runtime["last_collect_at"] = stamp
         if collected:
             runtime["last_successful_sync_at"] = stamp
@@ -2048,36 +2809,39 @@ class StudioStore:
         limit: int | None = 2,
         selection_mode: str = "all_new",
     ) -> list[dict[str, Any]]:
-        if not state["candidates"]:
+        if not state["intel_events"]:
             self._sync_sources_internal(state, triggered_by=triggered_by)
         publish_mode = automation_to_publish_mode(state.get("automation_mode", "radar_only"))
-        risk_keywords = state["channels"]["wechat"]["risk_keywords"]
         llm_service = self._make_llm_service(state)
-        normalized_map = {item["id"]: item for item in state["normalized_items"]}
-        existing_candidate_ids = {draft["candidate_topic_id"] for draft in state["drafts"]}
         drafted: list[dict[str, Any]] = []
-        candidates = list(state["candidates"])
-        if selection_mode == "top_scored":
-            candidates.sort(
-                key=lambda item: (
-                    float(item.get("score", 0) or 0),
-                    parse_time(item.get("collected_at")) or datetime.min.replace(tzinfo=UTC),
-                ),
-                reverse=True,
+        eligible_events = [
+            event
+            for event in state.get("intel_events", [])
+            if isinstance(event, dict)
+            and event.get("watchlisted")
+            and not event.get("ignored")
+            and bool(event.get("draft_ready"))
+            and str(event.get("alert_state") or "") in {"rising", "breakout"}
+        ]
+        eligible_events.sort(
+            key=lambda item: (
+                float(item.get("draft_score", item.get("composite_score", 0)) or 0),
+                1 if str(item.get("alert_state") or "") == "breakout" else 0,
+                parse_time(item.get("last_seen_at") or item.get("latest_collected_at")) or datetime.min.replace(tzinfo=UTC),
+            ),
+            reverse=True,
+        )
+        for event in eligible_events:
+            draft, created = self._compose_draft_for_event(
+                state,
+                event,
+                publish_mode,
+                generation_mode="automation",
+                llm_service=llm_service,
             )
-        for candidate in candidates:
-            if candidate["id"] in existing_candidate_ids:
+            if not created:
                 continue
-            normalized_item = normalized_map.get(candidate["normalized_item_id"])
-            if not normalized_item:
-                continue
-            draft = compose_draft(candidate, normalized_item, publish_mode, risk_keywords, llm_service=llm_service)
-            state["drafts"].insert(0, draft)
-            candidate["status"] = "drafted"
-            candidate["draft_exists"] = True
-            candidate["updated_at"] = now_iso()
             drafted.append(draft)
-            existing_candidate_ids.add(candidate["id"])
             if limit is not None and len(drafted) >= limit:
                 break
         self._sync_llm_usage(state, llm_service)
@@ -2101,6 +2865,7 @@ class StudioStore:
         browser = self._refresh_browser_session(state)
         if not draft.get("wechat_draft_id"):
             draft["wechat_draft_id"] = build_wechat_draft_id(draft["id"])
+        draft["pipeline_stage"] = "draft_synced"
         draft["updated_at"] = now_iso()
         detail = "已写入本地微信草稿队列，完成浏览器配置后即可继续推进。"
         if browser.get("logged_in"):
@@ -2146,6 +2911,7 @@ class StudioStore:
                 draft["last_error"] = browser.get("last_error")
             else:
                 draft["last_error"] = None
+                draft["pipeline_stage"] = "draft_synced"
                 draft["wechat_editor_url"] = browser.get("last_opened_url")
                 draft["wechat_remote_appmsg_id"] = extract_wechat_appmsg_id(str(browser.get("last_opened_url") or ""))
                 draft["updated_at"] = now_iso()
@@ -2248,94 +3014,12 @@ class StudioStore:
             return self._runtime_plan_from_state(state)
 
     def get_runtime_status(self) -> SchedulerStatus:
-        snapshot = self._progress_snapshot
-        now_mono = time.monotonic()
-        in_completion_hold = now_mono < self._completion_hold_until
         with self._lock:
             state = self._upgrade_state(self._read())
             recovered_run_id = self._recover_stale_runtime_run(state, actor="runtime_status")
-            runtime = self._runtime(state)
-            run = self._runtime_run(runtime)
-            last_cycle_issue_count, last_cycle_issue_summary = self._last_cycle_issue_snapshot(state, runtime)
-            last_cycle_summary = runtime.get("last_cycle_summary") or self._build_last_cycle_summary(state, runtime)
-            plan_launch = self._runtime_plan(state).get("launch_mode", "interval_now")
-            next_at = self._calculate_next_collect_at(state)
-            running = runtime.get("control_state", "stopped") != "stopped"
-            control_state = str(runtime.get("control_state") or "stopped")
-            current_mode = state["automation_mode"]
-            work_scope = str(runtime.get("work_scope") or "collect_events_alerts")
-            last_collect_at = runtime.get("last_collect_at")
-            last_candidate_at = runtime.get("last_candidate_at")
-            last_draft_at = runtime.get("last_draft_at")
-            enabled_at = runtime.get("enabled_at")
-            scheduled_start_at = runtime.get("scheduled_start_at")
-            cycle_started_at = runtime.get("current_cycle_started_at")
-            last_cycle_started_at = runtime.get("last_cycle_started_at")
-            last_cycle_finished_at = runtime.get("last_cycle_finished_at")
-            last_cycle_duration_seconds = runtime.get("last_cycle_duration_seconds")
-            completed_cycles_today = int(runtime.get("completed_cycles_today", 0) or 0)
-            failed_cycles_today = int(runtime.get("failed_cycles_today", 0) or 0)
-            last_error = runtime.get("last_error")
             if recovered_run_id:
                 self._write(state)
-        if in_completion_hold:
-            cycle = "completed"
-            percent = 100
-            done = snapshot.get("done", 1)
-            total = snapshot.get("total", 1)
-            label = snapshot.get("label") or "本轮已完成"
-        else:
-            cycle = str(snapshot.get("cycle") or runtime.get("current_cycle", "idle"))
-            percent = int(snapshot.get("percent", 0))
-            done = int(snapshot.get("done", 0))
-            total = int(snapshot.get("total", 0))
-            label = snapshot.get("label")
-        stage_key, stage_label, stage_index, stage_total = self._stage_status(runtime, cycle)
-        return SchedulerStatus(
-            running=running,
-            control_state=control_state,
-            launch_mode=plan_launch,
-            current_mode=current_mode,
-            work_scope=work_scope,
-            last_collect_at=last_collect_at,
-            last_candidate_at=last_candidate_at,
-            last_draft_at=last_draft_at,
-            next_collect_at=next_at,
-            current_cycle=cycle,
-            current_cycle_progress_percent=percent,
-            current_cycle_progress_done=done,
-            current_cycle_progress_total=total,
-            current_cycle_progress_label=label,
-            stage_key=stage_key,
-            stage_label=stage_label,
-            stage_index=stage_index,
-            stage_total=stage_total,
-            enabled_at=enabled_at,
-            scheduled_start_at=scheduled_start_at,
-            current_cycle_started_at=cycle_started_at,
-            last_cycle_started_at=last_cycle_started_at,
-            last_cycle_finished_at=last_cycle_finished_at,
-            last_cycle_duration_seconds=last_cycle_duration_seconds,
-            uptime_seconds=0,
-            completed_cycles_today=completed_cycles_today,
-            failed_cycles_today=failed_cycles_today,
-            last_error=last_error,
-            last_cycle_issue_count=last_cycle_issue_count,
-            last_cycle_issue_summary=last_cycle_issue_summary,
-            run_id=run.get("run_id"),
-            run_status=str(run.get("status") or "idle"),
-            run_stage=str(run.get("stage") or "idle"),
-            run_started_at=run.get("started_at"),
-            run_heartbeat_at=run.get("heartbeat_at"),
-            run_finished_at=run.get("finished_at"),
-            run_triggered_by=run.get("triggered_by"),
-            run_error=run.get("error"),
-            recovered_run_id=run.get("recovered_run_id"),
-            run_stale=self._runtime_run_is_stale(run),
-            run_intent=str(run.get("intent") or DEFAULT_RUNTIME_INTENT),
-            last_run_outcome=run.get("last_run_outcome"),
-            last_cycle_summary=RuntimeCycleSummary(**last_cycle_summary) if isinstance(last_cycle_summary, dict) else None,
-        )
+            return self._scheduler_status_from_state(state)
 
     def _scheduler_status_from_state(self, state: dict[str, Any]) -> SchedulerStatus:
         runtime = self._runtime(state)
@@ -2363,6 +3047,14 @@ class StudioStore:
             progress_done = int(snapshot.get("done", runtime.get("current_cycle_progress_done", 0)) or 0)
             progress_total = int(snapshot.get("total", runtime.get("current_cycle_progress_total", 0)) or 0)
             progress_label = snapshot.get("label") or runtime.get("current_cycle_progress_label")
+        current_cycle, progress_percent, progress_done, progress_total, progress_label = self._normalize_runtime_status_progress(
+            runtime,
+            cycle=current_cycle,
+            percent=progress_percent,
+            done=progress_done,
+            total=progress_total,
+            label=progress_label,
+        )
         stage_key, stage_label, stage_index, stage_total = self._stage_status(runtime, current_cycle)
         return SchedulerStatus(
             running=control_state != "stopped",
@@ -2782,15 +3474,13 @@ class StudioStore:
                 actor=triggered_by,
             )
             self._heartbeat_runtime_run(runtime, stage="collecting", now=start)
-            with self._lock:
-                self._write(state)
+            self._write_runtime_checkpoint(state)
             sync_response = self._sync_due_sources(
                 state,
                 triggered_by="scheduler",
                 minimum_interval_minutes=None,
             )
-            with self._lock:
-                self._write(state)
+            self._write_runtime_checkpoint(state)
             drafted_count = 0
             synced_to_wechat = 0
             if mode.get("auto_generate_drafts"):
@@ -2818,8 +3508,7 @@ class StudioStore:
                     )
                     self._progress_snapshot["cycle"] = "drafting"
                     self._heartbeat_runtime_run(runtime, stage="drafting")
-                    with self._lock:
-                        self._write(state)
+                    self._write_runtime_checkpoint(state)
                     drafted = self._build_digest_internal(
                         state,
                         triggered_by="scheduler",
@@ -2863,8 +3552,7 @@ class StudioStore:
                         )
                         self._progress_snapshot["cycle"] = "wechat_sync"
                         self._heartbeat_runtime_run(runtime, stage="wechat_sync")
-                        with self._lock:
-                            self._write(state)
+                        self._write_runtime_checkpoint(state)
                         for draft in drafted:
                             self._sync_wechat_draft_internal(state, draft, "scheduler")
                             synced_to_wechat += 1
@@ -2992,7 +3680,7 @@ class StudioStore:
     def run_automation_cycle(self) -> dict[str, Any]:
         with self._lock:
             state = self._upgrade_state(self._read())
-            return self._run_automation_cycle_locked(state, triggered_by="scheduler")
+        return self._run_automation_cycle_locked(state, triggered_by="scheduler")
 
     def _launch_runtime_cycle_async(self, triggered_by: str, force: bool = False) -> None:
         def runner() -> None:
@@ -3219,17 +3907,26 @@ class StudioStore:
 
     def _make_llm_service(self, state: dict[str, Any]) -> LLMService | None:
         llm_config = state.get("llm", {})
-        if not llm_config or not llm_config.get("providers"):
+        if not llm_config or not llm_config.get("profiles"):
             return None
-        enabled = [
-            p
-            for p in llm_config.get("providers", [])
-            if p.get("enabled") and str(p.get("api_key", "")).strip() and "****" not in str(p.get("api_key", ""))
+        profiles = [item for item in llm_config.get("profiles", []) if isinstance(item, dict)]
+        current_profile_id = str(llm_config.get("current_profile_id") or "").strip()
+        fallback_profile_id = str(llm_config.get("fallback_profile_id") or "").strip()
+        active_profile = next((item for item in profiles if str(item.get("id") or "") == current_profile_id), None)
+        fallback_profile = next((item for item in profiles if str(item.get("id") or "") == fallback_profile_id), None)
+        runtime_tasks = build_runtime_tasks(active_profile, fallback_profile)
+        if not runtime_tasks or not runtime_tasks[0].get("provider_key"):
+            return None
+        providers = [
+            build_provider_from_profile(profile)
+            for profile in profiles
+            if bool(str(profile.get("api_key") or "").strip()) and "****" not in str(profile.get("api_key", ""))
         ]
-        if not enabled:
+        if not providers:
             return None
         config = deepcopy(llm_config)
-        config["providers"] = enabled
+        config["providers"] = providers
+        config["tasks"] = runtime_tasks
         return LLMService(config)
 
     def _sync_llm_usage(self, state: dict[str, Any], llm_service: LLMService | None) -> None:
@@ -3238,106 +3935,66 @@ class StudioStore:
         state.setdefault("llm", {}).setdefault("usage_today", {})
         state["llm"]["usage_today"] = llm_service.get_usage()
 
-    def _apply_llm_candidate_judgement(self, state: dict[str, Any], candidates: list[dict[str, Any]]) -> None:
-        if not candidates:
-            return
-        llm_service = self._make_llm_service(state)
-        if not llm_service or "judgement" not in getattr(llm_service, "_tasks", {}):
-            return
-
-        payload = {
-            "items": [
-                {
-                    "id": candidate["id"],
-                    "title": candidate["title"],
-                    "summary": candidate.get("summary", ""),
-                    "source_names": candidate.get("source_names", []),
-                    "source_count": candidate.get("source_count", 0),
-                    "score": candidate.get("score", 0),
-                    "published_at": candidate.get("published_at"),
-                    "collected_at": candidate.get("collected_at"),
-                    "existing_facts": candidate.get("facts", []),
-                    "existing_angle": candidate.get("recommended_angle", ""),
-                }
-                for candidate in candidates[:16]
-            ]
-        }
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "你是 Auto News Studio 的中文技术编辑。"
-                    "请只基于给定素材做初步判断，不要编造事实。"
-                    "输出纯 JSON 对象，格式为 {\"items\":[...] }。"
-                    "每个 items 元素必须包含：id, summary, recommended_angle, rationale, facts, article_type。"
-                    "facts 只能是 2 到 4 条中文事实句。"
-                    "如果证据不足，要在 rationale 或 facts 中明确写出“信息仍待进一步确认”。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(payload, ensure_ascii=False, indent=2),
-            },
-        ]
-        try:
-            response = llm_service.generate("judgement", messages, temperature=0.2, max_tokens=2400)
-            parsed = _extract_json_payload(response.get("content", ""))
-            items = parsed.get("items", []) if isinstance(parsed, dict) else []
-            updates = {
-                item.get("id"): item
-                for item in items
-                if isinstance(item, dict) and item.get("id")
-            }
-            for candidate in candidates:
-                update = updates.get(candidate["id"])
-                if not update:
-                    continue
-                summary = str(update.get("summary", "") or "").strip()
-                recommended_angle = str(update.get("recommended_angle", "") or "").strip()
-                rationale = str(update.get("rationale", "") or "").strip()
-                facts = [str(item).strip() for item in update.get("facts", []) if str(item).strip()]
-                article_type = str(update.get("article_type", "") or "").strip()
-                if summary:
-                    candidate["summary"] = summary
-                if recommended_angle:
-                    candidate["recommended_angle"] = recommended_angle
-                    candidate["selected_angle"] = recommended_angle
-                if rationale:
-                    candidate["rationale"] = rationale
-                if facts:
-                    candidate["facts"] = facts[:4]
-                if article_type in {"快讯", "专题", "深度"}:
-                    candidate["article_type"] = article_type
-            self._sync_llm_usage(state, llm_service)
-        except Exception as exc:
-            self._append_log(
-                state,
-                "warning",
-                "llm",
-                "GLM 初步判断未执行，已回退到规则判断。",
-                detail=str(exc),
-                stream="system_runtime",
-                actor="system",
-            )
-
     def create_draft_from_candidate(self, candidate_id: str, publish_mode: PublishMode | None = None) -> DraftItem:
         state = self._upgrade_state(self._read())
         candidate = self._find_candidate(state, candidate_id)
-        normalized_map = {item["id"]: item for item in state["normalized_items"]}
-        normalized_item = normalized_map.get(candidate["normalized_item_id"])
-        if not normalized_item:
-            raise ValueError("Candidate evidence is missing.")
         mode = publish_mode or state["current_mode"]
         llm_service = self._make_llm_service(state)
-        draft = compose_draft(candidate, normalized_item, mode, state["channels"]["wechat"]["risk_keywords"], llm_service=llm_service)
+        event_id = self._event_id_from_candidate_id(candidate_id)
+        draft: dict[str, Any]
+        created = True
+        if event_id:
+            try:
+                event = self._find_event(state, event_id)
+                draft, created = self._compose_draft_for_event(
+                    state,
+                    event,
+                    mode,
+                    generation_mode="manual",
+                    llm_service=llm_service,
+                )
+            except ValueError:
+                draft = {}
+        else:
+            draft = {}
+        if not draft:
+            normalized_map = {item["id"]: item for item in state["normalized_items"]}
+            normalized_item = normalized_map.get(candidate["normalized_item_id"])
+            if not normalized_item:
+                raise ValueError("Candidate evidence is missing.")
+            draft = compose_draft(candidate, normalized_item, mode, state["channels"]["wechat"]["risk_keywords"], llm_service=llm_service)
+            event_id = self._event_id_from_candidate_id(candidate_id)
+            if event_id:
+                draft["source_event_id"] = event_id
+                draft["draft_window_id"] = self._draft_window_id_for_event(state, self._find_event(state, event_id))
+            draft["source_alert_level"] = None
+            draft["generation_mode"] = "manual"
+            state["drafts"].insert(0, draft)
+            self._sync_draft_metadata(state)
         self._sync_llm_usage(state, llm_service)
-        candidate["status"] = "drafted"
-        candidate["draft_exists"] = True
-        candidate["updated_at"] = now_iso()
-        state["drafts"].insert(0, draft)
-        self._append_log(state, "success", "draft", f"已从候选池生成初稿：{draft['title']}")
+        self._append_log(state, "success", "draft", f"{'已从候选池生成初稿' if created else '已复用现有稿件'}：{draft['title']}")
         runtime = self._runtime(state)
         runtime["last_draft_at"] = now_iso()
+        self._write(state)
+        return DraftItem(**draft)
+
+    def create_draft_from_event(self, event_id: str, publish_mode: PublishMode | None = None) -> DraftItem:
+        state = self._upgrade_state(self._read())
+        event = self._find_event(state, event_id)
+        mode = publish_mode or state["current_mode"]
+        llm_service = self._make_llm_service(state)
+        draft, created = self._compose_draft_for_event(
+            state,
+            event,
+            mode,
+            generation_mode="manual",
+            llm_service=llm_service,
+        )
+        self._sync_llm_usage(state, llm_service)
+        runtime = self._runtime(state)
+        runtime["last_draft_at"] = now_iso()
+        action = "已从热点事件生成初稿" if created else "已复用同窗口稿件"
+        self._append_log(state, "success", "draft", f"{action}：{draft['title']}")
         self._write(state)
         return DraftItem(**draft)
 
@@ -3364,11 +4021,21 @@ class StudioStore:
             except Exception:  # pragma: no cover - defensive
                 failed_count += 1
                 continue
+            event_id = self._event_id_from_candidate_id(str(candidate.get("id") or ""))
+            if event_id:
+                draft["source_event_id"] = event_id
+                try:
+                    draft["draft_window_id"] = self._draft_window_id_for_event(state, self._find_event(state, event_id))
+                    draft["source_alert_level"] = str(self._find_event(state, event_id).get("alert_state") or "") or None
+                except ValueError:
+                    draft["draft_window_id"] = None
+            draft["generation_mode"] = "manual"
             state["drafts"].insert(0, draft)
             candidate["status"] = "drafted"
             candidate["draft_exists"] = True
             candidate["updated_at"] = now_iso()
             created.append(draft)
+        self._sync_draft_metadata(state)
         self._sync_llm_usage(state, llm_service)
 
         if created:
@@ -3391,6 +4058,15 @@ class StudioStore:
         state = self._upgrade_state(self._read())
         return [DraftItem(**item) for item in state["drafts"]]
 
+    def delete_draft(self, draft_id: str) -> None:
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            draft = self._find_draft(state, draft_id)
+            state["drafts"] = [item for item in state["drafts"] if item.get("id") != draft_id]
+            self._sync_draft_metadata(state)
+            self._append_log(state, "warning", "draft", f"已删除本地稿件记录：{draft['title']}")
+            self._write(state)
+
     def regenerate_draft(self, draft_id: str) -> DraftItem:
         state = self._upgrade_state(self._read())
         draft = self._find_draft(state, draft_id)
@@ -3403,6 +4079,11 @@ class StudioStore:
         regenerated = compose_draft(candidate, normalized_item, draft["publish_mode"], state["channels"]["wechat"]["risk_keywords"], llm_service=llm_service)
         self._sync_llm_usage(state, llm_service)
         regenerated["id"] = draft["id"]
+        regenerated["candidate_topic_id"] = draft["candidate_topic_id"]
+        regenerated["source_event_id"] = draft.get("source_event_id")
+        regenerated["source_alert_level"] = draft.get("source_alert_level")
+        regenerated["generation_mode"] = draft.get("generation_mode", "manual")
+        regenerated["draft_window_id"] = draft.get("draft_window_id")
         regenerated["wechat_draft_id"] = None
         regenerated["wechat_editor_url"] = None
         regenerated["wechat_remote_appmsg_id"] = None
@@ -3410,6 +4091,7 @@ class StudioStore:
         regenerated["last_error"] = None
         index = next(index for index, item in enumerate(state["drafts"]) if item["id"] == draft_id)
         state["drafts"][index] = regenerated
+        self._sync_draft_metadata(state)
         self._append_log(state, "success", "draft", f"已重新生成稿件：{draft['title']}")
         self._write(state)
         return DraftItem(**regenerated)
@@ -4068,8 +4750,12 @@ class StudioStore:
 
         alert_dicts = [item for item in state.get("intel_alerts", []) if isinstance(item, dict)]
         event_dicts = [item for item in state.get("intel_events", []) if isinstance(item, dict)]
+        recent_alert_dicts = self._prune_intel_alert_history(state.get("intel_alert_history", []))
+        recent_event_dicts = self._prune_intel_event_history(state.get("intel_event_history", []))
         alerts = [IntelAlert(**item) for item in alert_dicts]
         events = [IntelEvent(**item) for item in event_dicts]
+        recent_alerts = [item for item in recent_alert_dicts]
+        recent_events = [item for item in recent_event_dicts]
         featured_alerts = [item for item in alerts if item.level in {"breakout", "rising"}]
         engagement_threshold = self._featured_event_engagement_threshold(event_dicts)
         featured_events = [
@@ -4111,12 +4797,18 @@ class StudioStore:
             error_sources=error_sources,
             healthy_sources=healthy_sources,
             total_sources=len(enabled_sources),
+            recent_alert_count_24h=len(recent_alerts),
+            recent_event_count_24h=len(recent_events),
+            recent_breakout_count_24h=len([item for item in recent_alerts if str(item.get("highest_level") or "") == "breakout"]),
+            recent_rising_count_24h=len([item for item in recent_alerts if str(item.get("highest_level") or "") == "rising"]),
             last_sync_at=runtime.get("last_successful_sync_at") or runtime.get("last_collect_at"),
             next_run_at=self._calculate_next_collect_at(state),
             running=runtime.get("control_state") != "stopped",
             work_scope=self._work_scope(state),
             top_alerts=featured_alerts[:6],
             top_events=featured_events[:8],
+            recent_alerts_24h=recent_alerts,
+            recent_events_24h=recent_events,
             source_alerts=source_alerts[:6],
         )
 
@@ -4128,6 +4820,10 @@ class StudioStore:
         state = self._upgrade_state(self._read())
         return [IntelEvent(**item) for item in state.get("intel_events", [])]
 
+    def list_intel_event_history(self) -> list[dict[str, Any]]:
+        state = self._upgrade_state(self._read())
+        return self._prune_intel_event_history(state.get("intel_event_history", []))
+
     def get_intel_event(self, event_id: str) -> IntelEvent:
         state = self._upgrade_state(self._read())
         return IntelEvent(**self._find_event(state, event_id))
@@ -4135,6 +4831,10 @@ class StudioStore:
     def list_intel_alerts(self) -> list[IntelAlert]:
         state = self._upgrade_state(self._read())
         return [IntelAlert(**item) for item in state.get("intel_alerts", [])]
+
+    def list_intel_alert_history(self) -> list[dict[str, Any]]:
+        state = self._upgrade_state(self._read())
+        return self._prune_intel_alert_history(state.get("intel_alert_history", []))
 
     def _normalize_entity_watchlist_item(
         self,
@@ -4281,11 +4981,15 @@ class StudioStore:
     def get_llm_config(self) -> dict[str, Any]:
         state = self._upgrade_state(self._read())
         cfg = deepcopy(state.get("llm", {}))
-        for collection_key in ("profiles", "providers"):
-            for item in cfg.get(collection_key, []):
-                key = item.get("api_key", "")
-                if key:
-                    item["api_key"] = key[:4] + "****" + key[-4:] if len(key) > 8 else "****"
+        cfg.pop("tasks", None)
+        for profile in cfg.get("profiles", []):
+            key = str(profile.get("api_key", ""))
+            if key and profile.get("id", "").startswith("cc-"):
+                profile["api_key"] = key[:4] + "****" + key[-4:] if len(key) > 8 else "****"
+        for provider in cfg.get("providers", []):
+            key = str(provider.get("api_key", ""))
+            if key:
+                provider["api_key"] = key[:4] + "****" + key[-4:] if len(key) > 8 else "****"
         return cfg
 
     def update_llm_config(self, config: dict[str, Any]) -> dict[str, Any]:
@@ -4300,56 +5004,38 @@ class StudioStore:
         if not active_profile and profiles:
             active_profile = profiles[0]
             current_profile_id = str(active_profile.get("id") or "")
-        if active_profile:
-            active_profile["enabled"] = bool(str(active_profile.get("api_key") or "").strip())
+        for profile in profiles:
+            profile["enabled"] = bool(str(profile.get("api_key") or "").strip()) and "****" not in str(profile.get("api_key", ""))
 
-        # Use submitted tasks from config, falling back to profile-derived tasks for missing keys
-        incoming_tasks = [t for t in config.get("tasks", []) if isinstance(t, dict)]
-        existing_tasks = {t["task_key"]: t for t in existing.get("tasks", []) if isinstance(t, dict)}
-        profile_tasks = build_tasks_from_profile(active_profile) if active_profile else []
-        profile_tasks_by_key = {t["task_key"]: t for t in profile_tasks}
-
-        merged_tasks = []
-        for task in incoming_tasks:
-            task_key = task.get("task_key", "")
-            profile_task = profile_tasks_by_key.get(task_key, {})
-            merged_tasks.append({
-                **profile_task,
-                **task,
-                # Ensure provider_key/model_id come from incoming task if specified, else from profile
-                "provider_key": task.get("provider_key") or profile_task.get("provider_key", ""),
-                "model_id": task.get("model_id") or profile_task.get("model_id", ""),
-            })
-        # Add any profile tasks not in incoming (e.g., new task keys)
-        for task in profile_tasks:
-            if task["task_key"] not in {t["task_key"] for t in merged_tasks}:
-                merged_tasks.append(task)
-
-        # Build providers list: active profile provider + all providers referenced by task primary/fallback
-        referenced_provider_keys = set()
-        for task in merged_tasks:
-            if task.get("provider_key"):
-                referenced_provider_keys.add(task["provider_key"])
-            if task.get("fallback_provider_key"):
-                referenced_provider_keys.add(task["fallback_provider_key"])
+        fallback_profile_id = str(config.get("fallback_profile_id") or existing.get("fallback_profile_id") or "").strip()
+        if fallback_profile_id == current_profile_id:
+            fallback_profile_id = ""
+        fallback_profile = next((item for item in profiles if item.get("id") == fallback_profile_id), None)
+        if not fallback_profile:
+            fallback_profile_id = ""
+        elif not bool(str(fallback_profile.get("api_key") or "").strip()):
+            fallback_profile_id = ""
 
         providers_map: dict[str, dict[str, Any]] = {}
-        # Add active profile provider first
         if active_profile:
             active_provider = build_provider_from_profile(active_profile)
             if active_provider.get("key"):
                 providers_map[active_provider["key"]] = active_provider
-        # Add providers from existing profiles that are referenced by tasks
+        if fallback_profile and fallback_profile_id:
+            fallback_provider = build_provider_from_profile(fallback_profile)
+            if fallback_provider.get("key"):
+                providers_map.setdefault(fallback_provider["key"], fallback_provider)
         for profile in profiles:
             provider_key = str(profile.get("provider_key") or "")
-            if provider_key in referenced_provider_keys and provider_key not in providers_map:
+            api_key = str(profile.get("api_key") or "").strip()
+            if provider_key and api_key and "****" not in api_key and provider_key not in providers_map:
                 providers_map[provider_key] = build_provider_from_profile(profile)
 
         state["llm"] = {
             "current_profile_id": current_profile_id,
+            "fallback_profile_id": fallback_profile_id or None,
             "profiles": profiles,
             "providers": list(providers_map.values()),
-            "tasks": merged_tasks,
             "usage_today": existing.get("usage_today", {}),
         }
         self._write(state)
@@ -4358,25 +5044,47 @@ class StudioStore:
 
     def test_llm_provider(self, provider_key: str) -> dict[str, Any]:
         state = self._upgrade_state(self._read())
+        profiles = state.get("llm", {}).get("profiles", [])
         providers = state.get("llm", {}).get("providers", [])
-        provider = next((item for item in providers if item.get("key") == provider_key), None)
+
+        profile = next((item for item in profiles if item.get("provider_key") == provider_key or item.get("id") == provider_key), None)
+        provider: dict[str, Any] | None = None
+        tested_profile_id = ""
+        if profile:
+            tested_profile_id = str(profile.get("id") or "")
+            provider = build_provider_from_profile(profile)
+            provider["enabled"] = True
+        if not provider:
+            provider = next((item for item in providers if item.get("key") == provider_key), None)
+            if provider:
+                provider = deepcopy(provider)
         if not provider:
             raise ValueError(f"未找到服务商配置：{provider_key}")
-        if not str(provider.get("api_key", "")).strip() or "****" in str(provider.get("api_key", "")):
+
+        api_key = str(provider.get("api_key", "")).strip()
+        if not api_key or "****" in api_key:
             raise ValueError(f"Provider {provider_key} has no API key configured")
+
+        provider["enabled"] = True
         llm_config = deepcopy(state.get("llm", {}))
-        llm_config["providers"] = [{**provider, "enabled": True}]
+        llm_config["providers"] = [provider]
         llm_service = LLMService(llm_config)
-        result = llm_service.test_connection(provider_key)
-        current_profile_id = str(state.get("llm", {}).get("current_profile_id") or "")
-        for profile in state.get("llm", {}).get("profiles", []):
-            if profile.get("id") == current_profile_id:
-                profile["last_tested_at"] = now_iso()
+        result = llm_service.test_connection(str(provider.get("key") or provider_key))
+        tested_at = now_iso()
+        for profile in profiles:
+            if str(profile.get("id") or "") == tested_profile_id:
+                profile["last_tested_at"] = tested_at
                 profile["last_test_result"] = "ok" if result.get("ok") else result.get("error", "failed")
+                profile["cc_probe_status"] = result.get("probe_status") or ("verified" if result.get("ok") else "request_failed")
+                profile["cc_probe_message"] = result.get("probe_message") or result.get("error") or ""
+                if result.get("ok"):
+                    profile["cc_last_verified_endpoint"] = result.get("resolved_endpoint") or profile.get("cc_last_verified_endpoint")
+                    profile["cc_last_verified_format"] = result.get("resolved_format") or profile.get("cc_last_verified_format")
+                    profile["cc_last_verified_model"] = result.get("resolved_model") or result.get("model") or profile.get("cc_last_verified_model")
                 break
         for p in providers:
-            if p["key"] == provider_key:
-                p["last_tested_at"] = now_iso()
+            if p["key"] == str(provider.get("key") or provider_key):
+                p["last_tested_at"] = tested_at
                 p["last_test_result"] = "ok" if result.get("ok") else result.get("error", "failed")
         self._write(state)
         return result
@@ -4385,45 +5093,96 @@ class StudioStore:
         state = self._upgrade_state(self._read())
         return state.get("llm", {}).get("usage_today", {})
 
+    def import_cc_switch_profiles(self, cc_profiles: list[dict[str, Any]]) -> dict[str, Any]:
+        state = self._upgrade_state(self._read())
+        llm = state.setdefault("llm", default_llm_state())
+        existing_profiles = llm.get("profiles", [])
+        existing_by_id = {str(p.get("id", "")): deepcopy(p) for p in existing_profiles if isinstance(p, dict) and p.get("id")}
+
+        for cc in cc_profiles:
+            pid = str(cc.get("id", ""))
+            if not pid:
+                continue
+            incoming_key = str(cc.get("api_key", ""))
+            if pid in existing_by_id:
+                existing_key = str(existing_by_id[pid].get("api_key", ""))
+                if "****" in incoming_key and existing_key and "****" not in existing_key:
+                    cc["api_key"] = existing_key
+                existing_by_id[pid] = {**existing_by_id[pid], **cc}
+            else:
+                existing_by_id[pid] = deepcopy(cc)
+
+        profiles = merge_llm_profiles(list(existing_by_id.values()), existing_profiles)
+        for profile in profiles:
+            profile["enabled"] = bool(str(profile.get("api_key") or "").strip()) and "****" not in str(profile.get("api_key", ""))
+
+        current_profile_id = str(llm.get("current_profile_id") or "").strip()
+        if not any(str(profile.get("id") or "") == current_profile_id for profile in profiles):
+            current_profile_id = str(profiles[0].get("id") or "") if profiles else ""
+
+        fallback_profile_id = str(llm.get("fallback_profile_id") or "").strip()
+        if fallback_profile_id == current_profile_id:
+            fallback_profile_id = ""
+        fallback_profile = next((profile for profile in profiles if str(profile.get("id") or "") == fallback_profile_id), None)
+        if not fallback_profile or not bool(str(fallback_profile.get("api_key") or "").strip()):
+            fallback_profile_id = ""
+
+        llm["current_profile_id"] = current_profile_id
+        llm["fallback_profile_id"] = fallback_profile_id or None
+        llm["profiles"] = profiles
+        llm["providers"] = [
+            build_provider_from_profile(profile)
+            for profile in profiles
+            if bool(str(profile.get("api_key") or "").strip()) and "****" not in str(profile.get("api_key", ""))
+        ]
+        self._write(state)
+        self._append_log(state, "info", "config", f"已从 CC-Switch 导入 {len(cc_profiles)} 个服务商配置")
+        return llm
+
     # ── Dashboard ────────────────────────────────────────────────
 
     def get_dashboard(self) -> DashboardResponse:
-        state = self._upgrade_state(self._read())
-        recovered_run_id = self._recover_stale_runtime_run(state, actor="dashboard")
-        if recovered_run_id:
-            self._write(state)
-        previous_browser = deepcopy(state.get("browser", {}).get("wechat", {}))
-        browser = self._refresh_browser_session(state)
-        backends = self._publish_backends(state)
-        runtime = self._runtime(state)
-        runtime["next_collect_at"] = self._calculate_next_collect_at(state)
-        runtime["launch_mode"] = self._runtime_plan(state).get("launch_mode", "interval_now")
-        runtime_status = self._scheduler_status_from_state(state)
-        last_cycle_summary = runtime.get("last_cycle_summary") or self._build_last_cycle_summary(state, runtime)
-        freshness = self._freshness_snapshot(state)
-        top_bar = self._dashboard_top_bar(state, freshness)
-        intel_stream = self._intel_stream(state)
-        hot_clusters = self._hot_clusters(state)
-        github_watch = self._github_watch(state)
-        execution_chain = self._execution_chain(state, browser)
-        entity_watchlist_summary = self._build_entity_watchlist_summary(state)
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            recovered_run_id = self._recover_stale_runtime_run(state, actor="dashboard")
+            if recovered_run_id:
+                self._write(state)
+            snapshot = deepcopy(state)
+
+        previous_browser = deepcopy(snapshot.get("browser", {}).get("wechat", {}))
+        browser = self._refresh_browser_session(snapshot)
+        backends = self._publish_backends(snapshot)
+        runtime = self._runtime(snapshot)
+        runtime["next_collect_at"] = self._calculate_next_collect_at(snapshot)
+        runtime["launch_mode"] = self._runtime_plan(snapshot).get("launch_mode", "interval_now")
+        runtime_status = self._scheduler_status_from_state(snapshot)
+        last_cycle_summary = runtime.get("last_cycle_summary") or self._build_last_cycle_summary(snapshot, runtime)
+        recent_alerts_24h = self._prune_intel_alert_history(snapshot.get("intel_alert_history", []))
+        recent_events_24h = self._prune_intel_event_history(snapshot.get("intel_event_history", []))
+        freshness = self._freshness_snapshot(snapshot)
+        top_bar = self._dashboard_top_bar(snapshot, freshness)
+        intel_stream = self._intel_stream(snapshot)
+        hot_clusters = self._hot_clusters(snapshot)
+        github_watch = self._github_watch(snapshot)
+        execution_chain = self._execution_chain(snapshot, browser)
+        entity_watchlist_summary = self._build_entity_watchlist_summary(snapshot)
         stats = {
-            "current_mode": state["current_mode"],
-            "mode_label": self._current_automation_mode_def(state)["label"],
+            "current_mode": snapshot["current_mode"],
+            "mode_label": self._current_automation_mode_def(snapshot)["label"],
             "total_sources": top_bar.total_sources,
             "healthy_sources": top_bar.healthy_sources,
             "collected_today": freshness.items_24h,
-            "candidate_count": len(state["candidates"]),
-            "total_drafts": len(state["drafts"]),
+            "candidate_count": len(snapshot["candidates"]),
+            "total_drafts": len(snapshot["drafts"]),
             "waiting_review": top_bar.waiting_review,
-            "preview_ready": len([item for item in state["drafts"] if item["pipeline_stage"] == "preview_ready"]),
-            "published_today": len([item for item in state["drafts"] if item["pipeline_stage"] == "published"]),
-            "failed_jobs": len([item for item in state["jobs"] if item["status"] == "failed"]),
-            "last_job_label": state["jobs"][0]["label"] if state["jobs"] else None,
-            "last_job_status": state["jobs"][0]["status"] if state["jobs"] else None,
-            "last_job_at": (state["jobs"][0]["finished_at"] if state["jobs"] else None),
+            "preview_ready": len([item for item in snapshot["drafts"] if item["pipeline_stage"] == "preview_ready"]),
+            "published_today": len([item for item in snapshot["drafts"] if item["pipeline_stage"] == "published"]),
+            "failed_jobs": len([item for item in snapshot["jobs"] if item["status"] == "failed"]),
+            "last_job_label": snapshot["jobs"][0]["label"] if snapshot["jobs"] else None,
+            "last_job_status": snapshot["jobs"][0]["status"] if snapshot["jobs"] else None,
+            "last_job_at": (snapshot["jobs"][0]["finished_at"] if snapshot["jobs"] else None),
         }
-        state["browser"]["wechat"] = browser
+        snapshot["browser"]["wechat"] = browser
         return DashboardResponse(
             stats=DashboardStats(**stats),
             top_bar=top_bar,
@@ -4432,19 +5191,21 @@ class StudioStore:
             hot_clusters=hot_clusters,
             github_watch=github_watch,
             execution_chain=execution_chain,
-            current_automation_mode=AutomationModeDefinition(**self._current_automation_mode_def(state)),
-            current_automation_profile=AutomationModeProfile(**self._current_automation_profile(state)),
-            automation_profiles=[AutomationModeProfile(**item) for item in state["automation_profiles"]],
-            runtime_plan=self._runtime_plan_from_state(state),
+            current_automation_mode=AutomationModeDefinition(**self._current_automation_mode_def(snapshot)),
+            current_automation_profile=AutomationModeProfile(**self._current_automation_profile(snapshot)),
+            automation_profiles=[AutomationModeProfile(**item) for item in snapshot["automation_profiles"]],
+            runtime_plan=self._runtime_plan_from_state(snapshot),
             runtime_status=runtime_status,
             last_cycle_summary=RuntimeCycleSummary(**last_cycle_summary) if isinstance(last_cycle_summary, dict) else None,
+            recent_alerts_24h=recent_alerts_24h,
+            recent_events_24h=recent_events_24h,
             entity_watchlist_summary=[EntityWatchlistSummaryItem(**item) for item in entity_watchlist_summary],
-            current_mode=ModeDefinition(**self._current_mode_def(state)),
-            drafts=[DraftItem(**item) for item in state["drafts"][:6]],
-            recent_jobs=[JobItem(**item) for item in state["jobs"][:8]],
-            recent_logs=[LogItem(**item) for item in state["logs"][:8]],
-            recent_candidates=[CandidateTopic(**item) for item in state["candidates"][:6]],
-            sources=[SourceConnector(**item) for item in state["sources"]],
+            current_mode=ModeDefinition(**self._current_mode_def(snapshot)),
+            drafts=[DraftItem(**item) for item in snapshot["drafts"][:6]],
+            recent_jobs=[JobItem(**item) for item in snapshot["jobs"][:8]],
+            recent_logs=[LogItem(**item) for item in snapshot["logs"][:8]],
+            recent_candidates=[CandidateTopic(**item) for item in snapshot["candidates"][:6]],
+            sources=[SourceConnector(**item) for item in snapshot["sources"]],
             browser_session=BrowserSessionState(**browser),
             publish_backends=[PublishBackendStatus(**item) for item in backends],
         )

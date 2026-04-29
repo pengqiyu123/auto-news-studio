@@ -19,6 +19,7 @@ frontend/dist/
 
 # Runtime data (contains API keys, state, logs)
 backend/data/
+data/
 runtime/
 
 # IDE
@@ -40,3 +41,16 @@ Thumbs.db
 # Browser profiles
 browser-profiles/
 *.log
+.kiro/
+
+# Uvicorn PID files
+/[0-9]*
+
+# Frontend generated files
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+frontend/=1.0.0
+
+# Local test utilities
+llm_live_test.py

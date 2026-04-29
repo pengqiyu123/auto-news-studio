@@ -14,7 +14,9 @@ import type {
   ExecutionChainSnapshot,
   FreshnessSnapshot,
   IntelAlert,
+  IntelAlertsResponse,
   IntelEvent,
+  IntelEventsResponse,
   IntelOverviewSummary,
   IntelSnapshot,
   GithubSignalItem,
@@ -205,6 +207,8 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     runtime_plan: runtimePlan,
     runtime_status: runtimeStatus,
     last_cycle_summary: dashboard.last_cycle_summary ?? runtimeStatus.last_cycle_summary ?? null,
+    recent_alerts_24h: dashboard.recent_alerts_24h ?? [],
+    recent_events_24h: dashboard.recent_events_24h ?? [],
     entity_watchlist_summary: (dashboard.entity_watchlist_summary ?? []) as EntityWatchlistSummaryItem[],
     current_mode: currentMode,
     drafts: dashboard.drafts ?? [],
@@ -246,9 +250,9 @@ export const api = {
   getIntel: () => request<{ item: IntelSnapshot }>("/api/admin/intel"),
   getIntelSummary: () => request<{ item: IntelOverviewSummary }>("/api/admin/intel/summary"),
   getDiscoveryItems: () => request<{ items: DiscoveryItem[] }>("/api/admin/intel/stream"),
-  getIntelEvents: () => request<{ items: IntelEvent[] }>("/api/admin/intel/events"),
+  getIntelEvents: () => request<IntelEventsResponse>("/api/admin/intel/events"),
   getIntelEvent: (eventId: string) => request<{ item: IntelEvent }>(`/api/admin/intel/events/${eventId}`),
-  getIntelAlerts: () => request<{ items: IntelAlert[] }>("/api/admin/intel/alerts"),
+  getIntelAlerts: () => request<IntelAlertsResponse>("/api/admin/intel/alerts"),
   getEntityWatchlist: () => request<{ items: EntityWatchlistItem[] }>("/api/admin/entities/watchlist"),
   updateEntityWatchlist: (items: EntityWatchlistItem[]) =>
     request<{ items: EntityWatchlistItem[] }>("/api/admin/entities/watchlist", {
@@ -337,11 +341,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ publish_mode: publishMode ?? null })
     }),
+  createDraftFromEvent: (eventId: string, publishMode?: PublishMode) =>
+    request<{ item: DraftItem }>(`/api/admin/intel/events/${eventId}/draft`, {
+      method: "POST",
+      body: JSON.stringify({ publish_mode: publishMode ?? null })
+    }),
   batchCreateDrafts: () =>
     request<BatchDraftResult>("/api/admin/candidates/drafts/batch", {
       method: "POST"
     }),
   getDrafts: () => request<{ items: DraftItem[] }>("/api/admin/drafts"),
+  deleteDraft: (draftId: string) =>
+    request<{ ok: boolean }>(`/api/admin/drafts/${draftId}`, {
+      method: "DELETE"
+    }),
   regenerateDraft: (draftId: string) =>
     request<{ item: DraftItem }>(`/api/admin/drafts/${draftId}/regenerate`, {
       method: "POST"
@@ -422,6 +435,15 @@ export const api = {
   testLLMProvider: (providerKey: string) =>
     request<LLMTestResult>(`/api/admin/llm/test/${providerKey}`, { method: "POST" }),
   getLLMUsage: () => request<{ item: Record<string, Record<string, number>> }>("/api/admin/llm/usage"),
+  getCCSwitchProviders: () =>
+    request<{ providers: import("../types").CCSwitchProviderInfo[]; db_available: boolean }>("/api/admin/llm/cc-switch/providers"),
+  importCCSwitchProviders: (providerIds: string[]) =>
+    request<{ item: LLMConfig }>("/api/admin/llm/cc-switch/import", {
+      method: "POST",
+      body: JSON.stringify({ provider_ids: providerIds }),
+    }),
+  openCCSwitch: () =>
+    request<{ ok: boolean }>("/api/admin/llm/cc-switch/open", { method: "POST" }),
   getSettings: () => request<{ item: Record<string, unknown> }>("/api/admin/settings"),
   updateSettings: (payload: Record<string, unknown>) =>
     request<{ item: Record<string, unknown> }>("/api/admin/settings", {

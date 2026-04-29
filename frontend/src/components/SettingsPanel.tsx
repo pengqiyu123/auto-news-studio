@@ -129,7 +129,7 @@ export function SettingsPanel({
         />
       ) : null}
 
-      {section === "ai" ? (
+      {section === "ai" && llmConfig ? (
         <LLMSettingsPanel config={llmConfig} isSaving={isSavingLLM} onSave={onSaveLLMConfig} />
       ) : null}
 

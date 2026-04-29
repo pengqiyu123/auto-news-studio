@@ -1,9 +1,9 @@
 import { AlertTriangle, BellRing, CheckCircle2, ChevronDown, ChevronUp, Clock3, Loader2, PauseCircle, PlayCircle, RadioTower, RefreshCcw, Save } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { deriveRuntimeDisplayStatus, explainAlertsEmptyState, explainEventsEmptyState, getRuntimeProgressMeta, RUNTIME_INTENT_LABELS, runtimeDisplayTone } from "../lib/runtimeIntent";
+import { deriveRuntimeDisplayStatus, deriveRuntimeVisualState, describeLastOutcome, explainAlertsEmptyState, explainEventsEmptyState, getRuntimeProgressMeta, isLoopLaunchMode, RUNTIME_INTENT_LABELS, runtimeDisplayTone } from "../lib/runtimeIntent";
 import { formatDateTime, formatDuration, formatRelativeTime, toDateTimeLocalValue } from "../lib/time";
-import type { EntityWatchlistSummaryItem, IntelAlert, IntelEvent, IntelOverviewSummary, RuntimeIntent, RuntimePlan, SchedulerStatus } from "../types";
+import type { EntityWatchlistSummaryItem, HistoryRecordStatus, IntelAlert, IntelAlertHistoryItem, IntelEvent, IntelEventHistoryItem, IntelOverviewSummary, RuntimeIntent, RuntimePlan, SchedulerStatus } from "../types";
 
 type OverviewTab = "alerts" | "events" | "source-health";
 
@@ -71,8 +71,47 @@ function eventTone(event: IntelEvent) {
   return "neutral";
 }
 
+function historyStatusLabel(status: HistoryRecordStatus) {
+  if (status === "active") return "仍活跃";
+  if (status === "source_uncertain") return "待确认";
+  return "已回落";
+}
+
+function historyStatusTone(status: HistoryRecordStatus) {
+  if (status === "active") return "success";
+  if (status === "source_uncertain") return "warning";
+  return "neutral";
+}
+
+function historyLevelTone(level: IntelAlertHistoryItem["highest_level"] | IntelEventHistoryItem["latest_alert_state"]) {
+  if (level === "breakout") return "danger";
+  if (level === "rising") return "warning";
+  if (level === "watch") return "success";
+  return "neutral";
+}
+
 function formatRuntimeIssueLabel(sourceName: string | null | undefined, message: string) {
   return `${sourceName?.trim() ? `${sourceName}: ` : "系统异常："}${message}`;
+}
+
+function formatCountdown(target?: string | null, fallback = "未安排", nowMs = Date.now()) {
+  if (!target) return fallback;
+  const date = new Date(target);
+  if (Number.isNaN(date.getTime())) return fallback;
+  const diffMs = date.getTime() - nowMs;
+  if (diffMs <= 0) return "即将开始";
+  const totalSeconds = Math.round(diffMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const restMinutes = minutes % 60;
+    return `还有 ${hours}小时${restMinutes}分钟`;
+  }
+  if (minutes > 0) {
+    return `还有 ${minutes}分${seconds}秒`;
+  }
+  return `还有 ${seconds}秒`;
 }
 
 export function IntelOverviewPage({
@@ -97,6 +136,7 @@ export function IntelOverviewPage({
   const [planDraft, setPlanDraft] = useState<Omit<RuntimePlan, "effective_mode">>(buildPlanDraft(runtimePlan));
   const [planExpanded, setPlanExpanded] = useState(false);
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
+  const [countdownNow, setCountdownNow] = useState(() => Date.now());
 
   const cycleStartRef = useRef<number | null>(null);
   const prevPercentRef = useRef<number>(0);
@@ -104,6 +144,11 @@ export function IntelOverviewPage({
   useEffect(() => {
     setPlanDraft(buildPlanDraft(runtimePlan));
   }, [runtimePlan]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setCountdownNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Track when the cycle starts (first non-zero percent)
   useEffect(() => {
@@ -138,6 +183,7 @@ export function IntelOverviewPage({
 
   const planDirty = useMemo(() => !plansEqual(planDraft, runtimePlan), [planDraft, runtimePlan]);
   const displayStatus = useMemo(() => deriveRuntimeDisplayStatus(runtime), [runtime]);
+  const visualState = useMemo(() => deriveRuntimeVisualState(runtime), [runtime]);
   const progressMeta = useMemo(() => getRuntimeProgressMeta(runtime), [runtime]);
   const cycleSummary = runtime.last_cycle_summary ?? null;
   const cycleIssuePreview = useMemo(() => {
@@ -149,21 +195,52 @@ export function IntelOverviewPage({
       .map((item) => formatRuntimeIssueLabel(item.source_name, item.message))
       .join("；");
   }, [cycleSummary, runtime.last_cycle_issue_summary]);
-  const nextRunLabel = useMemo(() => {
+  const launchModeLabel = LAUNCH_MODE_LABELS[planDraft.launch_mode];
+  const isLoopMode = isLoopLaunchMode(planDraft.launch_mode);
+  const scheduleDescriptor = useMemo(() => {
+    if (planDraft.launch_mode === "once_now") {
+      return "点击后立即跑一轮";
+    }
+    if (planDraft.launch_mode === "once_at") {
+      return `${formatDateTime(planDraft.start_at, { fallback: "未设定" })} 执行一次`;
+    }
+    if (planDraft.launch_mode === "interval_now") {
+      return `每 ${planDraft.interval_minutes ?? 30} 分钟`;
+    }
+    return `${formatDateTime(planDraft.start_at, { fallback: "未设定" })} 开始，每 ${planDraft.interval_minutes ?? 30} 分钟`;
+  }, [planDraft]);
+  const nextRunTime = summary.next_run_at ?? runtime.next_collect_at ?? null;
+  const nextRunCountdown = useMemo(() => formatCountdown(nextRunTime, "未安排", countdownNow), [countdownNow, nextRunTime]);
+  const lastRunResultLabel = useMemo(() => {
+    if (visualState === "one_shot_done") return "上一轮完成";
+    if (visualState === "one_shot_failed") return "上一轮失败";
+    return describeLastOutcome(runtime.last_run_outcome);
+  }, [runtime.last_run_outcome, visualState]);
+  const showIntentChip = runtime.run_intent !== "normal_monitoring";
+  const footerPhaseLabel = useMemo(() => {
     if (progressMeta.active) {
-      return "本轮执行中";
+      return progressMeta.stageLabel || runtime.current_cycle || "执行中";
     }
-    if (displayStatus === "本轮完成") {
-      return "刚完成一轮";
+    return displayStatus;
+  }, [displayStatus, progressMeta.active, progressMeta.stageLabel, runtime.current_cycle]);
+  const shouldShowImmediateRerun = visualState === "waiting_next";
+  const shouldShowStartButton = visualState === "stopped" || visualState === "one_shot_done" || visualState === "one_shot_failed";
+  const shouldShowStopButton = visualState === "running" || visualState === "maintenance_running" || visualState === "waiting_start_once" || visualState === "waiting_start_loop" || visualState === "waiting_next";
+  const stopLabel = visualState === "waiting_start_once" || visualState === "waiting_start_loop" ? "停止计划" : "停止监测";
+  const headerHint = useMemo(() => {
+    switch (visualState) {
+      case "one_shot_done":
+      case "one_shot_failed":
+        return cycleSummary
+          ? `本轮耗时 ${formatDuration((cycleSummary.duration_ms ?? 0) / 1000, "暂无")}`
+          : `本轮耗时 ${formatDuration(runtime.last_cycle_duration_seconds, "暂无")}`;
+      case "running":
+      case "maintenance_running":
+        return "本轮执行中";
+      default:
+        return scheduleDescriptor;
     }
-    if (displayStatus === "本轮失败") {
-      return "本轮失败";
-    }
-    if (runtime.control_state === "armed" || runtime.control_state === "waiting") {
-      return formatRelativeTime(summary.next_run_at, "等待计划");
-    }
-    return formatRelativeTime(summary.next_run_at, "未安排");
-  }, [displayStatus, progressMeta.active, runtime.control_state, summary.next_run_at]);
+  }, [cycleSummary, nextRunCountdown, nextRunTime, runtime.last_cycle_duration_seconds, scheduleDescriptor, visualState]);
 
   async function handleStart() {
     if (planDirty) {
@@ -181,24 +258,27 @@ export function IntelOverviewPage({
             <span className={`status-badge status-${runtimeDisplayTone(displayStatus)}`}>
               {displayStatus}
             </span>
-            <span>{RUNTIME_INTENT_LABELS[runtime.run_intent]}</span>
-            <span>{LAUNCH_MODE_LABELS[planDraft.launch_mode]}</span>
+            <span>{launchModeLabel}</span>
+            {showIntentChip ? <span className="subtle-chip">{RUNTIME_INTENT_LABELS[runtime.run_intent]}</span> : null}
+            <span className="subtle">最近结果：{lastRunResultLabel}</span>
             {planDraft.launch_mode.includes("interval") ? <span>每 {planDraft.interval_minutes ?? 30} 分钟</span> : null}
-            <span className="subtle">{nextRunLabel}</span>
+            {headerHint ? <span className="subtle">{headerHint}</span> : null}
           </div>
           <div className="intel-hero-actions">
             <button type="button" className="ghost-button" disabled={refreshing} onClick={() => void onRefresh()}>
               <RefreshCcw size={14} />
             </button>
-            <button
-              type="button"
-              className="ghost-button"
-              disabled={runtime.running || busyMaintenanceIntent === "normal_monitoring"}
-              onClick={() => void onRunIntent("normal_monitoring")}
-            >
-              <RadioTower size={14} />
-              {busyMaintenanceIntent === "normal_monitoring" ? "执行中..." : "立即补跑"}
-            </button>
+            {shouldShowImmediateRerun ? (
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={busyMaintenanceIntent === "normal_monitoring"}
+                onClick={() => void onRunIntent("normal_monitoring")}
+              >
+                <RadioTower size={14} />
+                {busyMaintenanceIntent === "normal_monitoring" ? "执行中..." : "立即补跑"}
+              </button>
+            ) : null}
             <button
               type="button"
               className="ghost-button compact"
@@ -216,24 +296,28 @@ export function IntelOverviewPage({
               {advancedExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
               高级操作
             </button>
-            <button
-              type="button"
-              className="primary-button"
-              disabled={busyRuntimeAction === "start" || runtime.running}
-              onClick={() => void handleStart()}
-            >
-              <PlayCircle size={14} />
-              {busyRuntimeAction === "start" ? "启动中..." : "开始监测"}
-            </button>
-            <button
-              type="button"
-              className="ghost-button"
-              disabled={busyRuntimeAction === "stop" || !runtime.running}
-              onClick={() => void onStop()}
-            >
-              <PauseCircle size={14} />
-              {busyRuntimeAction === "stop" ? "停止中..." : "停止监测"}
-            </button>
+            {shouldShowStartButton ? (
+              <button
+                type="button"
+                className="primary-button"
+                disabled={busyRuntimeAction === "start"}
+                onClick={() => void handleStart()}
+              >
+                <PlayCircle size={14} />
+                {busyRuntimeAction === "start" ? "启动中..." : "开始监测"}
+              </button>
+            ) : null}
+            {shouldShowStopButton ? (
+              <button
+                type="button"
+                className="ghost-button"
+                disabled={busyRuntimeAction === "stop"}
+                onClick={() => void onStop()}
+              >
+                <PauseCircle size={14} />
+                {busyRuntimeAction === "stop" ? "停止中..." : stopLabel}
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -248,7 +332,7 @@ export function IntelOverviewPage({
                 key={item.intent}
                 type="button"
                 className="ghost-button"
-                disabled={runtime.running || busyMaintenanceIntent === item.intent}
+                disabled={(visualState === "running" || visualState === "maintenance_running") || busyMaintenanceIntent === item.intent}
                 onClick={() => void onRunIntent(item.intent)}
               >
                 <RadioTower size={14} />
@@ -263,16 +347,16 @@ export function IntelOverviewPage({
           <div className="intel-cycle-progress">
             {progressMeta.tone === "danger" ? (
               <AlertTriangle size={13} className="text-red-600" />
-            ) : runtime.current_cycle === "completed" || runtime.run_status === "completed" ? (
+            ) : visualState === "one_shot_done" ? (
               <CheckCircle2 size={13} className="text-green-600" />
             ) : (
               <Loader2 size={13} className="spin" />
             )}
-            <span className={`intel-cycle-stage intel-cycle-stage-${progressMeta.tone}${runtime.current_cycle === "completed" || runtime.run_status === "completed" ? " intel-cycle-stage-done" : ""}`}>
+            <span className={`intel-cycle-stage intel-cycle-stage-${progressMeta.tone}${visualState === "one_shot_done" ? " intel-cycle-stage-done" : ""}`}>
               {progressMeta.stageLabel}
             </span>
             <span className="intel-cycle-percent">{runtime.current_cycle_progress_percent}%</span>
-            {progressMeta.showEta && estimatedRemaining && runtime.current_cycle !== "completed" && runtime.run_status !== "failed" ? (
+            {progressMeta.showEta && estimatedRemaining && runtime.run_status !== "failed" ? (
               <span className="subtle">剩余 {estimatedRemaining}</span>
             ) : null}
             {progressMeta.showCounters ? (
@@ -301,6 +385,21 @@ export function IntelOverviewPage({
 
         {runtime.recovered_run_id ? (
           <p className="intel-cycle-label">已接管异常轮次 {runtime.recovered_run_id}，当前状态以最新轮次为准。</p>
+        ) : null}
+
+        {visualState === "waiting_start_once" || visualState === "waiting_start_loop" || visualState === "waiting_next" ? (
+          <div className="intel-cycle-progress">
+            <Clock3 size={13} />
+            <span className="intel-cycle-stage intel-cycle-stage-warning">
+              {visualState === "waiting_next" ? "下一次运行" : "计划开始时间"}
+            </span>
+            <span>{formatDateTime(nextRunTime, { fallback: "未设定" })}</span>
+            <span className="subtle">
+              {visualState === "waiting_next" ? "距离下一轮" : "距离开始"}：{nextRunCountdown}
+            </span>
+            {isLoopMode ? <span className="subtle">今日已运行 {runtime.completed_cycles_today} 次</span> : null}
+            {isLoopMode ? <span className="subtle">最近一轮耗时 {formatDuration(runtime.last_cycle_duration_seconds, "暂无")}</span> : null}
+          </div>
         ) : null}
 
         {/* 展开的计划配置面板 */}
@@ -369,7 +468,7 @@ export function IntelOverviewPage({
         {planExpanded ? (
           <div className="intel-plan-footer">
             <div className="intel-plan-status">
-              <span>当前阶段: {runtime.current_cycle || "idle"}</span>
+              <span>当前状态: {footerPhaseLabel}</span>
               <span>上轮: {formatDateTime(runtime.last_cycle_started_at, { fallback: "尚未执行" })}</span>
               <span>耗时: {formatDuration(runtime.last_cycle_duration_seconds, "暂无")}</span>
             </div>
@@ -413,7 +512,40 @@ export function IntelOverviewPage({
                 </div>
                 <a href={alert.representative_link} target="_blank" rel="noreferrer">查看原文</a>
               </div>
-            )) : <p className="empty-state">{explainAlertsEmptyState(runtime, summary.event_count, summary.alert_count)}</p>}
+            )) : (
+              <p className="empty-state">
+                {summary.recent_alert_count_24h
+                  ? `当前暂无活跃爆发，以下为 24 小时内已发现的 ${summary.recent_alert_count_24h} 条预警。`
+                  : explainAlertsEmptyState(runtime, summary.event_count, summary.alert_count)}
+              </p>
+            )}
+          </div>
+
+          <div className="intel-subsection-head">
+            <div>
+              <p className="eyebrow">24h 内已发现预警</p>
+              <h3>今日已发现</h3>
+            </div>
+            <span className="subtle">{summary.recent_alert_count_24h} 条</span>
+          </div>
+          <div className="intel-alert-stack">
+            {summary.recent_alerts_24h.length ? summary.recent_alerts_24h.slice(0, 4).map((alert) => (
+              <div key={alert.history_id} className="intel-alert-card">
+                <div className="intel-card-topline">
+                  <span className={`status-badge status-${historyStatusTone(alert.status)}`}>{historyStatusLabel(alert.status)}</span>
+                  <span className={`status-badge status-${historyLevelTone(alert.highest_level)}`}>最高 {alert.highest_level}</span>
+                </div>
+                <strong>{alert.title}</strong>
+                <p>{alert.reason}</p>
+                {alert.status === "source_uncertain" ? <p className="intel-history-note">本轮来源异常，未继续确认该信号。</p> : null}
+                <div className="intel-score-row">
+                  <span>速度 {alert.velocity_score}</span>
+                  <span>覆盖 {alert.coverage_score}</span>
+                  <span>最近 {formatRelativeTime(alert.last_triggered_at, "刚刚")}</span>
+                </div>
+                <a href={alert.representative_link} target="_blank" rel="noreferrer">查看原文</a>
+              </div>
+            )) : <p className="empty-state">24 小时内暂无已发现预警。</p>}
           </div>
         </article>
 
@@ -453,7 +585,11 @@ export function IntelOverviewPage({
                   </button>
                 </div>
               </div>
-            )) : <p className="empty-state">{explainEventsEmptyState(runtime)}</p>}
+            )) : (
+              <p className="empty-state">
+                {explainEventsEmptyState(runtime)}
+              </p>
+            )}
           </div>
         </article>
       </section>

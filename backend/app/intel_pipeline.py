@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import hashlib
@@ -9,8 +8,7 @@ import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from .entity_extractor import extract_entities
-from .llm import LLMService
+from .entity_extractor import extract_entities, extract_keyword_entities
 
 UTC = timezone.utc
 TRACKING_QUERY_KEYS = {
@@ -213,10 +211,28 @@ def build_discovery_items(
                 "tags": tags,
                 "engagement_score": float(raw.get("engagement", {}).get("score", 0) or 0),
                 "item_state": "new_item",
+                "entity_ids": [],
+                "entity_names": [],
                 "metadata": raw.get("metadata", {}),
             }
         )
         current = discovery[-1]
+        try:
+            lightweight_entities = extract_keyword_entities(
+                " ".join(
+                    part
+                    for part in [
+                        title,
+                        str(raw.get("summary") or title).strip(),
+                    ]
+                    if part
+                ),
+                limit=6,
+            )
+        except Exception:
+            lightweight_entities = []
+        current["entity_ids"] = [item["entity_id"] for item in lightweight_entities if item.get("entity_id")]
+        current["entity_names"] = [item["entity_name"] for item in lightweight_entities if item.get("entity_name")]
         previous = next((previous_index[key] for key in _discovery_identity_keys(current) if key in previous_index), None)
         if previous:
             current["item_state"] = "updated_item" if _discovery_fingerprint(previous) != _discovery_fingerprint(current) else "seen_item"
@@ -234,7 +250,7 @@ def _should_merge(left: dict[str, Any], right: dict[str, Any]) -> bool:
     similarity = jaccard(left_tokens, right_tokens)
     if similarity >= 0.45:
         return True
-    if similarity < 0.28:
+    if similarity < 0.15:
         return False
     left_anchors = set(left.get("anchor_tokens", []))
     right_anchors = set(right.get("anchor_tokens", []))
@@ -245,7 +261,16 @@ def _should_merge(left: dict[str, Any], right: dict[str, Any]) -> bool:
     left_tags = set(left.get("tags", []))
     right_tags = set(right.get("tags", []))
     same_theme = bool(left_tags & right_tags) or left.get("platform") == right.get("platform")
-    return anchor_overlap and within_day and same_theme
+    if not within_day or not same_theme:
+        return False
+    left_entities = set(str(item).strip() for item in left.get("entity_ids", []) if str(item).strip())
+    right_entities = set(str(item).strip() for item in right.get("entity_ids", []) if str(item).strip())
+    entity_overlap_count = len(left_entities & right_entities)
+    if entity_overlap_count >= 2 and similarity >= 0.15:
+        return True
+    if entity_overlap_count >= 1 and similarity >= 0.18 and (anchor_overlap or within_day):
+        return True
+    return similarity >= 0.28 and anchor_overlap
 
 
 def _day_bucket(item: dict[str, Any]) -> str:
@@ -312,6 +337,23 @@ def _compact_source_cluster(cluster: list[dict[str, Any]], sources_by_key: dict[
     compacted["engagement_score"] = max(float(item.get("engagement_score", 0) or 0) for item in cluster)
     compacted["story_discovery_item_ids"] = [str(item.get("id")) for item in cluster if item.get("id")]
     compacted["raw_member_count"] = len(cluster)
+    entity_ids: list[str] = []
+    entity_names_by_id: dict[str, str] = {}
+    for item in [primary, *cluster]:
+        item_entity_ids = [str(value).strip() for value in item.get("entity_ids", []) if str(value).strip()]
+        item_entity_names = [str(value).strip() for value in item.get("entity_names", []) if str(value).strip()]
+        for index, entity_id in enumerate(item_entity_ids):
+            if entity_id in entity_names_by_id:
+                continue
+            entity_name = item_entity_names[index] if index < len(item_entity_names) else ""
+            entity_names_by_id[entity_id] = entity_name
+            entity_ids.append(entity_id)
+            if len(entity_ids) >= 12:
+                break
+        if len(entity_ids) >= 12:
+            break
+    compacted["entity_ids"] = entity_ids
+    compacted["entity_names"] = [entity_names_by_id[entity_id] for entity_id in entity_ids if entity_names_by_id.get(entity_id)]
     compacted["published_at"] = primary.get("published_at")
     compacted["collected_at"] = max(
         (item.get("collected_at") for item in cluster),
@@ -340,6 +382,8 @@ def _compact_source_stories(
                 single = dict(bucket_items[0])
                 single["story_discovery_item_ids"] = [str(single.get("id"))] if single.get("id") else []
                 single["raw_member_count"] = 1
+                single["entity_ids"] = list(single.get("entity_ids", []))
+                single["entity_names"] = list(single.get("entity_names", []))
                 stories.append(single)
                 continue
             parent = list(range(len(bucket_items)))
@@ -690,48 +734,6 @@ def _carry_forward_stale_events(
     return carried
 
 
-def _make_llm_service(llm_config: dict[str, Any] | None) -> LLMService | None:
-    if not llm_config:
-        return None
-    try:
-        return LLMService(llm_config)
-    except Exception:
-        return None
-
-
-# Translation cache: key=md5[:16], value=translated text
-_translation_cache: dict[str, str] = {}
-_MAX_CACHE_SIZE = 200
-
-
-def _translate_summary(text: str, llm_service: LLMService | None) -> str:
-    """Translate summary to Chinese. Returns empty string on failure or if already Chinese."""
-    if not text:
-        return ""
-    chinese_chars = sum(1 for c in text if "一" <= c <= "鿿")
-    if len(text) > 0 and chinese_chars / len(text) > 0.5:
-        return ""
-    cache_key = hashlib.md5(text[:500].encode()).hexdigest()[:16]
-    if cache_key in _translation_cache:
-        return _translation_cache[cache_key]
-    if not llm_service or not llm_service.is_available():
-        return ""
-    truncated = text[:1500]
-    try:
-        messages = [{"role": "user", "content": f"翻译成中文，只返回译文：\n{truncated}"}]
-        # Use 15 second timeout for translation to avoid blocking the pipeline
-        result = llm_service.generate("translation", messages, temperature=0.3, max_tokens=256, timeout=15.0)
-        translated = result.get("content", "").strip()
-        if translated:
-            if len(_translation_cache) >= _MAX_CACHE_SIZE:
-                oldest_key = next(iter(_translation_cache))
-                del _translation_cache[oldest_key]
-            _translation_cache[cache_key] = translated
-        return translated
-    except Exception:
-        return ""
-
-
 def build_intel_state(
     raw_items: list[dict[str, Any]],
     sources_by_key: dict[str, dict[str, Any]],
@@ -739,7 +741,6 @@ def build_intel_state(
     previous_events: list[dict[str, Any]] | None = None,
     previous_snapshots: list[dict[str, Any]] | None = None,
     captured_at: str | None = None,
-    llm_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     stamp = captured_at or now_iso()
     now = parse_time(stamp) or datetime.now(UTC)
@@ -750,7 +751,6 @@ def build_intel_state(
     discovery_items = build_discovery_items(raw_items, sources_by_key, previous_discovery_items=previous_discovery_items)
     clusters = cluster_discovery_items(discovery_items, sources_by_key, reference_time=now)
     events: list[dict[str, Any]] = []
-    llm_service = _make_llm_service(llm_config)
 
     for cluster in clusters:
         primary = _representative_item(cluster, sources_by_key)
@@ -829,31 +829,12 @@ def build_intel_state(
             extracted_entities = []
         event["entity_ids"] = [item["entity_id"] for item in extracted_entities if item.get("entity_id")]
         event["entity_names"] = [item["entity_name"] for item in extracted_entities if item.get("entity_name")]
-        event["summary_translated"] = ""
         events.append(event)
 
     active_ids = {item["id"] for item in events}
     events.extend(_carry_forward_stale_events(events, previous_events, active_ids, now))
 
     events.sort(key=lambda item: (ALERT_LEVELS.get(str(item.get("alert_state")), 0), float(item.get("composite_score", 0) or 0)), reverse=True)
-
-    # Parallel translation for events without translation (skip carry-forward events that already have it)
-    if llm_service and llm_service.is_available():
-        events_needing_translation = [
-            (e["id"], e.get("summary") or "") for e in events if not e.get("summary_translated")
-        ]
-        if events_needing_translation:
-            def _translate_one(item: tuple[str, str]) -> tuple[str, str]:
-                return (item[0], _translate_summary(item[1], llm_service))
-
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {executor.submit(_translate_one, item): item[0] for item in events_needing_translation}
-                for future in as_completed(futures):
-                    event_id, translated = future.result()
-                    for event in events:
-                        if event["id"] == event_id:
-                            event["summary_translated"] = translated
-                            break
 
     retained_snapshots = [
         item for item in previous_snapshots
@@ -883,7 +864,6 @@ def build_intel_state(
                 "triggered_at": stamp,
                 "entity_ids": list(event.get("entity_ids", [])),
                 "entity_names": list(event.get("entity_names", [])),
-                "summary_translated": event.get("summary_translated") or "",
             }
         )
     alerts.sort(key=lambda item: (ALERT_LEVELS.get(item["level"], 0), item["composite_score"]), reverse=True)

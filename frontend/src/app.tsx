@@ -33,7 +33,9 @@ import type {
   DraftItem,
   EntityWatchlistItem,
   IntelAlert,
+  IntelAlertHistoryItem,
   IntelEvent,
+  IntelEventHistoryItem,
   IntelOverviewSummary,
   JobItem,
   LLMConfig,
@@ -68,7 +70,7 @@ const intelTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboar
 ];
 
 const draftTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }> = [
-  { key: "watchlist", label: "重点观察", icon: WavesLadder },
+  { key: "watchlist", label: "选题池", icon: WavesLadder },
   { key: "drafts", label: "稿件", icon: StickyNote },
 ];
 
@@ -84,7 +86,7 @@ const pageMeta: Record<TabKey, { eyebrow: string; title: string }> = {
   events: { eyebrow: "事件聚合", title: "热点事件列表" },
   alerts: { eyebrow: "趋势判断", title: "热点预警列表" },
   "source-health": { eyebrow: "来源巡检", title: "来源运行状态" },
-  watchlist: { eyebrow: "人工跟进", title: "重点观察事件" },
+  watchlist: { eyebrow: "选题池", title: "待进入稿件生产的观察事件" },
   drafts: { eyebrow: "内容产出", title: "稿件工作台" },
   jobs: { eyebrow: "补跑与排障", title: "手动任务中心" },
   settings: { eyebrow: "系统配置", title: "渠道与模型设置" },
@@ -97,7 +99,9 @@ export default function App() {
   const [summary, setSummary] = useState<IntelOverviewSummary | null>(null);
   const [streamItems, setStreamItems] = useState<DiscoveryItem[]>([]);
   const [events, setEvents] = useState<IntelEvent[]>([]);
+  const [eventHistory, setEventHistory] = useState<IntelEventHistoryItem[]>([]);
   const [alerts, setAlerts] = useState<IntelAlert[]>([]);
+  const [alertHistory, setAlertHistory] = useState<IntelAlertHistoryItem[]>([]);
   const [sources, setSources] = useState<SourceConnector[]>([]);
   const [candidates, setCandidates] = useState<CandidateTopic[]>([]);
   const [drafts, setDrafts] = useState<DraftItem[]>([]);
@@ -122,12 +126,16 @@ export default function App() {
   const [savingSourceKey, setSavingSourceKey] = useState<string | null>(null);
   const [syncingSourceKey, setSyncingSourceKey] = useState<string | null>(null);
   const [busyCandidateId, setBusyCandidateId] = useState<string | null>(null);
+  const [busyEventId, setBusyEventId] = useState<string | null>(null);
   const [refreshingBrowser, setRefreshingBrowser] = useState(false);
   const [openingBrowser, setOpeningBrowser] = useState(false);
   const [busyRuntimeAction, setBusyRuntimeAction] = useState<"start" | "stop" | null>(null);
   const [busyMaintenanceIntent, setBusyMaintenanceIntent] = useState<RuntimeIntent | null>(null);
   const [savingRuntimePlan, setSavingRuntimePlan] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [highlightDraftId, setHighlightDraftId] = useState<string | null>(null);
+  const [pendingDraftTitle, setPendingDraftTitle] = useState<string | null>(null);
+  const [pendingDraftSourceTab, setPendingDraftSourceTab] = useState<TabKey | null>(null);
 
   const refreshIntelCore = useCallback(async () => {
     const [dashboardData, summaryData, streamData, eventData, alertData, sourceData, candidateData, logData, jobData, publishTaskData] = await Promise.all([
@@ -153,7 +161,9 @@ export default function App() {
     setSummary(summaryData.item);
     setStreamItems(streamData.items);
     setEvents(eventData.items);
+    setEventHistory(eventData.history_items ?? []);
     setAlerts(alertData.items);
+    setAlertHistory(alertData.history_items ?? []);
     setSources(sourceData.items);
     setCandidates(candidateData.items);
     setLogs(logData.items);
@@ -214,7 +224,9 @@ export default function App() {
       setSummary(summaryData.item);
       setStreamItems(streamData.items);
       setEvents(eventData.items);
+      setEventHistory(eventData.history_items ?? []);
       setAlerts(alertData.items);
+      setAlertHistory(alertData.history_items ?? []);
       setSources(sourceData.items);
       setCandidates(candidateData.items);
       setDrafts(draftData.items);
@@ -373,6 +385,53 @@ export default function App() {
     }
   }
 
+  async function handleCreateDraftFromEvent(eventId: string) {
+    const sourceEvent = events.find((event) => event.id === eventId) ?? alerts.find((alert) => alert.event_id === eventId);
+    const draftTitleHint = sourceEvent?.title ?? "当前事件";
+    setBusyEventId(eventId);
+    setPendingDraftTitle(draftTitleHint);
+    setPendingDraftSourceTab(activeTab);
+    setHighlightDraftId(null);
+    try {
+      const response = await api.createDraftFromEvent(eventId);
+      setDrafts((current) => {
+        const existing = current.find((item) => item.id === response.item.id);
+        if (existing) {
+          return current.map((item) => (item.id === response.item.id ? response.item : item));
+        }
+        return [response.item, ...current];
+      });
+      setActiveTab("drafts");
+      setHighlightDraftId(response.item.id);
+      const [draftData, eventData, alertData, dashboardData] = await Promise.all([
+        api.getDrafts(),
+        api.getIntelEvents(),
+        api.getIntelAlerts(),
+        api.getDashboard(),
+      ]);
+      setDrafts(draftData.items);
+      setEvents(eventData.items);
+      setEventHistory(eventData.history_items ?? []);
+      setAlerts(alertData.items);
+      setAlertHistory(alertData.history_items ?? []);
+      setDashboard((current) =>
+        !current
+          ? dashboardData
+          : {
+              ...dashboardData,
+              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
+            },
+      );
+      showToast(`稿件已生成：${response.item.title}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "生成稿件失败");
+    } finally {
+      setBusyEventId(null);
+      setPendingDraftTitle(null);
+      setPendingDraftSourceTab(null);
+    }
+  }
+
   async function handleDraftAction(kind: "regenerate" | "approve" | "sync" | "preview" | "publish", draftId: string) {
     setBusyDraftId(draftId);
     try {
@@ -401,6 +460,45 @@ export default function App() {
       setBrowserSession(dashboardData.browser_session);
     } catch (err) {
       setError(err instanceof Error ? err.message : "稿件动作执行失败");
+    } finally {
+      setBusyDraftId(null);
+    }
+  }
+
+  async function handleDeleteDraft(draftId: string) {
+    setBusyDraftId(draftId);
+    try {
+      await api.deleteDraft(draftId);
+      const [draftData, candidateData, eventData, alertData, dashboardData] = await Promise.all([
+        api.getDrafts(),
+        api.getCandidates(),
+        api.getIntelEvents(),
+        api.getIntelAlerts(),
+        api.getDashboard(),
+      ]);
+      setDrafts(draftData.items);
+      setCandidates(candidateData.items);
+      setEvents(eventData.items);
+      setEventHistory(eventData.history_items ?? []);
+      setAlerts(alertData.items);
+      setAlertHistory(alertData.history_items ?? []);
+      setDashboard((current) =>
+        !current
+          ? dashboardData
+          : {
+              ...dashboardData,
+              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
+            },
+      );
+      if (editingDraftId === draftId) {
+        setEditingDraftId(null);
+      }
+      if (highlightDraftId === draftId) {
+        setHighlightDraftId(null);
+      }
+      showToast("稿件已删除");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除稿件失败");
     } finally {
       setBusyDraftId(null);
     }
@@ -704,6 +802,18 @@ export default function App() {
           </div>
         ) : null}
 
+        {pendingDraftTitle && activeTab !== "drafts" ? (
+          <div className="setup-banner">
+            <strong>AI 正在生成稿件</strong>
+            <p>
+              正在整理《{pendingDraftTitle}》的写稿简报并生成初稿。
+              {pendingDraftSourceTab === "events" ? " 生成完成后会自动跳到稿件页。" : ""}
+              {pendingDraftSourceTab === "alerts" ? " 生成完成后会自动带你进入稿件页。" : ""}
+              {pendingDraftSourceTab === "watchlist" ? " 完成后会自动定位到新稿件。" : ""}
+            </p>
+          </div>
+        ) : null}
+
         {llmConfig &&
         llmConfig.profiles.length > 0 &&
         llmConfig.profiles.every((profile) => !profile.enabled || !profile.api_key) &&
@@ -748,6 +858,7 @@ export default function App() {
             {activeTab === "events" ? (
               <IntelEventsPage
                 items={events}
+                historyItems={eventHistory}
                 runtime={dashboard.runtime_status}
                 entityWatchlist={entityWatchlist}
                 entityWatchlistSummary={dashboard.entity_watchlist_summary}
@@ -757,15 +868,20 @@ export default function App() {
                 onOpenEntity={handleOpenEntity}
                 onWatchEvent={handleWatchEvent}
                 onIgnoreEvent={handleIgnoreEvent}
+                onCreateDraft={handleCreateDraftFromEvent}
+                busyEventId={busyEventId}
               />
             ) : null}
             {activeTab === "alerts" ? (
               <IntelAlertsPage
                 items={alerts}
+                historyItems={alertHistory}
                 runtime={dashboard.runtime_status}
                 eventCount={events.length}
                 selectedEntityId={selectedEntityId}
                 onSelectedEntityChange={setSelectedEntityId}
+                onCreateDraft={handleCreateDraftFromEvent}
+                busyEventId={busyEventId}
               />
             ) : null}
             {activeTab === "source-health" ? (
@@ -781,19 +897,25 @@ export default function App() {
             ) : null}
 
             {activeTab === "watchlist" ? (
-              <WatchlistPanel candidates={candidates} busyCandidateId={busyCandidateId} onCreateDraft={handleCreateDraft} />
+              <WatchlistPanel
+                items={events.filter((event) => event.watchlisted && !event.ignored)}
+                busyEventId={busyEventId}
+                onCreateDraft={handleCreateDraftFromEvent}
+              />
             ) : null}
 
             {activeTab === "drafts" ? (
               <DraftTable
                 drafts={drafts}
                 busyDraftId={busyDraftId}
-                highlightDraftId={null}
+                highlightDraftId={highlightDraftId}
+                pendingDraftTitle={pendingDraftTitle}
                 onRegenerate={(draftId) => handleDraftAction("regenerate", draftId)}
                 onApprove={(draftId) => handleDraftAction("approve", draftId)}
                 onSyncDraft={(draftId) => handleDraftAction("sync", draftId)}
                 onPreview={(draftId) => handleDraftAction("preview", draftId)}
                 onPublish={(draftId) => handleDraftAction("publish", draftId)}
+                onDelete={handleDeleteDraft}
                 onEdit={handleEditDraft}
               />
             ) : null}

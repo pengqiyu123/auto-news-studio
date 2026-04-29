@@ -1,23 +1,43 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCheck, Eye, Pencil, RefreshCcw, Search, SendHorizontal, UploadCloud } from "lucide-react";
+import { CheckCheck, Eye, Pencil, RefreshCcw, Search, SendHorizontal, Trash2, UploadCloud } from "lucide-react";
 
 import { formatDateTime, formatRelativeTime } from "../lib/time";
-import type { AuditStatus, DraftItem, PipelineStage } from "../types";
+import type { AuditStatus, DraftItem } from "../types";
 import { AuditBadge, StageBadge } from "./StatusBadge";
 
 interface DraftTableProps {
   drafts: DraftItem[];
   busyDraftId?: string | null;
   highlightDraftId?: string | null;
+  pendingDraftTitle?: string | null;
   onRegenerate: (draftId: string) => Promise<void>;
   onApprove: (draftId: string, approved: boolean) => Promise<void>;
   onSyncDraft: (draftId: string) => Promise<void>;
   onPreview: (draftId: string) => Promise<void>;
   onPublish: (draftId: string) => Promise<void>;
+  onDelete: (draftId: string) => Promise<void>;
   onEdit: (draftId: string) => void;
 }
 
 type DraftSortKey = "updated_at" | "title" | "source_count";
+type DraftWorkbenchView = "all" | "active" | "synced" | "published" | "failed";
+
+function matchesWorkbenchView(draft: DraftItem, view: DraftWorkbenchView): boolean {
+  const hasFailure = Boolean(draft.last_error) && draft.pipeline_stage !== "published";
+  if (view === "all") {
+    return true;
+  }
+  if (view === "failed") {
+    return draft.pipeline_stage === "failed" || hasFailure;
+  }
+  if (view === "published") {
+    return draft.pipeline_stage === "published";
+  }
+  if (view === "synced") {
+    return draft.pipeline_stage === "draft_synced" && !hasFailure;
+  }
+  return ["drafted", "preview_ready", "approved"].includes(draft.pipeline_stage) && !hasFailure;
+}
 
 function truncate(text: string, limit: number): string {
   if (text.length <= limit) {
@@ -50,17 +70,51 @@ export function DraftTable({
   drafts,
   busyDraftId,
   highlightDraftId,
+  pendingDraftTitle,
   onRegenerate,
   onApprove,
   onSyncDraft,
   onPreview,
   onPublish,
+  onDelete,
   onEdit
 }: DraftTableProps) {
   const [searchTerm, setSearchTerm] = useState("");
-  const [stageFilter, setStageFilter] = useState<PipelineStage | "all">("all");
+  const [workbenchView, setWorkbenchView] = useState<DraftWorkbenchView>("all");
   const [auditFilter, setAuditFilter] = useState<AuditStatus | "all">("all");
   const [sortBy, setSortBy] = useState<DraftSortKey>("updated_at");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const highlightedDraft = useMemo(
+    () => drafts.find((draft) => draft.id === highlightDraftId) ?? null,
+    [drafts, highlightDraftId],
+  );
+
+  const viewCounts = useMemo(
+    () => ({
+      all: drafts.length,
+      active: drafts.filter((draft) => matchesWorkbenchView(draft, "active")).length,
+      synced: drafts.filter((draft) => matchesWorkbenchView(draft, "synced")).length,
+      published: drafts.filter((draft) => matchesWorkbenchView(draft, "published")).length,
+      failed: drafts.filter((draft) => matchesWorkbenchView(draft, "failed")).length,
+    }),
+    [drafts],
+  );
+
+  useEffect(() => {
+    if (!highlightDraftId) {
+      return;
+    }
+    setSearchTerm("");
+    setAuditFilter("all");
+    setSortBy("updated_at");
+    setConfirmDeleteId(null);
+    if (highlightedDraft && matchesWorkbenchView(highlightedDraft, "active")) {
+      setWorkbenchView("active");
+      return;
+    }
+    setWorkbenchView("all");
+  }, [highlightDraftId, highlightedDraft]);
 
   useEffect(() => {
     if (!highlightDraftId) {
@@ -73,15 +127,15 @@ export function DraftTable({
   const filteredDrafts = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();
     const next = drafts.filter((draft) => {
+      const matchesView = matchesWorkbenchView(draft, workbenchView);
       const matchesSearch =
         !keyword ||
         draft.title.toLowerCase().includes(keyword) ||
         draft.summary.toLowerCase().includes(keyword) ||
         draft.cover_suggestion.toLowerCase().includes(keyword) ||
         (draft.reader_summary ?? "").toLowerCase().includes(keyword);
-      const matchesStage = stageFilter === "all" || draft.pipeline_stage === stageFilter;
       const matchesAudit = auditFilter === "all" || draft.audit_status === auditFilter;
-      return matchesSearch && matchesStage && matchesAudit;
+      return matchesView && matchesSearch && matchesAudit;
     });
 
     next.sort((left, right) => {
@@ -95,7 +149,16 @@ export function DraftTable({
     });
 
     return next;
-  }, [drafts, searchTerm, stageFilter, auditFilter, sortBy]);
+  }, [drafts, searchTerm, workbenchView, auditFilter, sortBy]);
+
+  async function handleDelete(draft: DraftItem) {
+    if (confirmDeleteId !== draft.id) {
+      setConfirmDeleteId(draft.id);
+      return;
+    }
+    setConfirmDeleteId(null);
+    await onDelete(draft.id);
+  }
 
   return (
     <section className="panel">
@@ -107,6 +170,47 @@ export function DraftTable({
         </div>
       </div>
 
+      {pendingDraftTitle ? (
+        <div className="setup-banner" style={{ marginBottom: 16 }}>
+          <strong>AI 正在生成稿件</strong>
+          <p>正在整理《{pendingDraftTitle}》的写稿简报并生成初稿，完成后会自动定位到新稿件。</p>
+        </div>
+      ) : null}
+
+      {!pendingDraftTitle && highlightDraftId ? (
+        <div className="setup-banner" style={{ marginBottom: 16 }}>
+          <strong>新稿件已就位</strong>
+          <p>
+            {highlightedDraft
+              ? `《${highlightedDraft.title}》已生成完成，并且已经自动定位到这篇稿件。`
+              : "已自动定位到刚生成的稿件，可以直接编辑、重生成或推进到草稿箱。"}
+          </p>
+        </div>
+      ) : null}
+
+      <div className="segmented-control draft-workbench-tabs">
+        <button type="button" className={workbenchView === "all" ? "segment-active" : ""} onClick={() => setWorkbenchView("all")}>
+          全部
+          <strong>{viewCounts.all}</strong>
+        </button>
+        <button type="button" className={workbenchView === "active" ? "segment-active" : ""} onClick={() => setWorkbenchView("active")}>
+          进行中
+          <strong>{viewCounts.active}</strong>
+        </button>
+        <button type="button" className={workbenchView === "synced" ? "segment-active" : ""} onClick={() => setWorkbenchView("synced")}>
+          草稿箱记录
+          <strong>{viewCounts.synced}</strong>
+        </button>
+        <button type="button" className={workbenchView === "published" ? "segment-active" : ""} onClick={() => setWorkbenchView("published")}>
+          已发布
+          <strong>{viewCounts.published}</strong>
+        </button>
+        <button type="button" className={workbenchView === "failed" ? "segment-active" : ""} onClick={() => setWorkbenchView("failed")}>
+          失败
+          <strong>{viewCounts.failed}</strong>
+        </button>
+      </div>
+
       <div className="draft-toolbar">
         <label className="draft-search">
           <Search size={16} />
@@ -116,14 +220,6 @@ export function DraftTable({
             placeholder="搜索标题、摘要、封面建议"
           />
         </label>
-        <select value={stageFilter} onChange={(event) => setStageFilter(event.target.value as PipelineStage | "all")}>
-          <option value="all">全部阶段</option>
-          <option value="drafted">已成稿</option>
-          <option value="preview_ready">待预览</option>
-          <option value="approved">已审核</option>
-          <option value="published">已发布</option>
-          <option value="failed">失败</option>
-        </select>
         <select value={auditFilter} onChange={(event) => setAuditFilter(event.target.value as AuditStatus | "all")}>
           <option value="all">全部审核状态</option>
           <option value="pending">待审核</option>
@@ -157,6 +253,11 @@ export function DraftTable({
           <tbody>
             {filteredDrafts.map((draft) => {
               const busy = busyDraftId === draft.id;
+              const isPublished = draft.pipeline_stage === "published";
+              const isDeleteConfirming = confirmDeleteId === draft.id;
+              const deleteHint = draft.wechat_draft_id
+                ? "仅删除本地记录，不会删除微信草稿箱中的稿件，是否继续？"
+                : "确认删除这篇稿件？";
               const missingImages = pendingImageCount(draft);
               const articlePreview = previewParagraphs(draft);
               const evidenceCount = draft.brief?.evidence_links?.length ?? draft.evidence_links.length;
@@ -310,7 +411,14 @@ export function DraftTable({
                         <SendHorizontal size={14} />
                         推进发布
                       </button>
+                      {!isPublished ? (
+                        <button type="button" disabled={busy} onClick={() => void handleDelete(draft)}>
+                          <Trash2 size={14} />
+                          {busy ? "删除中..." : isDeleteConfirming ? "确认删除？" : "删除"}
+                        </button>
+                      ) : null}
                     </div>
+                    {isDeleteConfirming ? <span className="draft-delete-hint">{deleteHint}</span> : null}
                   </td>
                 </tr>
               );

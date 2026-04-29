@@ -21,6 +21,7 @@ export function StageBadge({ stage }: { stage: PipelineStage }) {
     collected: { label: "已采集", tone: "info" },
     curated: { label: "已筛选", tone: "neutral" },
     drafted: { label: "已成稿", tone: "warning" },
+    draft_synced: { label: "已进草稿箱", tone: "info" },
     preview_ready: { label: "待预览", tone: "warning" },
     approved: { label: "已审核", tone: "success" },
     published: { label: "已发布", tone: "success" },
