@@ -32,7 +32,7 @@ interface IntelEventsPageProps {
   onOpenEntity: (entityId: string) => void;
   onWatchEvent: (eventId: string) => Promise<void>;
   onIgnoreEvent: (eventId: string) => Promise<void>;
-  onCreateDraft: (eventId: string) => Promise<void>;
+  onDeepDive: (eventId: string) => Promise<void>;
   busyEventId?: string | null;
 }
 
@@ -60,7 +60,7 @@ export function IntelEventsPage({
   onOpenEntity,
   onWatchEvent,
   onIgnoreEvent,
-  onCreateDraft,
+  onDeepDive,
   busyEventId,
 }: IntelEventsPageProps) {
   const [sortBy, setSortBy] = useState<ExtendedSortKey>("composite_score");
@@ -204,7 +204,7 @@ export function IntelEventsPage({
                 <div className="intel-inline-actions">
                   <a href={event.representative_link} target="_blank" rel="noreferrer">查看原文</a>
                   <button type="button" className="ghost-button compact" disabled={event.watchlisted} onClick={() => void onWatchEvent(event.id)}>
-                    {event.watchlisted ? "已观察" : "观察"}
+                    {event.watchlisted ? "已加入深挖池" : "加入深挖池"}
                   </button>
                   <button type="button" className="ghost-button compact" onClick={() => void onIgnoreEvent(event.id)}>
                     忽略
@@ -212,13 +212,13 @@ export function IntelEventsPage({
                   <button
                     type="button"
                     className="primary-button compact"
-                    disabled={busyEventId === event.id || event.draft_exists}
-                    onClick={() => void onCreateDraft(event.id)}
+                    disabled={busyEventId === event.id}
+                    onClick={() => void onDeepDive(event.id)}
                   >
-                    {busyEventId === event.id ? "生成中..." : event.draft_exists ? "已生成稿件" : "生成稿件"}
+                    {busyEventId === event.id ? "深挖中..." : event.deep_dive_id ? "重新深挖" : "立即深挖"}
                   </button>
                 </div>
-                <p className={`subtle ${event.draft_ready ? "" : "warning-note"}`}>{event.draft_reason}</p>
+                <p className={`subtle ${event.worth_to_brief ? "" : "warning-note"}`}>{event.worth_reason || event.deep_dive_summary || "尚未完成正文深挖。"}</p>
               </article>
             );
           }) : <p className="empty-state">{selectedEntityId !== "all" ? "当前筛选条件下没有匹配的热点事件。" : explainEventsEmptyState(runtime)}</p>}

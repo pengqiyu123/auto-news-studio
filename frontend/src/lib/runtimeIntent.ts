@@ -33,8 +33,10 @@ const DEFAULT_STAGE_LABELS: Record<string, string> = {
   collecting: "采集中",
   clustering: "聚合中",
   scoring: "分析中",
-  drafting: "生成稿件中",
-  wechat_sync: "同步微信中",
+  deep_dive: "深挖正文中",
+  briefing: "生成简报中",
+  wechat_sync: "上传微信中",
+  wechat_verify: "回查草稿箱中",
   completed: "已完成",
   failed: "执行失败",
   abandoned: "已接管异常轮次",
@@ -46,8 +48,10 @@ const INTENT_STAGE_LABELS: Record<RuntimeIntent, Partial<Record<string, string>>
     collecting: "正在采集来源",
     clustering: "正在聚合热点事件",
     scoring: "正在判断热度与预警",
-    drafting: "正在生成稿件",
-    wechat_sync: "正在同步微信",
+    deep_dive: "正在深挖正文",
+    briefing: "正在生成简报",
+    wechat_sync: "正在上传微信草稿箱",
+    wechat_verify: "正在回查微信草稿箱",
     completed: "监测完成",
     failed: "监测失败",
   },
@@ -210,7 +214,7 @@ export function isRuntimeActivelyProcessing(runtime: SchedulerStatus) {
   if (runtime.run_status === "running" || runtime.control_state === "running") {
     return true;
   }
-  return ["starting", "collecting", "clustering", "scoring", "drafting", "wechat_sync"].includes(runtime.current_cycle);
+  return ["starting", "collecting", "clustering", "scoring", "deep_dive", "briefing", "wechat_sync", "wechat_verify"].includes(runtime.current_cycle);
 }
 
 export function getRuntimeProgressMeta(runtime: SchedulerStatus): RuntimeProgressMeta {
@@ -255,11 +259,13 @@ function runtimeStageRank(runtime: SchedulerStatus) {
     collecting: 2,
     clustering: 3,
     scoring: 4,
-    drafting: 5,
-    wechat_sync: 6,
-    completed: 7,
-    failed: 8,
-    abandoned: 9,
+    deep_dive: 5,
+    briefing: 6,
+    wechat_sync: 7,
+    wechat_verify: 8,
+    completed: 9,
+    failed: 10,
+    abandoned: 11,
   };
   return order[cycle] ?? 0;
 }

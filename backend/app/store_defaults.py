@@ -97,7 +97,7 @@ AUTOMATION_MODE_DEFINITIONS: list[dict[str, Any]] = [
         "auto_generate_candidates": True,
         "auto_generate_drafts": True,
         "auto_publish_enabled": True,
-        "available": False,
+        "available": True,
     },
 ]
 

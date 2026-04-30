@@ -84,6 +84,13 @@ IntelAlertLevel = Literal["watch", "rising", "breakout", "cooling"]
 IntelItemChangeState = Literal["new_item", "seen_item", "updated_item"]
 IntelEventChangeState = Literal["new_event", "growing_event", "stable_event", "cooling_event"]
 HistoryRecordStatus = Literal["active", "cooled", "source_uncertain"]
+DeepDiveStatus = Literal["pending", "running", "partial", "ready", "failed"]
+DeepDiveFetchStatus = Literal["pending", "fetched", "fetch_failed", "fetch_blocked", "non_html"]
+DeepDiveExtractStatus = Literal["pending", "extracted", "extract_failed", "too_short"]
+BriefLevel = Literal["rule", "enhanced"]
+BriefStage = Literal["prepared", "synced", "failed"]
+DeliveryMode = Literal["immediate", "scheduled_batch"]
+AdmissionStrategy = Literal["conservative", "balanced", "aggressive"]
 
 
 class ModeDefinition(BaseModel):
@@ -131,6 +138,11 @@ class RuntimePlan(BaseModel):
     timezone: str = "Asia/Shanghai"
     effective_mode: AutomationMode = "radar_only"
     work_scope: IntelWorkScope = "collect_events_alerts"
+    delivery_mode: DeliveryMode = "immediate"
+    delivery_schedule_time: Optional[str] = None
+    admission_strategy: AdmissionStrategy = "balanced"
+    batch_limit: int = Field(default=3, ge=1, le=20)
+    admission_filters: dict[str, bool | int] = Field(default_factory=dict)
 
 
 class SourceConnector(BaseModel):
@@ -341,11 +353,32 @@ class BrowserSessionState(BaseModel):
     last_selector_check: Optional[str] = None
     current_page: Optional[str] = None
     sidecar_health: BackendHealth = "offline"
+    last_draft_check: Optional["WeChatDraftSyncCheckResult"] = None
 
 
 class BrowserSessionPayload(BaseModel):
     browser_name: str
     user_data_dir: str
+
+
+class WeChatRemoteDraftItem(BaseModel):
+    title: str = ""
+    url: str = ""
+    appmsg_id: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class WeChatDraftSyncCheckResult(BaseModel):
+    checked_at: str
+    remote_count: int = 0
+    matched_count: int = 0
+    missing_count: int = 0
+    items: list[WeChatRemoteDraftItem] = Field(default_factory=list)
+    message: str = ""
+
+
+class WeChatDraftSyncCheckResponse(BaseModel):
+    item: WeChatDraftSyncCheckResult
 
 
 class PublishBackendStatus(BaseModel):
@@ -498,6 +531,13 @@ class IntelEvent(BaseModel):
     draft_reason: str = ""
     draft_exists: bool = False
     draft_id: Optional[str] = None
+    deep_dive_id: Optional[str] = None
+    brief_id: Optional[str] = None
+    deep_dive_status: Optional[DeepDiveStatus] = None
+    brief_status: Optional[BriefStage] = None
+    deep_dive_summary: str = ""
+    worth_to_brief: bool = False
+    worth_reason: str = ""
 
 
 class EventSnapshot(BaseModel):
@@ -535,6 +575,75 @@ class IntelAlert(BaseModel):
     draft_reason: str = ""
     draft_exists: bool = False
     draft_id: Optional[str] = None
+    deep_dive_id: Optional[str] = None
+    brief_id: Optional[str] = None
+    deep_dive_status: Optional[DeepDiveStatus] = None
+    brief_status: Optional[BriefStage] = None
+    deep_dive_summary: str = ""
+    worth_to_brief: bool = False
+    worth_reason: str = ""
+
+
+class DeepDiveSourceItem(BaseModel):
+    source_key: str = ""
+    source_name: str = ""
+    original_link: str
+    canonical_link: str
+    title: str = ""
+    published_at: Optional[str] = None
+    fetch_status: DeepDiveFetchStatus = "pending"
+    extract_status: DeepDiveExtractStatus = "pending"
+    word_count: int = 0
+    cleaned_full_text: str = ""
+    excerpt: str = ""
+    quotes: list[str] = Field(default_factory=list)
+    error: Optional[str] = None
+
+
+class EventDeepDive(BaseModel):
+    id: str
+    event_id: str
+    status: DeepDiveStatus = "pending"
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    updated_at: str
+    attempted_count: int = 0
+    success_count: int = 0
+    failed_count: int = 0
+    resolved_evidence_pack: list[dict[str, Any]] = Field(default_factory=list)
+    full_text_sources: list[DeepDiveSourceItem] = Field(default_factory=list)
+    sources: list[DeepDiveSourceItem] = Field(default_factory=list)
+    facts: list[str] = Field(default_factory=list)
+    quotes: list[str] = Field(default_factory=list)
+    timeline: list[str] = Field(default_factory=list)
+    worthiness: dict[str, Any] = Field(default_factory=dict)
+    last_error: Optional[str] = None
+
+
+class BriefItem(BaseModel):
+    id: str
+    event_id: str
+    deep_dive_id: str
+    brief_level: BriefLevel = "rule"
+    stage: BriefStage = "prepared"
+    title: str
+    one_line: str = ""
+    why_it_matters: str = ""
+    facts: list[str] = Field(default_factory=list)
+    quotes: list[str] = Field(default_factory=list)
+    timeline: list[str] = Field(default_factory=list)
+    entity_names: list[str] = Field(default_factory=list)
+    source_links: list[str] = Field(default_factory=list)
+    risk_notes: list[str] = Field(default_factory=list)
+    prompt_package_markdown: str = ""
+    wechat_markdown: str = ""
+    wechat_html: str = ""
+    wechat_draft_id: Optional[str] = None
+    wechat_editor_url: Optional[str] = None
+    wechat_remote_appmsg_id: Optional[str] = None
+    preview_url: Optional[str] = None
+    last_error: Optional[str] = None
+    updated_at: str
 
 
 class IntelEventHistoryItem(BaseModel):
@@ -623,9 +732,16 @@ class RuntimeCycleSummary(BaseModel):
     growing_events_count: int = 0
     slow_sources: list[RuntimeSlowSource] = Field(default_factory=list)
     issues: list[RuntimeIssueItem] = Field(default_factory=list)
-    draft_count: int = 0
+    selected_event_count: int = 0
+    deep_dive_count: int = 0
+    brief_count: int = 0
     wechat_sync_count: int = 0
+    wechat_verify_count: int = 0
     publish_count: int = 0
+    blocked_reason: Optional[str] = None
+    recent_selected_titles: list[str] = Field(default_factory=list)
+    recent_brief_titles: list[str] = Field(default_factory=list)
+    recent_synced_titles: list[str] = Field(default_factory=list)
 
 
 class IntelOverviewSummary(BaseModel):
@@ -681,6 +797,22 @@ class IntelAlertsResponse(BaseModel):
 
 class IntelEventResponse(BaseModel):
     item: IntelEvent
+
+
+class EventDeepDiveResponse(BaseModel):
+    item: EventDeepDive
+
+
+class EventDeepDivesResponse(BaseModel):
+    items: list[EventDeepDive] = Field(default_factory=list)
+
+
+class BriefResponse(BaseModel):
+    item: BriefItem
+
+
+class BriefsResponse(BaseModel):
+    items: list[BriefItem] = Field(default_factory=list)
 
 
 class HotClusterCard(BaseModel):
@@ -750,6 +882,10 @@ class SchedulerStatus(BaseModel):
     last_candidate_at: Optional[str] = None
     last_draft_at: Optional[str] = None
     next_collect_at: Optional[str] = None
+    delivery_mode: DeliveryMode = "immediate"
+    delivery_schedule_time: Optional[str] = None
+    admission_strategy: AdmissionStrategy = "balanced"
+    batch_limit: int = 3
     current_cycle: str = "idle"
     current_cycle_progress_percent: int = 0
     current_cycle_progress_done: int = 0
@@ -769,6 +905,7 @@ class SchedulerStatus(BaseModel):
     completed_cycles_today: int = 0
     failed_cycles_today: int = 0
     last_error: Optional[str] = None
+    blocked_reason: Optional[str] = None
     last_cycle_issue_count: int = 0
     last_cycle_issue_summary: Optional[str] = None
     run_id: Optional[str] = None
@@ -801,21 +938,11 @@ class DashboardStats(BaseModel):
     waiting_review: int
     preview_ready: int
     published_today: int
-    failed_jobs: int
-    last_job_label: Optional[str] = None
-    last_job_status: Optional[JobStatus] = None
-    last_job_at: Optional[str] = None
-
-
-class JobItem(BaseModel):
-    id: str
-    action: str
-    label: str
-    status: JobStatus
-    triggered_by: str
-    started_at: str
-    finished_at: Optional[str] = None
-    message: Optional[str] = None
+    deep_dive_ready: int = 0
+    brief_total: int = 0
+    brief_prepared: int = 0
+    brief_synced: int = 0
+    publish_blocked: int = 0
 
 
 class LogItem(BaseModel):
@@ -848,9 +975,10 @@ class DashboardResponse(BaseModel):
     entity_watchlist_summary: list[EntityWatchlistSummaryItem] = Field(default_factory=list)
     current_mode: ModeDefinition
     drafts: list[DraftItem]
-    recent_jobs: list[JobItem]
     recent_logs: list[LogItem]
     recent_candidates: list[CandidateTopic]
+    briefs: list[BriefItem] = Field(default_factory=list)
+    deep_dives: list[EventDeepDive] = Field(default_factory=list)
     sources: list[SourceConnector]
     browser_session: BrowserSessionState
     publish_backends: list[PublishBackendStatus]
@@ -874,6 +1002,11 @@ class RuntimePlanPayload(BaseModel):
     interval_minutes: Optional[int] = Field(default=None, ge=5, le=360)
     timezone: str = "Asia/Shanghai"
     work_scope: IntelWorkScope = "collect_events_alerts"
+    delivery_mode: DeliveryMode = "immediate"
+    delivery_schedule_time: Optional[str] = None
+    admission_strategy: AdmissionStrategy = "balanced"
+    batch_limit: int = Field(default=3, ge=1, le=20)
+    admission_filters: dict[str, bool | int] = Field(default_factory=dict)
 
 
 class EntityWatchlistPayload(BaseModel):
@@ -884,20 +1017,12 @@ class EntityWatchlistResponse(BaseModel):
     items: list[EntityWatchlistItem] = Field(default_factory=list)
 
 
-class JobRunPayload(BaseModel):
-    action: Literal[
-        "collect_news",
-        "rebuild_candidates",
-        "build_digest",
-        "sync_wechat_draft",
-        "open_preview",
-        "publish_pipeline",
-        "check_browser",
-    ]
-
-
 class CandidateDraftPayload(BaseModel):
     publish_mode: Optional[PublishMode] = None
+
+
+class BriefCopyPackageResponse(BaseModel):
+    markdown: str = ""
 
 
 class DraftContentPayload(BaseModel):
@@ -959,16 +1084,16 @@ class DraftsResponse(BaseModel):
     items: list[DraftItem]
 
 
+class EventDeepDivePayload(BaseModel):
+    force: bool = False
+
+
 class PublishTasksResponse(BaseModel):
     items: list[PublishTask]
 
 
 class LogsResponse(BaseModel):
     items: list[LogItem]
-
-
-class JobsResponse(BaseModel):
-    items: list[JobItem]
 
 
 class BrowserSessionResponse(BaseModel):

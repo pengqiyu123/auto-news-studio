@@ -2,14 +2,15 @@ import type {
   AutomationMode,
   AutomationModeDefinition,
   AutomationModeProfile,
-  BatchDraftResult,
   BrowserSessionState,
-  CandidateTopic,
+  BriefItem,
+  BriefsResponse,
   ChainStateCard,
   DashboardResponse,
   DiscoveryItem,
-  DraftItem,
   EntityWatchlistItem,
+  EventDeepDive,
+  EventDeepDivesResponse,
   EntityWatchlistSummaryItem,
   ExecutionChainSnapshot,
   FreshnessSnapshot,
@@ -18,11 +19,9 @@ import type {
   IntelEvent,
   IntelEventsResponse,
   IntelOverviewSummary,
-  IntelSnapshot,
   GithubSignalItem,
   HotClusterCard,
   IntelStreamItem,
-  JobItem,
   LogItem,
   LLMConfig,
   LLMTestResult,
@@ -35,7 +34,8 @@ import type {
   RuntimeIntent,
   SchedulerStatus,
   SourceConnector,
-  WeChatChannelConfig
+  WeChatChannelConfig,
+  WeChatDraftSyncCheckResult
 } from "../types";
 
 const API_BASE =
@@ -55,10 +55,11 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     waiting_review: 0,
     preview_ready: 0,
     published_today: 0,
-    failed_jobs: 0,
-    last_job_label: null,
-    last_job_status: null,
-    last_job_at: null
+    deep_dive_ready: 0,
+    brief_total: 0,
+    brief_prepared: 0,
+    brief_synced: 0,
+    publish_blocked: 0
   };
 
   const currentMode = dashboard.current_mode ?? {
@@ -96,23 +97,6 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     last_successful_sync_at: null
   };
 
-  const executionChain: ExecutionChainSnapshot = dashboard.execution_chain ?? {
-    collect_status: "idle",
-    candidate_status: "idle",
-    draft_status: "idle",
-    review_status: "idle",
-    wechat_status: "idle",
-    publish_status: "idle",
-    blockers: [],
-    stages: [] as ChainStateCard[],
-    selectors_version: dashboard.browser_session?.selectors_version ?? "wechat-mp-v1",
-    browser_logged_in: Boolean(dashboard.browser_session?.logged_in),
-    last_screenshot: dashboard.browser_session?.last_screenshot ?? null,
-    last_failed_task_label: null,
-    last_failed_task_at: null,
-    source_alerts: []
-  };
-
   const currentAutomationMode: AutomationModeDefinition = dashboard.current_automation_mode ?? {
     key: "radar_only",
     label: "仅雷达捕获",
@@ -134,6 +118,10 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     last_candidate_at: null,
     last_draft_at: null,
     next_collect_at: null,
+    delivery_mode: "immediate",
+    delivery_schedule_time: null,
+    admission_strategy: "balanced",
+    batch_limit: 3,
     current_cycle: "idle",
     current_cycle_progress_percent: 0,
     current_cycle_progress_done: 0,
@@ -153,6 +141,7 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     completed_cycles_today: 0,
     failed_cycles_today: 0,
     last_error: null,
+    blocked_reason: null,
     last_cycle_issue_count: 0,
     last_cycle_issue_summary: null,
     run_id: null,
@@ -190,7 +179,37 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     interval_minutes: currentAutomationProfile.collect_interval_minutes,
     timezone: "Asia/Shanghai",
     effective_mode: currentAutomationMode.key,
-    work_scope: "collect_events_alerts"
+    work_scope: "collect_events_alerts",
+    delivery_mode: "immediate",
+    delivery_schedule_time: null,
+    admission_strategy: "balanced",
+    batch_limit: 3,
+    admission_filters: {
+      require_watchlisted: false,
+      require_entity_match: false,
+      min_source_count: 0,
+      min_fulltext_count: 1,
+      breakout_only: false,
+      exclude_existing_brief: true,
+      exclude_synced_brief: true
+    }
+  };
+
+  const executionChain: ExecutionChainSnapshot = dashboard.execution_chain ?? {
+    collect_status: "idle",
+    candidate_status: "idle",
+    draft_status: "idle",
+    review_status: "idle",
+    wechat_status: "idle",
+    publish_status: "idle",
+    blockers: [],
+    stages: [] as ChainStateCard[],
+    selectors_version: dashboard.browser_session?.selectors_version ?? "wechat-mp-v1",
+    browser_logged_in: Boolean(dashboard.browser_session?.logged_in),
+    last_screenshot: dashboard.browser_session?.last_screenshot ?? null,
+    last_failed_task_label: null,
+    last_failed_task_at: null,
+    source_alerts: []
   };
 
   return {
@@ -211,10 +230,9 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     recent_events_24h: dashboard.recent_events_24h ?? [],
     entity_watchlist_summary: (dashboard.entity_watchlist_summary ?? []) as EntityWatchlistSummaryItem[],
     current_mode: currentMode,
-    drafts: dashboard.drafts ?? [],
-    recent_jobs: dashboard.recent_jobs ?? [],
     recent_logs: dashboard.recent_logs ?? [],
-    recent_candidates: dashboard.recent_candidates ?? [],
+    briefs: dashboard.briefs ?? [],
+    deep_dives: dashboard.deep_dives ?? [],
     sources: dashboard.sources ?? [],
     browser_session: dashboard.browser_session ?? {
       platform: "wechat_mp",
@@ -247,12 +265,32 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getDashboard: async () => normalizeDashboard(await request<DashboardResponse>("/api/admin/dashboard")),
-  getIntel: () => request<{ item: IntelSnapshot }>("/api/admin/intel"),
   getIntelSummary: () => request<{ item: IntelOverviewSummary }>("/api/admin/intel/summary"),
   getDiscoveryItems: () => request<{ items: DiscoveryItem[] }>("/api/admin/intel/stream"),
   getIntelEvents: () => request<IntelEventsResponse>("/api/admin/intel/events"),
   getIntelEvent: (eventId: string) => request<{ item: IntelEvent }>(`/api/admin/intel/events/${eventId}`),
   getIntelAlerts: () => request<IntelAlertsResponse>("/api/admin/intel/alerts"),
+  createEventDeepDive: (eventId: string, force = false) =>
+    request<{ item: EventDeepDive }>(`/api/admin/intel/events/${eventId}/deep-dive`, {
+      method: "POST",
+      body: JSON.stringify({ force })
+    }),
+  getEventDeepDives: () => request<EventDeepDivesResponse>("/api/admin/intel/deep-dives"),
+  getEventDeepDive: (eventId: string) => request<{ item: EventDeepDive }>(`/api/admin/intel/deep-dives/${eventId}`),
+  createBriefFromEvent: (eventId: string) =>
+    request<{ item: BriefItem }>(`/api/admin/intel/events/${eventId}/brief`, {
+      method: "POST"
+    }),
+  getBriefs: () => request<BriefsResponse>("/api/admin/briefs"),
+  getBrief: (briefId: string) => request<{ item: BriefItem }>(`/api/admin/briefs/${briefId}`),
+  syncBriefWeChatDraft: (briefId: string) =>
+    request<{ item: BriefItem }>(`/api/admin/briefs/${briefId}/wechat-draft`, {
+      method: "POST"
+    }),
+  copyBriefPackage: (briefId: string) =>
+    request<{ markdown: string }>(`/api/admin/briefs/${briefId}/copy-package`, {
+      method: "POST"
+    }),
   getEntityWatchlist: () => request<{ items: EntityWatchlistItem[] }>("/api/admin/entities/watchlist"),
   updateEntityWatchlist: (items: EntityWatchlistItem[]) =>
     request<{ items: EntityWatchlistItem[] }>("/api/admin/entities/watchlist", {
@@ -335,54 +373,7 @@ export const api = {
       `/api/admin/sources/${sourceKey}/sync`,
       { method: "POST" }
     ),
-  getCandidates: () => request<{ items: CandidateTopic[] }>("/api/admin/candidates"),
-  createDraftFromCandidate: (candidateId: string, publishMode?: PublishMode) =>
-    request<{ item: DraftItem }>(`/api/admin/candidates/${candidateId}/draft`, {
-      method: "POST",
-      body: JSON.stringify({ publish_mode: publishMode ?? null })
-    }),
-  createDraftFromEvent: (eventId: string, publishMode?: PublishMode) =>
-    request<{ item: DraftItem }>(`/api/admin/intel/events/${eventId}/draft`, {
-      method: "POST",
-      body: JSON.stringify({ publish_mode: publishMode ?? null })
-    }),
-  batchCreateDrafts: () =>
-    request<BatchDraftResult>("/api/admin/candidates/drafts/batch", {
-      method: "POST"
-    }),
-  getDrafts: () => request<{ items: DraftItem[] }>("/api/admin/drafts"),
-  deleteDraft: (draftId: string) =>
-    request<{ ok: boolean }>(`/api/admin/drafts/${draftId}`, {
-      method: "DELETE"
-    }),
-  regenerateDraft: (draftId: string) =>
-    request<{ item: DraftItem }>(`/api/admin/drafts/${draftId}/regenerate`, {
-      method: "POST"
-    }),
-  approveDraft: (draftId: string, approved: boolean) =>
-    request<{ item: DraftItem }>(`/api/admin/drafts/${draftId}/approve`, {
-      method: "POST",
-      body: JSON.stringify({ approved })
-    }),
-  syncWeChatDraft: (draftId: string) =>
-    request<{ item: DraftItem }>(`/api/admin/drafts/${draftId}/wechat-draft`, {
-      method: "POST"
-    }),
-  openPreview: (draftId: string) =>
-    request<{ item: DraftItem }>(`/api/admin/drafts/${draftId}/open-preview`, {
-      method: "POST"
-    }),
-  publishDraft: (draftId: string) =>
-    request<{ item: DraftItem }>(`/api/admin/drafts/${draftId}/publish`, {
-      method: "POST"
-    }),
   getPublishTasks: () => request<{ items: PublishTask[] }>("/api/admin/publish-tasks"),
-  getJobs: () => request<{ items: JobItem[] }>("/api/admin/jobs"),
-  runJob: (action: string) =>
-    request<{ item: JobItem }>("/api/admin/jobs/run", {
-      method: "POST",
-      body: JSON.stringify({ action })
-    }),
   getWeChatConfig: () =>
     request<{ item: WeChatChannelConfig }>("/api/admin/channels/wechat"),
   updateWeChatConfig: (payload: WeChatChannelConfig) =>
@@ -405,16 +396,15 @@ export const api = {
     request<{ item: BrowserSessionState }>("/api/admin/browser/wechat/check", {
       method: "POST"
     }),
+  checkWeChatDraftBox: () =>
+    request<{ item: WeChatDraftSyncCheckResult }>("/api/admin/browser/wechat/check-drafts", {
+      method: "POST"
+    }),
   getPublishBackends: () =>
     request<{ items: PublishBackendStatus[] }>("/api/admin/publish/backends"),
   getReferenceProjects: () =>
     request<{ items: ReferenceProject[] }>("/api/admin/reference-projects"),
   getLogs: () => request<{ items: LogItem[] }>("/api/admin/logs"),
-  updateDraftContent: (draftId: string, payload: { markdown: string; title: string }) =>
-    request<{ item: DraftItem }>(`/api/admin/drafts/${draftId}/content`, {
-      method: "PUT",
-      body: JSON.stringify(payload)
-    }),
   uploadImage: (file: File) => {
     const formData = new FormData();
     formData.append("file", file);

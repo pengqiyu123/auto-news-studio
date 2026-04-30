@@ -1,10 +1,7 @@
 import type {
   AuditStatus,
-  CandidateStatus,
   ChainStatus,
-  JobStatus,
   LogLevel,
-  PipelineStage,
   PublishTaskStatus,
   RefreshStatus,
   SourceHealth
@@ -16,36 +13,12 @@ function badgeClass(tone: BadgeTone) {
   return `status-badge status-${tone}`;
 }
 
-export function StageBadge({ stage }: { stage: PipelineStage }) {
-  const map: Record<PipelineStage, { label: string; tone: BadgeTone }> = {
-    collected: { label: "已采集", tone: "info" },
-    curated: { label: "已筛选", tone: "neutral" },
-    drafted: { label: "已成稿", tone: "warning" },
-    draft_synced: { label: "已进草稿箱", tone: "info" },
-    preview_ready: { label: "待预览", tone: "warning" },
-    approved: { label: "已审核", tone: "success" },
-    published: { label: "已发布", tone: "success" },
-    failed: { label: "失败", tone: "danger" }
-  };
-  return <span className={badgeClass(map[stage].tone)}>{map[stage].label}</span>;
-}
-
 export function AuditBadge({ status }: { status: AuditStatus }) {
   const map: Record<AuditStatus, { label: string; tone: BadgeTone }> = {
     pending: { label: "待审核", tone: "warning" },
     approved: { label: "已通过", tone: "success" },
     rejected: { label: "已驳回", tone: "danger" },
     not_required: { label: "免审核", tone: "neutral" }
-  };
-  return <span className={badgeClass(map[status].tone)}>{map[status].label}</span>;
-}
-
-export function JobBadge({ status }: { status: JobStatus }) {
-  const map: Record<JobStatus, { label: string; tone: BadgeTone }> = {
-    queued: { label: "排队中", tone: "neutral" },
-    running: { label: "执行中", tone: "info" },
-    completed: { label: "完成", tone: "success" },
-    failed: { label: "失败", tone: "danger" }
   };
   return <span className={badgeClass(map[status].tone)}>{map[status].label}</span>;
 }
@@ -68,15 +41,6 @@ export function SourceHealthBadge({ health }: { health: SourceHealth }) {
     error: { label: "异常", tone: "danger" }
   };
   return <span className={badgeClass(map[health].tone)}>{map[health].label}</span>;
-}
-
-export function CandidateBadge({ status }: { status: CandidateStatus }) {
-  const map: Record<CandidateStatus, { label: string; tone: BadgeTone }> = {
-    new: { label: "待成稿", tone: "info" },
-    drafted: { label: "已成稿", tone: "success" },
-    parked: { label: "暂缓", tone: "neutral" }
-  };
-  return <span className={badgeClass(map[status].tone)}>{map[status].label}</span>;
 }
 
 export function PublishTaskBadge({ status }: { status: PublishTaskStatus }) {

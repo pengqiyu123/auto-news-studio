@@ -1,39 +1,26 @@
 import { Save } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type {
-  BrowserSessionState,
   LLMConfig,
-  PublishBackendStatus,
   ReferenceProject,
   SettingsSectionKey,
   SourceConnector,
-  WeChatChannelConfig,
 } from "../types";
-import { ChannelPanel } from "./ChannelPanel";
 import { LLMSettingsPanel } from "./LLMSettingsPanel";
 import { ReferenceProjectsPanel } from "./ReferenceProjectsPanel";
 import { SourcesPanel } from "./SourcesPanel";
 
 interface SettingsPanelProps {
-  config: WeChatChannelConfig | null;
-  browserSession: BrowserSessionState | null;
-  publishBackends: PublishBackendStatus[];
   referenceProjects: ReferenceProject[];
   llmConfig: LLMConfig | null;
   sources: SourceConnector[];
   syncingSources: boolean;
   savingSourceKey?: string | null;
   syncingSourceKey?: string | null;
-  isSaving: boolean;
   isSavingLLM: boolean;
-  isRefreshingBrowser: boolean;
-  isOpeningBrowser: boolean;
   settings: Record<string, unknown>;
-  onSaveChannel: (payload: WeChatChannelConfig) => Promise<void>;
-  onSaveLLMConfig: (config: LLMConfig) => Promise<void>;
-  onRefreshBrowser: (payload: Pick<BrowserSessionState, "browser_name" | "user_data_dir">) => Promise<void>;
-  onOpenBrowserDashboard: (payload: Pick<BrowserSessionState, "browser_name" | "user_data_dir">) => Promise<void>;
+  onSaveLLMConfig: (config: LLMConfig, tavilyApiKey: string) => Promise<void>;
   onSyncSources: () => Promise<void>;
   onSyncSource: (sourceKey: string) => Promise<void>;
   onSaveSource: (sourceKey: string, payload: Pick<SourceConnector, "enabled" | "schedule" | "priority" | "url" | "tags">) => Promise<void>;
@@ -54,23 +41,14 @@ interface SettingsPanelProps {
 }
 
 export function SettingsPanel({
-  config,
-  browserSession,
-  publishBackends,
   referenceProjects,
   llmConfig,
   sources,
   syncingSources,
   savingSourceKey,
   syncingSourceKey,
-  isSaving,
   isSavingLLM,
-  isRefreshingBrowser,
-  isOpeningBrowser,
-  onSaveChannel,
   onSaveLLMConfig,
-  onRefreshBrowser,
-  onOpenBrowserDashboard,
   onSyncSources,
   onSyncSource,
   onSaveSource,
@@ -82,8 +60,12 @@ export function SettingsPanel({
   const [maxWorkers, setMaxWorkers] = useState(Number(settings?.max_workers ?? 8));
   const [savingSettings, setSavingSettings] = useState(false);
 
+  useEffect(() => {
+    setMaxWorkers(Number(settings?.max_workers ?? 8));
+  }, [settings]);
+
   const maxWorkersDirty = maxWorkers !== Number(settings?.max_workers ?? 8);
-  const [section, setSection] = useState<SettingsSectionKey>("channels");
+  const [section, setSection] = useState<SettingsSectionKey>("ai");
 
   return (
     <section className="page-content">
@@ -91,15 +73,12 @@ export function SettingsPanel({
         <div className="panel-header">
           <div>
             <p className="eyebrow">设置</p>
-            <h2>发布渠道、AI 模型、信息源与系统偏好</h2>
+            <h2>AI 模型、信息源与系统偏好</h2>
             <p className="subtle">所有配置型功能集中收纳，不打断主工作流。</p>
           </div>
         </div>
 
-        <div className="segmented-control settings-sections" style={{ gridTemplateColumns: "repeat(5, minmax(0, 1fr))" }}>
-          <button type="button" className={section === "channels" ? "segment-active" : ""} onClick={() => setSection("channels")}>
-            发布渠道
-          </button>
+        <div className="segmented-control settings-sections" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
           <button type="button" className={section === "ai" ? "segment-active" : ""} onClick={() => setSection("ai")}>
             AI 模型
           </button>
@@ -115,22 +94,13 @@ export function SettingsPanel({
         </div>
       </section>
 
-      {section === "channels" ? (
-        <ChannelPanel
-          config={config}
-          browserSession={browserSession}
-          publishBackends={publishBackends}
-          isSaving={isSaving}
-          isRefreshingBrowser={isRefreshingBrowser}
-          isOpeningBrowser={isOpeningBrowser}
-          onSave={onSaveChannel}
-          onRefreshBrowser={onRefreshBrowser}
-          onOpenBrowserDashboard={onOpenBrowserDashboard}
-        />
-      ) : null}
-
       {section === "ai" && llmConfig ? (
-        <LLMSettingsPanel config={llmConfig} isSaving={isSavingLLM} onSave={onSaveLLMConfig} />
+        <LLMSettingsPanel
+          config={llmConfig}
+          tavilyApiKey={String(settings?.tavily_api_key ?? "")}
+          isSaving={isSavingLLM}
+          onSave={onSaveLLMConfig}
+        />
       ) : null}
 
       {section === "sources" ? (

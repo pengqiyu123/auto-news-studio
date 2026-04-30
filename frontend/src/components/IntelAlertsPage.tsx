@@ -24,7 +24,7 @@ interface IntelAlertsPageProps {
   eventCount: number;
   selectedEntityId: string;
   onSelectedEntityChange: (entityId: string) => void;
-  onCreateDraft: (eventId: string) => Promise<void>;
+  onDeepDive: (eventId: string) => Promise<void>;
   busyEventId?: string | null;
 }
 
@@ -47,7 +47,7 @@ export function IntelAlertsPage({
   eventCount,
   selectedEntityId,
   onSelectedEntityChange,
-  onCreateDraft,
+  onDeepDive,
   busyEventId,
 }: IntelAlertsPageProps) {
   const [filter, setFilter] = useState<FilterLevel>("all");
@@ -175,13 +175,13 @@ export function IntelAlertsPage({
               <button
                 type="button"
                 className="primary-button compact"
-                disabled={busyEventId === alert.event_id || alert.draft_exists}
-                onClick={() => void onCreateDraft(alert.event_id)}
+                disabled={busyEventId === alert.event_id}
+                onClick={() => void onDeepDive(alert.event_id)}
               >
-                {busyEventId === alert.event_id ? "生成中..." : alert.draft_exists ? "已生成稿件" : "生成稿件"}
+                {busyEventId === alert.event_id ? "深挖中..." : alert.deep_dive_id ? "重新深挖" : "立即深挖"}
               </button>
             </div>
-            <p className={`subtle ${alert.draft_ready ? "" : "warning-note"}`}>{alert.draft_reason}</p>
+            <p className={`subtle ${alert.worth_to_brief ? "" : "warning-note"}`}>{alert.worth_reason || alert.deep_dive_summary || "尚未完成正文深挖。"}</p>
           </article>
         );
         }) : (

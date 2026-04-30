@@ -14,16 +14,6 @@ export type AutomationDraftDelivery = "local_only" | "wechat_draft";
 export type AutomationSelectionMode = "all_new" | "top_scored";
 export type AutomationPublishStrategy = "disabled" | "wechat_draft_only" | "guarded_send";
 
-export type PipelineStage =
-  | "collected"
-  | "curated"
-  | "drafted"
-  | "draft_synced"
-  | "preview_ready"
-  | "approved"
-  | "published"
-  | "failed";
-
 export type AuditStatus = "pending" | "approved" | "rejected" | "not_required";
 export type JobStatus = "queued" | "running" | "completed" | "failed";
 export type LogLevel = "info" | "warning" | "error" | "success";
@@ -43,24 +33,29 @@ export type SourceKind =
   | "page";
 export type SourceHealth = "idle" | "healthy" | "warning" | "error";
 export type AutomationRunStatus = "idle" | "running" | "completed" | "failed" | "abandoned";
-export type CandidateStatus = "new" | "drafted" | "parked";
 export type PublishTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked";
 export type RefreshStatus = "ready" | "updated" | "pending_retry" | "missing";
 export type BorrowMode = "direct_copy" | "ported" | "reference_only";
 export type BackendHealth = "healthy" | "warning" | "offline";
 export type ChainStatus = "idle" | "running" | "healthy" | "warning" | "blocked";
 export type LogStream = "system_runtime" | "business_event";
-export type ArticleVariant = "flash_explainer";
 export type RuntimeControlState = "stopped" | "armed" | "running" | "waiting";
 export type RuntimeLaunchMode = "once_now" | "once_at" | "interval_now" | "interval_at";
 export type IntelWorkScope = "collect_only" | "collect_events" | "collect_events_alerts";
 export type RuntimeIntent = "normal_monitoring" | "collect_validation" | "event_rebuild" | "alert_rebuild";
 export type RuntimeRunOutcome = "completed" | "failed" | "abandoned" | "stopped";
+export type DeliveryMode = "immediate" | "scheduled_batch";
+export type AdmissionStrategy = "conservative" | "balanced" | "aggressive";
 export type IntelEventState = "new" | "watch" | "rising" | "breakout" | "cooling";
 export type IntelAlertLevel = "watch" | "rising" | "breakout" | "cooling";
 export type IntelItemChangeState = "new_item" | "seen_item" | "updated_item";
 export type IntelEventChangeState = "new_event" | "growing_event" | "stable_event" | "cooling_event";
 export type HistoryRecordStatus = "active" | "cooled" | "source_uncertain";
+export type DeepDiveStatus = "pending" | "running" | "partial" | "ready" | "failed";
+export type DeepDiveFetchStatus = "pending" | "fetched" | "fetch_failed" | "fetch_blocked" | "non_html";
+export type DeepDiveExtractStatus = "pending" | "extracted" | "extract_failed" | "too_short";
+export type BriefLevel = "rule" | "enhanced";
+export type BriefStage = "prepared" | "synced" | "failed";
 
 export interface ModeDefinition {
   key: PublishMode;
@@ -107,6 +102,19 @@ export interface RuntimePlan {
   timezone: string;
   effective_mode: AutomationMode;
   work_scope: IntelWorkScope;
+  delivery_mode: DeliveryMode;
+  delivery_schedule_time?: string | null;
+  admission_strategy: AdmissionStrategy;
+  batch_limit: number;
+  admission_filters: {
+    require_watchlisted?: boolean;
+    require_entity_match?: boolean;
+    min_source_count?: number;
+    min_fulltext_count?: number;
+    breakout_only?: boolean;
+    exclude_existing_brief?: boolean;
+    exclude_synced_brief?: boolean;
+  };
 }
 
 export interface SourceConnector {
@@ -139,170 +147,6 @@ export interface SourceConnector {
   avg_duration_ms?: number | null;
   last_item_count: number;
   updated_at?: string | null;
-}
-
-export interface CandidateAngle {
-  name: string;
-  tone: string;
-  focus: string;
-  why: string;
-}
-
-export interface CandidateTopic {
-  id: string;
-  normalized_item_id: string;
-  title: string;
-  summary: string;
-  recommended_angle: string;
-  article_type: string;
-  rationale: string;
-  evidence_links: string[];
-  source_names: string[];
-  source_count: number;
-  score: number;
-  status: CandidateStatus;
-  recommended_mode: PublishMode;
-  facts: string[];
-  angles: CandidateAngle[];
-  selected_angle?: string | null;
-  score_breakdown: Record<string, number>;
-  published_at?: string | null;
-  collected_at?: string | null;
-  freshness_bucket: string;
-  draft_exists: boolean;
-  normalized_score: number;
-  evidence_pack?: Array<{
-    discovery_item_id: string;
-    source_name: string;
-    title: string;
-    summary: string;
-    link: string;
-    published_at?: string | null;
-    collected_at?: string | null;
-    entity_names?: string[];
-  }>;
-  entity_names?: string[];
-  alert_state?: IntelEventState | null;
-  alert_reason?: string;
-  updated_at: string;
-}
-
-export interface DraftItem {
-  id: string;
-  candidate_topic_id: string;
-  source_event_id?: string | null;
-  source_alert_level?: string | null;
-  generation_mode?: "manual" | "automation";
-  draft_window_id?: string | null;
-  title: string;
-  section: string;
-  source_count: number;
-  word_count: number;
-  publish_mode: PublishMode;
-  pipeline_stage: PipelineStage;
-  audit_status: AuditStatus;
-  summary: string;
-  brief: {
-    headline?: string;
-    one_line?: string;
-    facts?: string[];
-    evidence_links?: string[];
-    evidence_pack?: Array<{
-      discovery_item_id: string;
-      source_name: string;
-      title: string;
-      summary: string;
-      link: string;
-      published_at?: string | null;
-      collected_at?: string | null;
-      entity_names?: string[];
-    }>;
-    source_names?: string[];
-    source_count?: number;
-    published_at?: string | null;
-    collected_at?: string | null;
-    entity_names?: string[];
-    alert_state?: IntelEventState | null;
-    alert_reason?: string;
-    event_judgement?: string;
-    risk_notes?: string[];
-    time_context?: {
-      published_at_label?: string;
-      collected_at_label?: string;
-    };
-  };
-  outline: {
-    title_options?: string[];
-    lead_direction?: string;
-    key_points?: string[];
-    section_order?: string[];
-    closing_line?: string;
-  };
-  article_variant: ArticleVariant;
-  reader_summary: string;
-  body_blocks: Array<{
-    kind: string;
-    heading?: string | null;
-    content: string;
-    evidence_links?: string[];
-    required_image?: boolean;
-  }>;
-  image_slots: Array<{
-    slot_id: string;
-    label: string;
-    position: string;
-    suggestion: string;
-    required_image: boolean;
-    fulfilled: boolean;
-    keywords: string[];
-  }>;
-  editor_notes: string[];
-  markdown: string;
-  html: string;
-  wechat_html: string;
-  updated_at: string;
-  cover_strategy: string;
-  cover_suggestion: string;
-  risk_flags: string[];
-  blocked_reasons: string[];
-  evidence_links: string[];
-  title_options: string[];
-  composition_trace: {
-    facts?: string[];
-    angles?: CandidateAngle[];
-    selected_angle?: string;
-    titles?: string[];
-    evidence?: string[];
-    evidence_pack?: Array<{
-      discovery_item_id: string;
-      source_name: string;
-      title: string;
-      summary: string;
-      link: string;
-      published_at?: string | null;
-      collected_at?: string | null;
-      entity_names?: string[];
-    }>;
-    generated_at?: string;
-  };
-  render_backend: string;
-  approval_required: boolean;
-  wechat_draft_id?: string | null;
-  wechat_editor_url?: string | null;
-  wechat_remote_appmsg_id?: string | null;
-  preview_url?: string | null;
-  last_error?: string | null;
-}
-
-export interface JobItem {
-  id: string;
-  action: string;
-  label: string;
-  status: JobStatus;
-  triggered_by: string;
-  started_at: string;
-  finished_at?: string | null;
-  message?: string | null;
 }
 
 export interface LogItem {
@@ -343,6 +187,23 @@ export interface BrowserSessionState {
   last_selector_check?: string | null;
   current_page?: string | null;
   sidecar_health: BackendHealth;
+  last_draft_check?: WeChatDraftSyncCheckResult | null;
+}
+
+export interface WeChatRemoteDraftItem {
+  title: string;
+  url: string;
+  appmsg_id?: string | null;
+  updated_at?: string | null;
+}
+
+export interface WeChatDraftSyncCheckResult {
+  checked_at: string;
+  remote_count: number;
+  matched_count: number;
+  missing_count: number;
+  items: WeChatRemoteDraftItem[];
+  message: string;
 }
 
 export interface PublishBackendStatus {
@@ -419,10 +280,6 @@ export interface IntelStreamItem {
   published_at?: string | null;
   collected_at?: string | null;
   time_lag_minutes?: number | null;
-  candidate_status?: CandidateStatus | null;
-  draft_stage?: PipelineStage | null;
-  candidate_id?: string | null;
-  draft_id?: string | null;
 }
 
 export interface DiscoveryItem {
@@ -491,6 +348,13 @@ export interface IntelEvent {
   draft_reason: string;
   draft_exists: boolean;
   draft_id?: string | null;
+  deep_dive_id?: string | null;
+  brief_id?: string | null;
+  deep_dive_status?: DeepDiveStatus | null;
+  brief_status?: BriefStage | null;
+  deep_dive_summary?: string;
+  worth_to_brief?: boolean;
+  worth_reason?: string;
 }
 
 export interface IntelAlert {
@@ -514,6 +378,89 @@ export interface IntelAlert {
   draft_reason: string;
   draft_exists: boolean;
   draft_id?: string | null;
+  deep_dive_id?: string | null;
+  brief_id?: string | null;
+  deep_dive_status?: DeepDiveStatus | null;
+  brief_status?: BriefStage | null;
+  deep_dive_summary?: string;
+  worth_to_brief?: boolean;
+  worth_reason?: string;
+}
+
+export interface DeepDiveSourceItem {
+  source_key: string;
+  source_name: string;
+  original_link: string;
+  canonical_link: string;
+  title: string;
+  published_at?: string | null;
+  fetch_status: DeepDiveFetchStatus;
+  extract_status: DeepDiveExtractStatus;
+  word_count: number;
+  cleaned_full_text: string;
+  excerpt: string;
+  quotes: string[];
+  error?: string | null;
+}
+
+export interface EventDeepDive {
+  id: string;
+  event_id: string;
+  status: DeepDiveStatus;
+  started_at?: string | null;
+  finished_at?: string | null;
+  updated_at: string;
+  attempted_count: number;
+  success_count: number;
+  failed_count: number;
+  resolved_evidence_pack: Array<{
+    discovery_item_id: string;
+    source_key?: string;
+    source_name: string;
+    title: string;
+    summary?: string;
+    link: string;
+    canonical_link?: string;
+    published_at?: string | null;
+    collected_at?: string | null;
+    entity_names?: string[];
+  }>;
+  full_text_sources: DeepDiveSourceItem[];
+  sources: DeepDiveSourceItem[];
+  facts: string[];
+  quotes: string[];
+  timeline: string[];
+  worthiness: {
+    worth_to_brief?: boolean;
+    reason?: string;
+  };
+  last_error?: string | null;
+}
+
+export interface BriefItem {
+  id: string;
+  event_id: string;
+  deep_dive_id: string;
+  brief_level: BriefLevel;
+  stage: BriefStage;
+  title: string;
+  one_line: string;
+  why_it_matters: string;
+  facts: string[];
+  quotes: string[];
+  timeline: string[];
+  entity_names: string[];
+  source_links: string[];
+  risk_notes: string[];
+  prompt_package_markdown: string;
+  wechat_markdown: string;
+  wechat_html: string;
+  wechat_draft_id?: string | null;
+  wechat_editor_url?: string | null;
+  wechat_remote_appmsg_id?: string | null;
+  preview_url?: string | null;
+  last_error?: string | null;
+  updated_at: string;
 }
 
 export interface IntelEventHistoryItem {
@@ -602,9 +549,16 @@ export interface RuntimeCycleSummary {
   growing_events_count: number;
   slow_sources: RuntimeSlowSource[];
   issues: RuntimeIssueItem[];
-  draft_count: number;
+  selected_event_count: number;
+  deep_dive_count: number;
+  brief_count: number;
   wechat_sync_count: number;
+  wechat_verify_count: number;
   publish_count: number;
+  blocked_reason?: string | null;
+  recent_selected_titles: string[];
+  recent_brief_titles: string[];
+  recent_synced_titles: string[];
 }
 
 export interface IntelOverviewSummary {
@@ -650,6 +604,14 @@ export interface IntelAlertsResponse {
   history_items: IntelAlertHistoryItem[];
 }
 
+export interface EventDeepDivesResponse {
+  items: EventDeepDive[];
+}
+
+export interface BriefsResponse {
+  items: BriefItem[];
+}
+
 export interface HotClusterCard {
   cluster_id: string;
   title: string;
@@ -670,17 +632,6 @@ export interface GithubSignalItem {
   source_name: string;
   published_at?: string | null;
   collected_at?: string | null;
-  candidate_status?: CandidateStatus | null;
-  draft_stage?: PipelineStage | null;
-  candidate_id?: string | null;
-  draft_id?: string | null;
-}
-
-export interface IntelSnapshot {
-  stream: IntelStreamItem[];
-  clusters: HotClusterCard[];
-  github_watch: GithubSignalItem[];
-  source_health: SourceConnector[];
 }
 
 export interface ChainStateCard {
@@ -717,6 +668,10 @@ export interface SchedulerStatus {
   last_candidate_at?: string | null;
   last_draft_at?: string | null;
   next_collect_at?: string | null;
+  delivery_mode: DeliveryMode;
+  delivery_schedule_time?: string | null;
+  admission_strategy: AdmissionStrategy;
+  batch_limit: number;
   current_cycle: string;
   current_cycle_progress_percent: number;
   current_cycle_progress_done: number;
@@ -736,6 +691,7 @@ export interface SchedulerStatus {
   completed_cycles_today: number;
   failed_cycles_today: number;
   last_error?: string | null;
+  blocked_reason?: string | null;
   last_cycle_issue_count: number;
   last_cycle_issue_summary?: string | null;
   run_id?: string | null;
@@ -753,16 +709,7 @@ export interface SchedulerStatus {
   last_cycle_summary?: RuntimeCycleSummary | null;
 }
 
-export interface BatchDraftResult {
-  processed_count: number;
-  created_count: number;
-  skipped_count: number;
-  failed_count: number;
-  draft_ids: string[];
-  message: string;
-}
-
-export type SettingsSectionKey = "channels" | "ai" | "sources" | "references" | "system";
+export type SettingsSectionKey = "ai" | "sources" | "references" | "system";
 
 export interface LLMProviderConfig {
   key: string;
@@ -853,10 +800,11 @@ export interface DashboardResponse {
     waiting_review: number;
     preview_ready: number;
     published_today: number;
-    failed_jobs: number;
-    last_job_label?: string | null;
-    last_job_status?: JobStatus | null;
-    last_job_at?: string | null;
+    deep_dive_ready: number;
+    brief_total: number;
+    brief_prepared: number;
+    brief_synced: number;
+    publish_blocked: number;
   };
   top_bar: DashboardTopBar;
   freshness: FreshnessSnapshot;
@@ -874,10 +822,9 @@ export interface DashboardResponse {
   recent_events_24h: IntelEventHistoryItem[];
   entity_watchlist_summary: EntityWatchlistSummaryItem[];
   current_mode: ModeDefinition;
-  drafts: DraftItem[];
-  recent_jobs: JobItem[];
   recent_logs: LogItem[];
-  recent_candidates: CandidateTopic[];
+  briefs: BriefItem[];
+  deep_dives: EventDeepDive[];
   sources: SourceConnector[];
   browser_session: BrowserSessionState;
   publish_backends: PublishBackendStatus[];

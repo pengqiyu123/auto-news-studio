@@ -36,10 +36,21 @@ SELECTOR_PROFILES: dict[str, dict[str, list[str] | str]] = {
             "a[href*='appmsg']",
         ],
         "draft_box": [
+            "a#menu_10125[href*='action=list_card']",
+            "a.weui-desktop-menu__link.menu_report[href*='action=list_card']",
+            "a:has-text('草稿箱')",
+            "div:has-text('草稿箱')",
             "a[href*='action=list_card']",
             "text=草稿箱",
             "a[href*='draft']",
             "text=草稿箱",
+        ],
+        "content_manage": [
+            "span.weui-desktop-menu__link[title='内容管理']",
+            "span.weui-desktop-menu__name:has-text('内容管理')",
+            "a:has-text('内容管理')",
+            "div:has-text('内容管理')",
+            "text=内容管理",
         ],
         "title_input": [
             "textarea.js_article_title",
@@ -371,6 +382,185 @@ def detect_editor_blockers(page) -> list[str]:
     if "请在这里输入标题" in text:
         blockers.append("微信校验未通过：标题仍为空。")
     return blockers
+
+
+def _scrape_wechat_draft_items(page) -> list[dict[str, str | None]]:
+    try:
+        rows = page.evaluate(
+            """() => {
+                const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+                const results = [];
+                const seen = new Set();
+                const pushItem = (title, url, updatedAt) => {
+                    const cleanTitle = normalize(title);
+                    const cleanUrl = normalize(url);
+                    if (cleanTitle.length < 8) return;
+                    const normalizedUrl = cleanUrl.startsWith('javascript:') ? '' : cleanUrl;
+                    const key = `${cleanTitle}||${normalizedUrl}`;
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    let appmsgId = null;
+                    try {
+                        if (normalizedUrl) {
+                            const parsed = new URL(normalizedUrl, window.location.origin);
+                            appmsgId = parsed.searchParams.get("appmsgid");
+                        }
+                    } catch (_) {}
+                    results.push({
+                        title: cleanTitle,
+                        url: normalizedUrl,
+                        appmsg_id: appmsgId,
+                        updated_at: normalize(updatedAt),
+                    });
+                };
+
+                const containers = Array.from(
+                    document.querySelectorAll(
+                        '.publish_card_container, .weui-desktop-card.weui-desktop-publish, .weui-desktop-media__list-col .weui-desktop-card'
+                    )
+                );
+
+                containers.forEach((container) => {
+                    const titleNode =
+                        container.querySelector('.weui-desktop-publish__cover__title span') ||
+                        container.querySelector('.weui-desktop-publish__cover__title') ||
+                        container.querySelector('.weui-desktop-card__title');
+                    const title = normalize(titleNode ? titleNode.textContent : '');
+                    const linkNode =
+                        container.querySelector('.weui-desktop-publish__cover__title') ||
+                        container.querySelector('a[href]');
+                    const href = normalize(linkNode ? linkNode.getAttribute('href') : '');
+                    const containerText = normalize(container.innerText || '');
+                    const updatedAtMatch = containerText.match(/更新于\\s*([0-9]{1,2}:[0-9]{2}|[0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2})/);
+                    const updatedAt = updatedAtMatch ? `更新于 ${updatedAtMatch[1]}` : '';
+                    pushItem(title, href, updatedAt);
+                });
+
+                return results
+                    .filter((item) => item.title || item.url)
+                    .slice(0, 80);
+            }"""
+        )
+    except Exception:
+        return []
+    if not isinstance(rows, list):
+        return []
+    items: list[dict[str, str | None]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        items.append(
+            {
+                "title": str(row.get("title") or "").strip(),
+                "url": str(row.get("url") or "").strip(),
+                "appmsg_id": str(row.get("appmsg_id") or "").strip() or None,
+                "updated_at": str(row.get("updated_at") or "").strip() or None,
+            }
+        )
+    return items
+
+
+def _open_wechat_draft_box(page, selector_profile: dict[str, list[str] | str], step_logs: list[str]) -> bool:
+    content_manage_selector = _pick_selector(page, selector_profile.get("content_manage", []), timeout=2500)
+    if content_manage_selector:
+        try:
+            page.locator(content_manage_selector).first.click()
+            page.wait_for_timeout(1200)
+            step_logs.append(f"已展开内容管理 selector={content_manage_selector}")
+        except Exception:
+            step_logs.append(f"尝试展开内容管理失败 selector={content_manage_selector}")
+
+    draft_box_selector = _pick_selector(page, selector_profile.get("draft_box", []), timeout=4000)
+    if not draft_box_selector:
+        return False
+
+    page.locator(draft_box_selector).first.click()
+    try:
+        page.wait_for_url("**action=list_card**", timeout=8000)
+    except Exception:
+        page.wait_for_timeout(2500)
+    step_logs.append(f"已点击草稿箱入口 selector={draft_box_selector}")
+    current_url = str(page.url or "")
+    if "action=list_card" not in current_url:
+        step_logs.append(f"草稿箱页面未命中目标 URL: {current_url}")
+        return False
+    step_logs.append(f"已进入草稿箱页面 url={current_url}")
+    return True
+
+
+def inspect_wechat_draft_box(
+    channel: dict[str, object],
+    browser_state: dict[str, object],
+) -> tuple[dict[str, object], list[str], list[str], list[dict[str, str | None]]]:
+    channel = ensure_channel_defaults(channel)
+    selector_version = str(channel.get("selectors_version", "wechat-mp-v1"))
+    entry_url = str(channel.get("publish_entry_url", "https://mp.weixin.qq.com/"))
+    selector_profile = get_selector_profile(selector_version)
+    step_logs = [
+        f"selector_profile={selector_version}",
+        f"entry_url={entry_url}",
+        "action=check_draft_box",
+    ]
+    artifacts: list[str] = []
+    browser_state = dict(browser_state)
+
+    if not browser_state.get("logged_in"):
+        browser_state["last_error"] = "浏览器登录态不可用，无法检查微信草稿箱。"
+        return browser_state, artifacts, step_logs + ["未执行草稿箱检查：登录态不可用。"], []
+
+    artifact_dir = ARTIFACT_ROOT / "session"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    screenshot_path = artifact_dir / f"check-draft-box-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.png"
+
+    try:
+        from playwright.sync_api import sync_playwright  # type: ignore
+    except Exception:
+        browser_state["last_error"] = "Playwright 不可用，暂时无法检查微信草稿箱。"
+        return browser_state, artifacts, step_logs + ["Playwright 不可用，未执行草稿箱检查。"], []
+
+    with sync_playwright() as playwright:  # pragma: no cover - depends on host browser
+        context = playwright.chromium.launch_persistent_context(
+            str(resolve_profile_path(channel.get("browser_profile_path"), channel.get("browser_name"))),
+            headless=False,
+            channel=browser_channel_name(str(channel.get("browser_name"))),
+        )
+        try:
+            page = context.new_page()
+            page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(1800)
+
+            if not _open_wechat_draft_box(page, selector_profile, step_logs):
+                raise RuntimeError("未能进入正式草稿箱页面（/cgi-bin/appmsg?...action=list_card...）。")
+
+            current_page = context.pages[-1] if context.pages else page
+            current_page.wait_for_timeout(2000)
+            if "action=list_card" not in str(current_page.url or ""):
+                raise RuntimeError(f"当前页面不是正式草稿箱：{current_page.url}")
+            items = _scrape_wechat_draft_items(current_page)
+            current_page.screenshot(path=str(screenshot_path), full_page=True)
+            artifacts.append(str(screenshot_path))
+            browser_state["last_opened_url"] = current_page.url
+            browser_state["current_page"] = current_page.url
+            browser_state["last_screenshot"] = str(screenshot_path)
+            # 正式草稿箱页已成功打开时，空列表应视为“草稿箱当前为空”，
+            # 不能当成失败，否则本地 synced 状态无法在远端删除后回退。
+            browser_state["last_error"] = None
+            step_logs.append(f"共读取到 {len(items)} 条微信草稿记录。")
+            return browser_state, artifacts, step_logs, items
+        except Exception as exc:
+            try:
+                page.screenshot(path=str(screenshot_path), full_page=True)
+                artifacts.append(str(screenshot_path))
+                browser_state["last_opened_url"] = page.url
+                browser_state["current_page"] = page.url
+                browser_state["last_screenshot"] = str(screenshot_path)
+            except Exception:
+                pass
+            browser_state["last_error"] = str(exc)
+            step_logs.append(f"草稿箱检查失败：{exc}")
+            return browser_state, artifacts, step_logs, []
+        finally:
+            context.close()
 
 
 def launch_wechat_dashboard(channel: dict[str, object], browser_state: dict[str, object]) -> tuple[dict[str, object], list[str], list[str]]:

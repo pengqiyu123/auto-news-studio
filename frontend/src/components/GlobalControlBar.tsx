@@ -135,7 +135,12 @@ function plansEqual(left: Omit<RuntimePlan, "effective_mode">, right: RuntimePla
     left.launch_mode === right.launch_mode &&
     (left.start_at ?? null) === (right.start_at ?? null) &&
     (left.interval_minutes ?? null) === (right.interval_minutes ?? null) &&
-    left.timezone === right.timezone
+    left.timezone === right.timezone &&
+    left.delivery_mode === right.delivery_mode &&
+    (left.delivery_schedule_time ?? null) === (right.delivery_schedule_time ?? null) &&
+    left.admission_strategy === right.admission_strategy &&
+    left.batch_limit === right.batch_limit &&
+    JSON.stringify(left.admission_filters ?? {}) === JSON.stringify(right.admission_filters ?? {})
   );
 }
 
@@ -168,7 +173,12 @@ export function GlobalControlBar({
     start_at: runtimePlan.start_at ?? null,
     interval_minutes: runtimePlan.interval_minutes ?? 30,
     timezone: runtimePlan.timezone,
-    work_scope: runtimePlan.work_scope
+    work_scope: runtimePlan.work_scope,
+    delivery_mode: runtimePlan.delivery_mode,
+    delivery_schedule_time: runtimePlan.delivery_schedule_time ?? null,
+    admission_strategy: runtimePlan.admission_strategy,
+    batch_limit: runtimePlan.batch_limit,
+    admission_filters: { ...runtimePlan.admission_filters }
   });
 
   useEffect(() => {
@@ -185,7 +195,12 @@ export function GlobalControlBar({
       start_at: runtimePlan.start_at ?? null,
       interval_minutes: runtimePlan.interval_minutes ?? 30,
       timezone: runtimePlan.timezone,
-      work_scope: runtimePlan.work_scope
+      work_scope: runtimePlan.work_scope,
+      delivery_mode: runtimePlan.delivery_mode,
+      delivery_schedule_time: runtimePlan.delivery_schedule_time ?? null,
+      admission_strategy: runtimePlan.admission_strategy,
+      batch_limit: runtimePlan.batch_limit,
+      admission_filters: { ...runtimePlan.admission_filters }
     });
   }, [runtimePlan]);
 

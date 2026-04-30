@@ -1116,7 +1116,6 @@ a {
 }
 
 .mini-list,
-.job-list,
 .log-list,
 .reference-list,
 .candidate-list,
@@ -1128,7 +1127,6 @@ a {
 }
 
 .mini-row,
-.job-row,
 .log-row,
 .reference-card,
 .candidate-card,
@@ -1155,7 +1153,6 @@ a {
 }
 
 .mini-row strong,
-.job-row strong,
 .reference-card strong,
 .candidate-card strong,
 .source-card strong {
@@ -1163,7 +1160,6 @@ a {
 }
 
 .mini-row p,
-.job-row p,
 .log-row p,
 .reference-card p,
 .candidate-card p,
@@ -1653,63 +1649,6 @@ a {
 
 .warning-note {
   color: #a16207;
-}
-
-.quick-action-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 10px;
-}
-
-.quick-action-grid.secondary {
-  margin-top: 14px;
-}
-
-.quick-action.subdued {
-  background: #f8fafc;
-}
-
-.jobs-layout {
-  display: grid;
-  grid-template-columns: 1.2fr 0.8fr;
-  gap: 16px;
-}
-
-.job-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-}
-
-.job-meta {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.job-control-cluster {
-  margin-top: 16px;
-  padding: 16px;
-  border: 1px solid #dbe3ef;
-  border-radius: 8px;
-  background: #f8fbff;
-}
-
-.job-control-header {
-  margin-bottom: 14px;
-}
-
-.job-control-header h3 {
-  margin: 0;
-  font-size: 18px;
-}
-
-.job-control-header .subtle {
-  margin-top: 6px;
 }
 
 .tiny-meta {
@@ -3364,7 +3303,6 @@ button.entity-tag:hover {
 
 @media (max-width: 1200px) {
   .overview-grid,
-  .jobs-layout,
   .cockpit-summary-grid,
   .cockpit-summary-grid-tight,
   .cockpit-focus-grid,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
+from typing import Any
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
@@ -15,6 +16,9 @@ from .models import (
     AutomationProfilesResponse,
     AutomationModeSelectionPayload,
     BatchDraftResponse,
+    BriefCopyPackageResponse,
+    BriefResponse,
+    BriefsResponse,
     BrowserSessionPayload,
     BrowserSessionResponse,
     CandidateDraftPayload,
@@ -28,13 +32,14 @@ from .models import (
     DraftApprovalPayload,
     DraftContentPayload,
     DraftsResponse,
+    EventDeepDivePayload,
+    EventDeepDiveResponse,
+    EventDeepDivesResponse,
     IntelAlertsResponse,
     IntelEventResponse,
     IntelEventsResponse,
     IntelSnapshotResponse,
     IntelSummaryResponse,
-    JobRunPayload,
-    JobsResponse,
     LLMConfigResponse,
     LLMProviderPayload,
     LLMTaskPayload,
@@ -53,6 +58,7 @@ from .models import (
     SourceSyncResponse,
     SourcesResponse,
     WeChatChannelResponse,
+    WeChatDraftSyncCheckResponse,
 )
 from .store import StudioStore
 
@@ -366,6 +372,64 @@ def create_draft_from_event(event_id: str, payload: CandidateDraftPayload | None
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.post("/api/admin/intel/events/{event_id}/deep-dive", response_model=EventDeepDiveResponse)
+def create_event_deep_dive(event_id: str, payload: EventDeepDivePayload | None = None):
+    try:
+        return EventDeepDiveResponse(item=store.create_event_deep_dive(event_id, force=bool(payload.force) if payload else False))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/intel/deep-dives", response_model=EventDeepDivesResponse)
+def list_event_deep_dives():
+    return EventDeepDivesResponse(items=store.list_event_deep_dives())
+
+
+@app.get("/api/admin/intel/deep-dives/{event_id}", response_model=EventDeepDiveResponse)
+def get_event_deep_dive(event_id: str):
+    try:
+        return EventDeepDiveResponse(item=store.get_event_deep_dive(event_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/intel/events/{event_id}/brief", response_model=BriefResponse)
+def create_brief_from_event(event_id: str):
+    try:
+        return BriefResponse(item=store.create_brief_from_event(event_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/briefs", response_model=BriefsResponse)
+def list_briefs():
+    return BriefsResponse(items=store.list_briefs())
+
+
+@app.get("/api/admin/briefs/{brief_id}", response_model=BriefResponse)
+def get_brief(brief_id: str):
+    try:
+        return BriefResponse(item=store.get_brief(brief_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/briefs/{brief_id}/wechat-draft", response_model=BriefResponse)
+def sync_brief_wechat_draft(brief_id: str):
+    try:
+        return BriefResponse(item=store.sync_brief_wechat_draft(brief_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/briefs/{brief_id}/copy-package", response_model=BriefCopyPackageResponse)
+def copy_brief_package(brief_id: str):
+    try:
+        return BriefCopyPackageResponse(markdown=store.build_brief_copy_package(brief_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/admin/candidates/drafts/batch", response_model=BatchDraftResponse)
 def batch_create_drafts():
     return store.batch_create_drafts()
@@ -465,19 +529,6 @@ def list_publish_tasks():
     return PublishTasksResponse(items=store.list_publish_tasks())
 
 
-@app.get("/api/admin/jobs", response_model=JobsResponse)
-def list_jobs():
-    return JobsResponse(items=store.list_jobs())
-
-
-@app.post("/api/admin/jobs/run")
-def run_job(payload: JobRunPayload):
-    try:
-        return {"item": store.run_job(payload.action)}
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
 @app.get("/api/admin/channels/wechat", response_model=WeChatChannelResponse)
 def get_wechat_channel():
     return WeChatChannelResponse(item=store.get_wechat_config())
@@ -506,6 +557,11 @@ def open_browser_dashboard():
 @app.post("/api/admin/browser/wechat/check", response_model=BrowserSessionResponse)
 def check_browser_session():
     return BrowserSessionResponse(item=store.check_browser_session())
+
+
+@app.post("/api/admin/browser/wechat/check-drafts", response_model=WeChatDraftSyncCheckResponse)
+def check_wechat_draft_box():
+    return WeChatDraftSyncCheckResponse(item=store.check_wechat_draft_box())
 
 
 @app.get("/api/admin/publish/backends", response_model=PublishBackendStatusResponse)

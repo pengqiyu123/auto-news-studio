@@ -1,46 +1,43 @@
 import {
   AlertCircle,
   CheckCircle,
+  FileStack,
   LayoutDashboard,
   RadioTower,
   SearchCheck,
   Settings,
   Siren,
-  StickyNote,
-  WavesLadder,
+  Sparkles,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { DraftEditorModal } from "./components/DraftEditorModal";
-import { DraftTable } from "./components/DraftTable";
+import { BriefTable } from "./components/BriefTable";
+import { DeepDivePoolPanel } from "./components/DeepDivePoolPanel";
 import { IntelAlertsPage } from "./components/IntelAlertsPage";
 import { IntelEventsPage } from "./components/IntelEventsPage";
 import { IntelOverviewPage } from "./components/IntelOverviewPage";
 import { IntelStreamPage } from "./components/IntelStreamPage";
-import { JobsPanel } from "./components/JobsPanel";
 import { LogsPanel } from "./components/LogsPanel";
+import { PublishPanel } from "./components/PublishPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SourceHealthPage } from "./components/SourceHealthPage";
-import { WatchlistPanel } from "./components/WatchlistPanel";
 import { api } from "./lib/api";
 import { deriveRuntimeDisplayStatus, isRuntimeActivelyProcessing, pickNewerRuntimeStatus, RUNTIME_INTENT_LABELS } from "./lib/runtimeIntent";
 import type {
   BrowserSessionState,
-  CandidateTopic,
+  BriefItem,
   DashboardResponse,
   DiscoveryItem,
-  DraftItem,
   EntityWatchlistItem,
+  EventDeepDive,
   IntelAlert,
   IntelAlertHistoryItem,
   IntelEvent,
   IntelEventHistoryItem,
   IntelOverviewSummary,
-  JobItem,
   LLMConfig,
   LogItem,
-  PublishMode,
   PublishTask,
   ReferenceProject,
   RuntimeIntent,
@@ -57,7 +54,7 @@ type TabKey =
   | "source-health"
   | "watchlist"
   | "drafts"
-  | "jobs"
+  | "publish"
   | "settings"
   | "logs";
 
@@ -70,12 +67,12 @@ const intelTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboar
 ];
 
 const draftTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }> = [
-  { key: "watchlist", label: "选题池", icon: WavesLadder },
-  { key: "drafts", label: "稿件", icon: StickyNote },
+  { key: "watchlist", label: "深挖池", icon: Sparkles },
+  { key: "drafts", label: "简报", icon: FileStack },
+  { key: "publish", label: "发布", icon: RadioTower },
 ];
 
 const systemTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }> = [
-  { key: "jobs", label: "任务", icon: RadioTower },
   { key: "settings", label: "设置", icon: Settings },
   { key: "logs", label: "日志", icon: AlertCircle },
 ];
@@ -86,10 +83,10 @@ const pageMeta: Record<TabKey, { eyebrow: string; title: string }> = {
   events: { eyebrow: "事件聚合", title: "热点事件列表" },
   alerts: { eyebrow: "趋势判断", title: "热点预警列表" },
   "source-health": { eyebrow: "来源巡检", title: "来源运行状态" },
-  watchlist: { eyebrow: "选题池", title: "待进入稿件生产的观察事件" },
-  drafts: { eyebrow: "内容产出", title: "稿件工作台" },
-  jobs: { eyebrow: "补跑与排障", title: "手动任务中心" },
-  settings: { eyebrow: "系统配置", title: "渠道与模型设置" },
+  watchlist: { eyebrow: "深挖池", title: "待深挖的观察事件" },
+  drafts: { eyebrow: "简报", title: "简报工作台" },
+  publish: { eyebrow: "发布", title: "微信草稿箱交付" },
+  settings: { eyebrow: "系统配置", title: "AI 模型、信息源与系统偏好" },
   logs: { eyebrow: "运行记录", title: "系统日志与异常" },
 };
 
@@ -103,11 +100,10 @@ export default function App() {
   const [alerts, setAlerts] = useState<IntelAlert[]>([]);
   const [alertHistory, setAlertHistory] = useState<IntelAlertHistoryItem[]>([]);
   const [sources, setSources] = useState<SourceConnector[]>([]);
-  const [candidates, setCandidates] = useState<CandidateTopic[]>([]);
-  const [drafts, setDrafts] = useState<DraftItem[]>([]);
+  const [briefs, setBriefs] = useState<BriefItem[]>([]);
+  const [selectedDeepDive, setSelectedDeepDive] = useState<EventDeepDive | null>(null);
   const [entityWatchlist, setEntityWatchlist] = useState<EntityWatchlistItem[]>([]);
   const [selectedEntityId, setSelectedEntityId] = useState<string>("all");
-  const [jobs, setJobs] = useState<JobItem[]>([]);
   const [publishTasks, setPublishTasks] = useState<PublishTask[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [wechatConfig, setWechatConfig] = useState<WeChatChannelConfig | null>(null);
@@ -115,39 +111,34 @@ export default function App() {
   const [referenceProjects, setReferenceProjects] = useState<ReferenceProject[]>([]);
   const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
   const [appSettings, setAppSettings] = useState<Record<string, unknown>>({});
-  const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busyDraftId, setBusyDraftId] = useState<string | null>(null);
-  const [busyJobAction, setBusyJobAction] = useState<string | null>(null);
   const [savingChannel, setSavingChannel] = useState(false);
   const [savingLLMConfig, setSavingLLMConfig] = useState(false);
   const [refreshingSources, setRefreshingSources] = useState(false);
   const [savingSourceKey, setSavingSourceKey] = useState<string | null>(null);
   const [syncingSourceKey, setSyncingSourceKey] = useState<string | null>(null);
-  const [busyCandidateId, setBusyCandidateId] = useState<string | null>(null);
   const [busyEventId, setBusyEventId] = useState<string | null>(null);
+  const [busyBriefId, setBusyBriefId] = useState<string | null>(null);
   const [refreshingBrowser, setRefreshingBrowser] = useState(false);
   const [openingBrowser, setOpeningBrowser] = useState(false);
+  const [checkingDraftBox, setCheckingDraftBox] = useState(false);
   const [busyRuntimeAction, setBusyRuntimeAction] = useState<"start" | "stop" | null>(null);
   const [busyMaintenanceIntent, setBusyMaintenanceIntent] = useState<RuntimeIntent | null>(null);
   const [savingRuntimePlan, setSavingRuntimePlan] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [highlightDraftId, setHighlightDraftId] = useState<string | null>(null);
-  const [pendingDraftTitle, setPendingDraftTitle] = useState<string | null>(null);
-  const [pendingDraftSourceTab, setPendingDraftSourceTab] = useState<TabKey | null>(null);
+  const [pendingDeepDiveTitle, setPendingDeepDiveTitle] = useState<string | null>(null);
+  const [pendingBriefTitle, setPendingBriefTitle] = useState<string | null>(null);
 
   const refreshIntelCore = useCallback(async () => {
-    const [dashboardData, summaryData, streamData, eventData, alertData, sourceData, candidateData, logData, jobData, publishTaskData] = await Promise.all([
+    const [dashboardData, summaryData, streamData, eventData, alertData, sourceData, logData, publishTaskData] = await Promise.all([
       api.getDashboard(),
       api.getIntelSummary(),
       api.getDiscoveryItems(),
       api.getIntelEvents(),
       api.getIntelAlerts(),
       api.getIntelSources(),
-      api.getCandidates(),
       api.getLogs(),
-      api.getJobs(),
       api.getPublishTasks(),
     ]);
     setDashboard((current) =>
@@ -165,9 +156,7 @@ export default function App() {
     setAlerts(alertData.items);
     setAlertHistory(alertData.history_items ?? []);
     setSources(sourceData.items);
-    setCandidates(candidateData.items);
     setLogs(logData.items);
-    setJobs(jobData.items);
     setPublishTasks(publishTaskData.items);
     setBrowserSession(dashboardData.browser_session);
   }, []);
@@ -183,11 +172,9 @@ export default function App() {
         eventData,
         alertData,
         sourceData,
-        candidateData,
-        draftData,
+        briefData,
         entityWatchlistData,
         publishTaskData,
-        jobData,
         logData,
         channelData,
         browserData,
@@ -201,11 +188,9 @@ export default function App() {
         api.getIntelEvents(),
         api.getIntelAlerts(),
         api.getIntelSources(),
-        api.getCandidates(),
-        api.getDrafts(),
+        api.getBriefs(),
         api.getEntityWatchlist(),
         api.getPublishTasks(),
-        api.getJobs(),
         api.getLogs(),
         api.getWeChatConfig(),
         api.getBrowserSession(),
@@ -228,11 +213,9 @@ export default function App() {
       setAlerts(alertData.items);
       setAlertHistory(alertData.history_items ?? []);
       setSources(sourceData.items);
-      setCandidates(candidateData.items);
-      setDrafts(draftData.items);
+      setBriefs(briefData.items);
       setEntityWatchlist(entityWatchlistData.items);
       setPublishTasks(publishTaskData.items);
-      setJobs(jobData.items);
       setLogs(logData.items);
       setWechatConfig(channelData.item);
       setBrowserSession(browserData.item);
@@ -251,7 +234,7 @@ export default function App() {
   }, [refreshAll]);
 
   useEffect(() => {
-    const runtimeAwareTabs: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "jobs", "logs"];
+    const runtimeAwareTabs: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "publish", "logs"];
     if (!runtimeAwareTabs.includes(activeTab)) {
       return;
     }
@@ -370,46 +353,18 @@ export default function App() {
     setActiveTab("events");
   }
 
-  async function handleCreateDraft(candidateId: string, mode: PublishMode) {
-    setBusyCandidateId(candidateId);
-    try {
-      await api.createDraftFromCandidate(candidateId, mode);
-      const [candidateData, draftData] = await Promise.all([api.getCandidates(), api.getDrafts()]);
-      setCandidates(candidateData.items);
-      setDrafts(draftData.items);
-      setActiveTab("drafts");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "生成稿件失败");
-    } finally {
-      setBusyCandidateId(null);
-    }
-  }
-
-  async function handleCreateDraftFromEvent(eventId: string) {
+  async function handleDeepDiveEvent(eventId: string, force = false) {
     const sourceEvent = events.find((event) => event.id === eventId) ?? alerts.find((alert) => alert.event_id === eventId);
-    const draftTitleHint = sourceEvent?.title ?? "当前事件";
     setBusyEventId(eventId);
-    setPendingDraftTitle(draftTitleHint);
-    setPendingDraftSourceTab(activeTab);
-    setHighlightDraftId(null);
+    setPendingDeepDiveTitle(sourceEvent?.title ?? "当前事件");
     try {
-      const response = await api.createDraftFromEvent(eventId);
-      setDrafts((current) => {
-        const existing = current.find((item) => item.id === response.item.id);
-        if (existing) {
-          return current.map((item) => (item.id === response.item.id ? response.item : item));
-        }
-        return [response.item, ...current];
-      });
-      setActiveTab("drafts");
-      setHighlightDraftId(response.item.id);
-      const [draftData, eventData, alertData, dashboardData] = await Promise.all([
-        api.getDrafts(),
+      const [deepDiveResponse, eventData, alertData, dashboardData] = await Promise.all([
+        api.createEventDeepDive(eventId, force),
         api.getIntelEvents(),
         api.getIntelAlerts(),
         api.getDashboard(),
       ]);
-      setDrafts(draftData.items);
+      setSelectedDeepDive((current) => (current?.event_id === eventId ? deepDiveResponse.item : current));
       setEvents(eventData.items);
       setEventHistory(eventData.history_items ?? []);
       setAlerts(alertData.items);
@@ -422,62 +377,43 @@ export default function App() {
               runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
             },
       );
-      showToast(`稿件已生成：${response.item.title}`);
+      setActiveTab("watchlist");
+      showToast(`正文深挖已完成：${sourceEvent?.title ?? "当前事件"}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "生成稿件失败");
+      setError(err instanceof Error ? err.message : "正文深挖失败");
     } finally {
       setBusyEventId(null);
-      setPendingDraftTitle(null);
-      setPendingDraftSourceTab(null);
+      setPendingDeepDiveTitle(null);
     }
   }
 
-  async function handleDraftAction(kind: "regenerate" | "approve" | "sync" | "preview" | "publish", draftId: string) {
-    setBusyDraftId(draftId);
+  async function handleOpenDeepDive(eventId: string) {
+    if (selectedDeepDive?.event_id === eventId) {
+      setSelectedDeepDive(null);
+      return;
+    }
     try {
-      if (kind === "regenerate") {
-        await api.regenerateDraft(draftId);
-      } else if (kind === "approve") {
-        await api.approveDraft(draftId, true);
-      } else if (kind === "sync") {
-        await api.syncWeChatDraft(draftId);
-      } else if (kind === "preview") {
-        await api.openPreview(draftId);
-      } else {
-        await api.publishDraft(draftId);
-      }
-      const draftData = await api.getDrafts();
-      setDrafts(draftData.items);
-      const dashboardData = await api.getDashboard();
-      setDashboard((current) =>
-        !current
-          ? dashboardData
-          : {
-              ...dashboardData,
-              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
-            },
-      );
-      setBrowserSession(dashboardData.browser_session);
+      const response = await api.getEventDeepDive(eventId);
+      setSelectedDeepDive(response.item);
+      setActiveTab("watchlist");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "稿件动作执行失败");
-    } finally {
-      setBusyDraftId(null);
+      setError(err instanceof Error ? err.message : "正文深挖详情加载失败");
     }
   }
 
-  async function handleDeleteDraft(draftId: string) {
-    setBusyDraftId(draftId);
+  async function handleCreateBrief(eventId: string) {
+    const sourceEvent = events.find((event) => event.id === eventId) ?? alerts.find((alert) => alert.event_id === eventId);
+    setBusyEventId(eventId);
+    setPendingBriefTitle(sourceEvent?.title ?? "当前事件");
     try {
-      await api.deleteDraft(draftId);
-      const [draftData, candidateData, eventData, alertData, dashboardData] = await Promise.all([
-        api.getDrafts(),
-        api.getCandidates(),
+      const response = await api.createBriefFromEvent(eventId);
+      const [briefData, eventData, alertData, dashboardData] = await Promise.all([
+        api.getBriefs(),
         api.getIntelEvents(),
         api.getIntelAlerts(),
         api.getDashboard(),
       ]);
-      setDrafts(draftData.items);
-      setCandidates(candidateData.items);
+      setBriefs(briefData.items);
       setEvents(eventData.items);
       setEventHistory(eventData.history_items ?? []);
       setAlerts(alertData.items);
@@ -490,27 +426,42 @@ export default function App() {
               runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
             },
       );
-      if (editingDraftId === draftId) {
-        setEditingDraftId(null);
-      }
-      if (highlightDraftId === draftId) {
-        setHighlightDraftId(null);
-      }
-      showToast("稿件已删除");
+      setActiveTab("drafts");
+      showToast(response.item.brief_level === "enhanced" ? `AI增强简报已生成：${response.item.title}` : `规则简报已生成：${response.item.title}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "删除稿件失败");
+      setError(err instanceof Error ? err.message : "简报生成失败");
     } finally {
-      setBusyDraftId(null);
+      setBusyEventId(null);
+      setPendingBriefTitle(null);
     }
   }
 
-  async function handleRunJob(action: string) {
-    setBusyJobAction(action);
+  async function handleBriefAction(kind: "sync" | "copy" | "copyPackage" | "refresh", brief: BriefItem) {
+    setBusyBriefId(brief.id);
     try {
-      await api.runJob(action);
-      const [jobData, logData, dashboardData] = await Promise.all([api.getJobs(), api.getLogs(), api.getDashboard()]);
-      setJobs(jobData.items);
-      setLogs(logData.items);
+      if (kind === "sync") {
+        await api.syncBriefWeChatDraft(brief.id);
+      } else if (kind === "copy") {
+        await navigator.clipboard.writeText(brief.wechat_markdown || brief.prompt_package_markdown);
+        showToast("简报已复制");
+      } else if (kind === "copyPackage") {
+        const response = await api.copyBriefPackage(brief.id);
+        await navigator.clipboard.writeText(response.markdown);
+        showToast("来源包已复制");
+      } else {
+        await api.createBriefFromEvent(brief.event_id);
+      }
+      const [briefData, eventData, alertData, dashboardData] = await Promise.all([
+        api.getBriefs(),
+        api.getIntelEvents(),
+        api.getIntelAlerts(),
+        api.getDashboard(),
+      ]);
+      setBriefs(briefData.items);
+      setEvents(eventData.items);
+      setEventHistory(eventData.history_items ?? []);
+      setAlerts(alertData.items);
+      setAlertHistory(alertData.history_items ?? []);
       setDashboard((current) =>
         !current
           ? dashboardData
@@ -520,17 +471,42 @@ export default function App() {
             },
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "任务执行失败");
+      setError(err instanceof Error ? err.message : "简报动作执行失败");
     } finally {
-      setBusyJobAction(null);
+      setBusyBriefId(null);
     }
+  }
+
+  async function handleCopyBrief(brief: BriefItem) {
+    await handleBriefAction("copy", brief);
+  }
+
+  async function handleCopyBriefPackage(briefId: string) {
+    const brief = briefs.find((item) => item.id === briefId);
+    if (!brief) return;
+    await handleBriefAction("copyPackage", brief);
   }
 
   async function handleSaveChannel(payload: WeChatChannelConfig) {
     setSavingChannel(true);
     try {
-      await api.updateWeChatConfig(payload);
-      await refreshAll();
+      const [channelResult, browserResult, publishBackendsResult] = await Promise.all([
+        api.updateWeChatConfig(payload),
+        api.getBrowserSession(),
+        api.getPublishBackends(),
+      ]);
+      setWechatConfig(channelResult.item);
+      setBrowserSession(browserResult.item);
+      setDashboard((current) =>
+        current
+          ? {
+              ...current,
+              browser_session: browserResult.item,
+              publish_backends: publishBackendsResult.items,
+            }
+          : current,
+      );
+      showToast(`浏览器配置已保存：${channelResult.item.browser_name === "chrome" ? "Chrome" : "Edge"}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "渠道保存失败");
     } finally {
@@ -538,11 +514,16 @@ export default function App() {
     }
   }
 
-  async function handleSaveLLMConfig(config: LLMConfig) {
+  async function handleSaveLLMConfig(config: LLMConfig, tavilyApiKey: string) {
     setSavingLLMConfig(true);
     try {
-      const result = await api.updateLLMConfig(config);
-      setLlmConfig(result.item);
+      const [llmResult, settingsResult] = await Promise.all([
+        api.updateLLMConfig(config),
+        api.updateSettings({ tavily_api_key: tavilyApiKey }),
+      ]);
+      setLlmConfig(llmResult.item);
+      setAppSettings(settingsResult.item);
+      showToast("AI 配置已保存");
     } catch (err) {
       setError(err instanceof Error ? err.message : "AI 模型配置保存失败");
     } finally {
@@ -558,14 +539,6 @@ export default function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "设置保存失败");
     }
-  }
-
-  function handleEditDraft(draftId: string) {
-    setEditingDraftId(draftId);
-  }
-
-  function handleDraftContentSaved(draftId: string, updated: DraftItem) {
-    setDrafts((prev) => prev.map((draft) => (draft.id === draftId ? updated : draft)));
   }
 
   async function handleRefreshBrowser(payload: Pick<BrowserSessionState, "browser_name" | "user_data_dir">) {
@@ -591,6 +564,19 @@ export default function App() {
       setError(err instanceof Error ? err.message : "打开公众号后台失败");
     } finally {
       setOpeningBrowser(false);
+    }
+  }
+
+  async function handleCheckDraftBox() {
+    setCheckingDraftBox(true);
+    try {
+      const result = await api.checkWeChatDraftBox();
+      await refreshAll();
+      showToast(result.item.message || `已检查微信草稿箱：远端 ${result.item.remote_count} 条，本地缺失 ${result.item.missing_count} 条`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "微信草稿箱检查失败");
+    } finally {
+      setCheckingDraftBox(false);
     }
   }
 
@@ -750,7 +736,7 @@ export default function App() {
         </div>
 
         <div className="nav-group">
-          <p className="nav-group-label">稿件</p>
+          <p className="nav-group-label">交付</p>
           <nav className="nav-list">{renderNavGroup(draftTabs)}</nav>
         </div>
 
@@ -802,15 +788,17 @@ export default function App() {
           </div>
         ) : null}
 
-        {pendingDraftTitle && activeTab !== "drafts" ? (
+        {pendingDeepDiveTitle && activeTab !== "watchlist" ? (
           <div className="setup-banner">
-            <strong>AI 正在生成稿件</strong>
-            <p>
-              正在整理《{pendingDraftTitle}》的写稿简报并生成初稿。
-              {pendingDraftSourceTab === "events" ? " 生成完成后会自动跳到稿件页。" : ""}
-              {pendingDraftSourceTab === "alerts" ? " 生成完成后会自动带你进入稿件页。" : ""}
-              {pendingDraftSourceTab === "watchlist" ? " 完成后会自动定位到新稿件。" : ""}
-            </p>
+            <strong>正在执行正文深挖</strong>
+            <p>如已配置 Tavily，会先补充《{pendingDeepDiveTitle}》的来源；随后抓取正文全文，完成后会更新深挖池状态。</p>
+          </div>
+        ) : null}
+
+        {pendingBriefTitle && activeTab !== "drafts" ? (
+          <div className="setup-banner">
+            <strong>正在生成简报</strong>
+            <p>正在把《{pendingBriefTitle}》的已抓取全文与证据全部交给 AI，完成后会更新简报工作台。</p>
           </div>
         ) : null}
 
@@ -820,7 +808,7 @@ export default function App() {
         activeTab !== "settings" ? (
           <div className="setup-banner" onClick={() => setActiveTab("settings")}>
             <strong>AI 模型未配置</strong>
-            <p>填入 API Key 后，稿件生成和情报辅助判断才会启用。</p>
+            <p>填入 API Key 后，增强简报才会启用；规则简报和正文深挖仍可继续运行。</p>
           </div>
         ) : null}
 
@@ -868,7 +856,7 @@ export default function App() {
                 onOpenEntity={handleOpenEntity}
                 onWatchEvent={handleWatchEvent}
                 onIgnoreEvent={handleIgnoreEvent}
-                onCreateDraft={handleCreateDraftFromEvent}
+                onDeepDive={handleDeepDiveEvent}
                 busyEventId={busyEventId}
               />
             ) : null}
@@ -880,7 +868,7 @@ export default function App() {
                 eventCount={events.length}
                 selectedEntityId={selectedEntityId}
                 onSelectedEntityChange={setSelectedEntityId}
-                onCreateDraft={handleCreateDraftFromEvent}
+                onDeepDive={handleDeepDiveEvent}
                 busyEventId={busyEventId}
               />
             ) : null}
@@ -897,60 +885,53 @@ export default function App() {
             ) : null}
 
             {activeTab === "watchlist" ? (
-              <WatchlistPanel
-                items={events.filter((event) => event.watchlisted && !event.ignored)}
+              <DeepDivePoolPanel
+                items={events.filter((event) => (event.watchlisted || event.deep_dive_id || event.brief_id) && !event.ignored)}
+                selectedDeepDive={selectedDeepDive}
                 busyEventId={busyEventId}
-                onCreateDraft={handleCreateDraftFromEvent}
+                onDeepDive={handleDeepDiveEvent}
+                onCreateBrief={handleCreateBrief}
+                onOpenDeepDive={handleOpenDeepDive}
               />
             ) : null}
 
             {activeTab === "drafts" ? (
-              <DraftTable
-                drafts={drafts}
-                busyDraftId={busyDraftId}
-                highlightDraftId={highlightDraftId}
-                pendingDraftTitle={pendingDraftTitle}
-                onRegenerate={(draftId) => handleDraftAction("regenerate", draftId)}
-                onApprove={(draftId) => handleDraftAction("approve", draftId)}
-                onSyncDraft={(draftId) => handleDraftAction("sync", draftId)}
-                onPreview={(draftId) => handleDraftAction("preview", draftId)}
-                onPublish={(draftId) => handleDraftAction("publish", draftId)}
-                onDelete={handleDeleteDraft}
-                onEdit={handleEditDraft}
+              <BriefTable
+                briefs={briefs}
+                busyBriefId={busyBriefId}
+                onRefreshBrief={(eventId) => handleCreateBrief(eventId)}
+                onCopyBrief={handleCopyBrief}
+                onCopyPackage={handleCopyBriefPackage}
               />
             ) : null}
 
-            {activeTab === "jobs" ? (
-              <JobsPanel
-                jobs={jobs}
+            {activeTab === "publish" ? (
+              <PublishPanel
+                config={wechatConfig}
+                browserSession={browserSession}
+                publishBackends={dashboard.publish_backends}
                 publishTasks={publishTasks}
-                runtime={dashboard.runtime_status}
-                runtimePlan={dashboard.runtime_plan}
-                currentAutomationMode={dashboard.current_automation_mode}
-                busyAction={busyJobAction}
-                onRun={handleRunJob}
+                isSaving={savingChannel}
+                isRefreshingBrowser={refreshingBrowser}
+                isOpeningBrowser={openingBrowser}
+                isCheckingDraftBox={checkingDraftBox}
+                onSave={handleSaveChannel}
+                onRefreshBrowser={handleRefreshBrowser}
+                onOpenBrowserDashboard={handleOpenBrowserDashboard}
+                onCheckDraftBox={handleCheckDraftBox}
               />
             ) : null}
 
             {activeTab === "settings" ? (
               <SettingsPanel
-                config={wechatConfig}
-                browserSession={browserSession}
-                publishBackends={dashboard.publish_backends}
                 referenceProjects={referenceProjects}
                 llmConfig={llmConfig}
                 sources={sources}
                 syncingSources={refreshingSources}
                 savingSourceKey={savingSourceKey}
                 syncingSourceKey={syncingSourceKey}
-                isSaving={savingChannel}
                 isSavingLLM={savingLLMConfig}
-                isRefreshingBrowser={refreshingBrowser}
-                isOpeningBrowser={openingBrowser}
-                onSaveChannel={handleSaveChannel}
                 onSaveLLMConfig={handleSaveLLMConfig}
-                onRefreshBrowser={handleRefreshBrowser}
-                onOpenBrowserDashboard={handleOpenBrowserDashboard}
                 onSyncSources={handleSourceSync}
                 onSyncSource={handleSourceSyncOne}
                 onSaveSource={handleSourceSave}
@@ -966,16 +947,6 @@ export default function App() {
         ) : null}
       </main>
 
-      {editingDraftId ? (() => {
-        const editingDraft = drafts.find((draft) => draft.id === editingDraftId);
-        return editingDraft ? (
-          <DraftEditorModal
-            draft={editingDraft}
-            onClose={() => setEditingDraftId(null)}
-            onSave={handleDraftContentSaved}
-          />
-        ) : null;
-      })() : null}
     </div>
   );
 }

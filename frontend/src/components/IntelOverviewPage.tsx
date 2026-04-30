@@ -34,6 +34,17 @@ const LAUNCH_MODE_LABELS: Record<RuntimePlan["launch_mode"], string> = {
   interval_at: "定时循环",
 };
 
+const DELIVERY_MODE_LABELS: Record<RuntimePlan["delivery_mode"], string> = {
+  immediate: "立即上传",
+  scheduled_batch: "定时批量",
+};
+
+const ADMISSION_STRATEGY_LABELS: Record<RuntimePlan["admission_strategy"], string> = {
+  conservative: "保守",
+  balanced: "平衡",
+  aggressive: "激进",
+};
+
 function plansEqual(left: Omit<RuntimePlan, "effective_mode">, right: RuntimePlan) {
   const leftStartAt = left.launch_mode.endsWith("_at") ? (left.start_at ?? null) : null;
   const rightStartAt = right.launch_mode.endsWith("_at") ? (right.start_at ?? null) : null;
@@ -43,7 +54,12 @@ function plansEqual(left: Omit<RuntimePlan, "effective_mode">, right: RuntimePla
     left.launch_mode === right.launch_mode &&
     leftStartAt === rightStartAt &&
     leftInterval === rightInterval &&
-    left.timezone === right.timezone
+    left.timezone === right.timezone &&
+    left.delivery_mode === right.delivery_mode &&
+    (left.delivery_mode === "scheduled_batch" ? (left.delivery_schedule_time ?? null) : null) === (right.delivery_mode === "scheduled_batch" ? (right.delivery_schedule_time ?? null) : null) &&
+    left.admission_strategy === right.admission_strategy &&
+    left.batch_limit === right.batch_limit &&
+    JSON.stringify(left.admission_filters ?? {}) === JSON.stringify(right.admission_filters ?? {})
   );
 }
 
@@ -54,6 +70,11 @@ function buildPlanDraft(runtimePlan: RuntimePlan): Omit<RuntimePlan, "effective_
     interval_minutes: runtimePlan.launch_mode.includes("interval") ? (runtimePlan.interval_minutes ?? 30) : null,
     timezone: runtimePlan.timezone,
     work_scope: "collect_events_alerts",
+    delivery_mode: runtimePlan.delivery_mode,
+    delivery_schedule_time: runtimePlan.delivery_schedule_time ?? null,
+    admission_strategy: runtimePlan.admission_strategy,
+    batch_limit: runtimePlan.batch_limit,
+    admission_filters: { ...runtimePlan.admission_filters },
   };
 }
 
@@ -209,6 +230,12 @@ export function IntelOverviewPage({
     }
     return `${formatDateTime(planDraft.start_at, { fallback: "未设定" })} 开始，每 ${planDraft.interval_minutes ?? 30} 分钟`;
   }, [planDraft]);
+  const deliveryDescriptor = useMemo(() => {
+    if (planDraft.delivery_mode === "immediate") {
+      return `交付层${DELIVERY_MODE_LABELS[planDraft.delivery_mode]}`;
+    }
+    return `交付层${DELIVERY_MODE_LABELS[planDraft.delivery_mode]} ${planDraft.delivery_schedule_time || "未设定"}`;
+  }, [planDraft.delivery_mode, planDraft.delivery_schedule_time]);
   const nextRunTime = summary.next_run_at ?? runtime.next_collect_at ?? null;
   const nextRunCountdown = useMemo(() => formatCountdown(nextRunTime, "未安排", countdownNow), [countdownNow, nextRunTime]);
   const lastRunResultLabel = useMemo(() => {
@@ -238,9 +265,9 @@ export function IntelOverviewPage({
       case "maintenance_running":
         return "本轮执行中";
       default:
-        return scheduleDescriptor;
+        return `${scheduleDescriptor} · ${deliveryDescriptor}`;
     }
-  }, [cycleSummary, nextRunCountdown, nextRunTime, runtime.last_cycle_duration_seconds, scheduleDescriptor, visualState]);
+  }, [cycleSummary, deliveryDescriptor, nextRunCountdown, nextRunTime, runtime.last_cycle_duration_seconds, scheduleDescriptor, visualState]);
 
   async function handleStart() {
     if (planDirty) {
@@ -327,6 +354,7 @@ export function IntelOverviewPage({
               { intent: "collect_validation", label: "仅采集素材" },
               { intent: "event_rebuild", label: "重建事件" },
               { intent: "alert_rebuild", label: "重算预警" },
+              { intent: "normal_monitoring", label: "补跑完整交付" },
             ] as Array<{ intent: RuntimeIntent; label: string }>).map((item) => (
               <button
                 key={item.intent}
@@ -461,6 +489,74 @@ export function IntelOverviewPage({
                 </select>
               </label>
             ) : null}
+
+            <label>
+              <span>交付模式</span>
+              <select
+                value={planDraft.delivery_mode}
+                onChange={(event) =>
+                  setPlanDraft((current) => ({
+                    ...current,
+                    delivery_mode: event.target.value as RuntimePlan["delivery_mode"],
+                    delivery_schedule_time: event.target.value === "scheduled_batch" ? (current.delivery_schedule_time ?? "09:00") : null,
+                  }))
+                }
+              >
+                <option value="immediate">立即上传</option>
+                <option value="scheduled_batch">定时批量上传</option>
+              </select>
+            </label>
+
+            {planDraft.delivery_mode === "scheduled_batch" ? (
+              <label>
+                <span>批量时间</span>
+                <input
+                  type="time"
+                  value={planDraft.delivery_schedule_time ?? "09:00"}
+                  onChange={(event) =>
+                    setPlanDraft((current) => ({
+                      ...current,
+                      delivery_schedule_time: event.target.value || "09:00",
+                    }))
+                  }
+                />
+              </label>
+            ) : null}
+
+            <label>
+              <span>准入策略</span>
+              <select
+                value={planDraft.admission_strategy}
+                onChange={(event) =>
+                  setPlanDraft((current) => ({
+                    ...current,
+                    admission_strategy: event.target.value as RuntimePlan["admission_strategy"],
+                  }))
+                }
+              >
+                <option value="conservative">保守</option>
+                <option value="balanced">平衡</option>
+                <option value="aggressive">激进</option>
+              </select>
+            </label>
+
+            <label>
+              <span>每轮上限</span>
+              <select
+                value={String(planDraft.batch_limit)}
+                onChange={(event) =>
+                  setPlanDraft((current) => ({
+                    ...current,
+                    batch_limit: Number(event.target.value),
+                  }))
+                }
+              >
+                <option value="1">1 条</option>
+                <option value="2">2 条</option>
+                <option value="3">3 条</option>
+                <option value="5">5 条</option>
+              </select>
+            </label>
           </div>
         ) : null}
 
@@ -471,6 +567,8 @@ export function IntelOverviewPage({
               <span>当前状态: {footerPhaseLabel}</span>
               <span>上轮: {formatDateTime(runtime.last_cycle_started_at, { fallback: "尚未执行" })}</span>
               <span>耗时: {formatDuration(runtime.last_cycle_duration_seconds, "暂无")}</span>
+              <span>交付: {DELIVERY_MODE_LABELS[planDraft.delivery_mode]}</span>
+              <span>策略: {ADMISSION_STRATEGY_LABELS[planDraft.admission_strategy]}</span>
             </div>
             <div className="intel-plan-actions">
               {planDirty ? <span className="dirty-chip">有未保存变更</span> : <span className="subtle-chip">已保存</span>}
@@ -660,7 +758,7 @@ export function IntelOverviewPage({
               </div>
             </div>
           </div>
-          {cycleSummary ? (
+            {cycleSummary ? (
             <div className="intel-runtime-summary">
               <div className="intel-score-row">
                 <span>成功来源 {cycleSummary.success_source_count}</span>
@@ -668,7 +766,48 @@ export function IntelOverviewPage({
                 <span>新增素材 {cycleSummary.new_items_count}</span>
                 <span>新事件 {cycleSummary.new_events_count}</span>
                 <span>升温事件 {cycleSummary.growing_events_count}</span>
+                <span>入选 {cycleSummary.selected_event_count}</span>
+                <span>深挖 {cycleSummary.deep_dive_count}</span>
+                <span>简报 {cycleSummary.brief_count}</span>
+                <span>上传 {cycleSummary.wechat_sync_count}</span>
+                <span>回查 {cycleSummary.wechat_verify_count}</span>
               </div>
+              {runtime.blocked_reason || cycleSummary.blocked_reason ? (
+                <div className="intel-runtime-section">
+                  <strong>当前阻断</strong>
+                  <p>{runtime.blocked_reason || cycleSummary.blocked_reason}</p>
+                </div>
+              ) : null}
+              {cycleSummary.recent_selected_titles.length ? (
+                <div className="intel-runtime-section">
+                  <strong>最近入选事件</strong>
+                  <div className="intel-runtime-chip-row">
+                    {cycleSummary.recent_selected_titles.map((item) => (
+                      <span key={item} className="subtle-chip">{item}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {cycleSummary.recent_brief_titles.length ? (
+                <div className="intel-runtime-section">
+                  <strong>最近生成简报</strong>
+                  <div className="intel-runtime-chip-row">
+                    {cycleSummary.recent_brief_titles.map((item) => (
+                      <span key={item} className="subtle-chip">{item}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {cycleSummary.recent_synced_titles.length ? (
+                <div className="intel-runtime-section">
+                  <strong>最近上传草稿箱</strong>
+                  <div className="intel-runtime-chip-row">
+                    {cycleSummary.recent_synced_titles.map((item) => (
+                      <span key={item} className="subtle-chip">{item}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {cycleSummary.slow_sources.length ? (
                 <div className="intel-runtime-section">
                   <strong>最慢来源 Top 3</strong>

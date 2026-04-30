@@ -418,8 +418,19 @@ function CCImportDialog({ onClose, onImported }: { onClose: () => void; onImport
   );
 }
 
-export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: { config: LLMConfig; isSaving: boolean; onSave: (config: LLMConfig) => Promise<void> }) {
+export function LLMSettingsPanel({
+  config: initialConfig,
+  tavilyApiKey: initialTavilyApiKey,
+  isSaving,
+  onSave,
+}: {
+  config: LLMConfig;
+  tavilyApiKey: string;
+  isSaving: boolean;
+  onSave: (config: LLMConfig, tavilyApiKey: string) => Promise<void>;
+}) {
   const [draftConfig, setDraftConfig] = useState<LLMConfig>(() => hydrate(initialConfig));
+  const [tavilyApiKey, setTavilyApiKey] = useState(initialTavilyApiKey);
   const [editingProfile, setEditingProfile] = useState<LLMProfileConfig | null>(null);
   const [testingProfileId, setTestingProfileId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<LLMTestResult | null>(null);
@@ -427,8 +438,9 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: { 
 
   useEffect(() => {
     setDraftConfig(hydrate(initialConfig));
+    setTavilyApiKey(initialTavilyApiKey);
     setTestResult(null);
-  }, [initialConfig]);
+  }, [initialConfig, initialTavilyApiKey]);
 
   function updateProfiles(
     profiles: LLMProfileConfig[],
@@ -452,7 +464,7 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: { 
   }
 
   async function handleSave() {
-    await onSave(draftConfig);
+    await onSave(draftConfig, tavilyApiKey);
   }
 
   async function handleTest(profile: LLMProfileConfig) {
@@ -508,7 +520,7 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: { 
       currentProfileId: nextCurrentId,
       fallbackProfileId: nextFallbackId,
     });
-    await onSave(nextConfig);
+    await onSave(nextConfig, tavilyApiKey);
   }
 
   async function handleCCImported() {
@@ -600,7 +612,7 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: { 
 
           {testResult && (
             <div style={{ marginTop: 12, padding: 10, borderRadius: 8, background: testResult.ok ? "#ecfdf5" : "#fef2f2", border: `1px solid ${testResult.ok ? "#a7f3d0" : "#fecaca"}`, fontSize: 13 }}>
-              <strong>{testResult.ok ? (testResult.supports_generation ? "测试成功，可用于稿件生成" : "连接成功") : "测试失败"}</strong>
+              <strong>{testResult.ok ? (testResult.supports_generation ? "测试成功，可用于增强简报" : "连接成功") : "测试失败"}</strong>
               {testResult.ok ? (
                 <>
                   <p style={{ margin: "4px 0 0", color: "#166534" }}>
@@ -635,7 +647,7 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: { 
             <strong>当前默认模型</strong>
           </div>
           <p className="subtle" style={{ fontSize: 13, marginBottom: 12 }}>
-            系统只在生成稿件时使用 AI。这里决定默认写稿模型。
+            系统只在生成增强简报时使用 AI。这里决定默认模型。
           </p>
           <div className="llm-task-row" style={{ marginBottom: 20 }}>
             <span className="llm-task-label">默认模型</span>
@@ -665,7 +677,7 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: { 
             <strong>备用模型</strong>
           </div>
           <p className="subtle" style={{ fontSize: 13, marginBottom: 12 }}>
-            默认模型遇到限流、超时或连接失败时，系统会自动切到这里继续写稿。
+            默认模型遇到限流、超时或连接失败时，系统会自动切到这里继续补全增强简报。
           </p>
           <div className="llm-task-row">
             <span className="llm-task-label">备用模型</span>
@@ -702,7 +714,7 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: { 
               <div className="llm-runtime-row">
                 <strong>当前状态</strong>
                 <span className={`llm-runtime-badge ${activeVerified ? "llm-runtime-badge-ok" : "llm-runtime-badge-warn"}`}>
-                  {activeVerified ? "可用于稿件生成" : "存在运行风险"}
+                  {activeVerified ? "可用于增强简报" : "存在运行风险"}
                 </span>
               </div>
               <div className="llm-runtime-grid">
@@ -724,15 +736,33 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: { 
 
           {!activeReady && (
             <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, background: "#fff7ed", border: "1px solid #fed7aa", fontSize: 13, color: "#9a3412" }}>
-              当前默认模型还没有可用 API Key，稿件生成时不会调用 AI。
+              当前默认模型还没有可用 API Key，增强简报时不会调用 AI。
             </div>
           )}
 
           {activeReady && !activeVerified && (
             <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, background: "#fff7ed", border: "1px solid #fed7aa", fontSize: 13, color: "#9a3412" }}>
-              当前默认模型尚未完成写稿能力验证。建议先点一次测试，确认它不是网页首页、协议不匹配或缺少模型。
+              当前默认模型尚未完成增强简报能力验证。建议先点一次测试，确认它不是网页首页、协议不匹配或缺少模型。
             </div>
           )}
+
+          <div style={{ marginTop: 20, padding: "14px 16px", borderRadius: 12, background: "#f8fafc", border: "1px solid #e2e8f0" }}>
+            <div className="llm-editor-head" style={{ marginBottom: 8 }}>
+              <strong>Tavily</strong>
+            </div>
+            <p className="subtle" style={{ fontSize: 13, marginBottom: 12 }}>
+              Tavily 只在正文深挖前补充来源，不参与增强简报模型主备切换。
+            </p>
+            <label className="llm-key-field">
+              <span>Tavily API Key</span>
+              <input
+                type="password"
+                value={tavilyApiKey}
+                onChange={(event) => setTavilyApiKey(event.target.value)}
+                placeholder="tvly-..."
+              />
+            </label>
+          </div>
 
           <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
             <button className="primary-button" disabled={isSaving} onClick={() => void handleSave()}>
@@ -748,7 +778,7 @@ export function LLMSettingsPanel({ config: initialConfig, isSaving, onSave }: { 
           onSave={(updated) => {
             const profiles = draftConfig.profiles.map((profile) => profile.id === updated.id ? updated : profile);
             const nextConfig = updateProfiles(profiles);
-            onSave(nextConfig).then(() => setEditingProfile(null));
+            onSave(nextConfig, tavilyApiKey).then(() => setEditingProfile(null));
           }}
           onClose={() => setEditingProfile(null)}
         />

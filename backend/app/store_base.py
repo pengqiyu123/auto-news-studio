@@ -49,14 +49,17 @@ MODE_STAGE_PLANS: dict[str, list[dict[str, str]]] = {
         {"key": "collecting", "label": "采集素材"},
         {"key": "clustering", "label": "聚合热点事件"},
         {"key": "scoring", "label": "判断热度与预警"},
-        {"key": "drafting", "label": "生成稿件"},
+        {"key": "deep_dive", "label": "正文深挖"},
+        {"key": "briefing", "label": "生成简报"},
     ],
     "full_pipeline": [
         {"key": "collecting", "label": "采集素材"},
         {"key": "clustering", "label": "聚合热点事件"},
         {"key": "scoring", "label": "判断热度与预警"},
-        {"key": "drafting", "label": "生成稿件"},
-        {"key": "wechat_sync", "label": "分发与同步"},
+        {"key": "deep_dive", "label": "正文深挖"},
+        {"key": "briefing", "label": "生成简报"},
+        {"key": "wechat_sync", "label": "上传微信草稿箱"},
+        {"key": "wechat_verify", "label": "回查草稿箱"},
     ],
 }
 
