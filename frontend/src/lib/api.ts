@@ -32,6 +32,7 @@ import type {
   RuntimeIntent,
   SchedulerStatus,
   SourceConnector,
+  SystemDoctorResult,
   WeChatChannelConfig,
   WeChatDraftSyncCheckResult,
   WeChatMappingSnapshot
@@ -430,5 +431,28 @@ export const api = {
     request<{ item: Record<string, unknown> }>("/api/admin/settings", {
       method: "PUT",
       body: JSON.stringify(payload)
-    })
+    }),
+  getSystemDoctor: () => request<{ item: SystemDoctorResult }>("/api/admin/system/doctor"),
+  exportSystemConfig: async () => {
+    const response = await fetch(`${API_BASE}/api/admin/system/export-config`, { method: "POST" });
+    if (!response.ok) throw new Error("导出配置失败");
+    return response.blob();
+  },
+  exportSystemBackup: async () => {
+    const response = await fetch(`${API_BASE}/api/admin/system/export-backup`, { method: "POST" });
+    if (!response.ok) throw new Error("导出备份失败");
+    return response.blob();
+  },
+  importSystemBackup: async (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch(`${API_BASE}/api/admin/system/import-backup`, {
+      method: "POST",
+      body: formData
+    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    return response.json() as Promise<{ ok: boolean; message: string; backup_path?: string | null }>;
+  }
 };

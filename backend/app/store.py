@@ -7,8 +7,11 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from html import escape
 import json
+import os
+import shutil
 import time
 import traceback
+import zipfile
 from pathlib import Path
 import re
 from threading import RLock, Thread
@@ -16,10 +19,15 @@ from typing import Any
 from uuid import uuid4
 
 from .store_base import (
+    BACKUP_DIR,
+    CONFIG_FILE,
+    CONFIG_DIR,
     DATA_FILE,
     DEFAULT_RUNTIME_INTENT,
+    DEFAULT_USER_SETTINGS,
     INTENT_STAGE_PLANS,
     INTENT_TO_WORK_SCOPE,
+    LOG_DIR,
     LOCAL_TZ,
     LOCAL_TZ as LTZ,
     MAX_RAW_ITEMS,
@@ -31,15 +39,20 @@ from .store_base import (
     SYNTHETIC_MARKERS,
     UTC,
     UNSUPPORTED_SOURCE_DRIVERS,
+    atomic_write_json,
+    backup_file,
     _contains_synthetic_marker,
+    deepcopy_json,
     _extract_json_payload,
     _is_synthetic_raw_item,
+    ensure_parent_dir,
     freshness_bucket,
     local_now,
     minutes_between,
     now_iso,
     parse_clock_time,
     parse_time,
+    read_json_file,
     schedule_to_minutes,
 )
 
@@ -69,6 +82,7 @@ from .models import (
     ExecutionChainSnapshot,
     FreshnessSnapshot,
     GithubSignalItem,
+    ImportBackupResponse,
     IntelAlert,
     IntelAlertsResponse,
     IntelEvent,
@@ -93,6 +107,8 @@ from .models import (
     SourceConnectorPayload,
     CreateSourcePayload,
     SourceSyncResponse,
+    SystemDoctorResult,
+    SystemCheckItem,
     WeChatDraftSyncCheckResult,
     WeChatMappingResponse,
     WeChatMappingRow,
@@ -118,6 +134,7 @@ from .store_defaults import (
 from .pipeline import normalize_raw_items
 from .publishers import (
     WECHAT_BROWSER_MANAGER,
+    build_remote_draft_key,
     build_preview_url,
     build_wechat_target_id,
     collect_backend_status,
@@ -234,6 +251,7 @@ def _wechat_html(markdown: str) -> str:
 class StudioStore:
     def __init__(self, data_file: Path = DATA_FILE):
         self.data_file = data_file
+        self.config_file = CONFIG_FILE
         self._lock = RLock()
         self._progress_snapshot: dict[str, Any] = {
             "percent": 0, "done": 0, "total": 0,
@@ -242,9 +260,13 @@ class StudioStore:
         }
         self._completion_hold_until: float = 0.0
         self.data_file.parent.mkdir(parents=True, exist_ok=True)
+        ensure_parent_dir(self.config_file)
         if not self.data_file.exists():
+            self._write_config(self._bootstrap_user_settings())
             self._write(self._bootstrap_state())
             return
+        if not self.config_file.exists():
+            self._migrate_legacy_config()
         state = self._upgrade_state(self._read())
         required_keys = {"sources", "channels", "browser", "reference_projects"}
         source_shape_ok = bool(state.get("sources")) and all("driver" in item for item in state.get("sources", []))
@@ -259,6 +281,7 @@ class StudioStore:
             self._write(self._bootstrap_state())
         else:
             self._write(state)
+        self._write_config(self._upgrade_user_settings(self._read_config()))
 
     def _bootstrap_state(self) -> dict[str, Any]:
         reference_projects = write_reference_baseline()
@@ -416,6 +439,204 @@ class StudioStore:
         )
         return state
 
+    def _bootstrap_user_settings(self) -> dict[str, Any]:
+        settings = deepcopy(DEFAULT_USER_SETTINGS)
+        settings["llm"] = default_llm_state()
+        settings["wechat"]["risk_keywords"] = ["投资建议", "医疗建议", "未经核实", "爆料"]
+        settings["wechat"]["browser_profile_path"] = str(default_browser_profile_path("edge"))
+        return settings
+
+    def _read_config(self) -> dict[str, Any]:
+        with self._lock:
+            return read_json_file(self.config_file, self._bootstrap_user_settings())
+
+    def _write_config(self, payload: dict[str, Any]) -> None:
+        with self._lock:
+            atomic_write_json(self.config_file, payload)
+
+    def _upgrade_user_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        next_payload = self._bootstrap_user_settings()
+        next_payload.update({key: value for key, value in payload.items() if key in next_payload})
+        next_payload["llm"] = payload.get("llm", next_payload["llm"])
+        next_payload["wechat"] = {
+            **next_payload["wechat"],
+            **(payload.get("wechat", {}) if isinstance(payload.get("wechat"), dict) else {}),
+        }
+        next_payload["sources"] = {
+            "overrides": (
+                payload.get("sources", {}).get("overrides", {})
+                if isinstance(payload.get("sources"), dict)
+                else {}
+            )
+        }
+        next_payload["settings"] = {
+            **next_payload["settings"],
+            **(payload.get("settings", {}) if isinstance(payload.get("settings"), dict) else {}),
+        }
+        next_payload["schema_version"] = 1
+        return next_payload
+
+    def _extract_config_from_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        config = self._bootstrap_user_settings()
+        config["llm"] = deepcopy_json(state.get("llm", default_llm_state()))
+        config["wechat"] = deepcopy_json(state.get("channels", {}).get("wechat", config["wechat"]))
+        settings = state.get("settings", {})
+        config["settings"] = {
+            "max_workers": int(settings.get("max_workers", 8) or 8),
+            "tavily_api_key": str(settings.get("tavily_api_key") or "").strip(),
+        }
+        overrides: dict[str, Any] = {}
+        for source in state.get("sources", []):
+            if not isinstance(source, dict):
+                continue
+            source_key = str(source.get("key") or "").strip()
+            if not source_key:
+                continue
+            overrides[source_key] = {
+                "enabled": bool(source.get("enabled", True)),
+                "schedule": str(source.get("schedule") or "").strip(),
+                "priority": int(source.get("priority") or 5),
+                "url": source.get("url"),
+                "tags": deepcopy_json(source.get("tags", [])),
+                "weight": float(source.get("weight") or 0.7),
+                "auth": deepcopy_json(source.get("auth", {})),
+            }
+        config["sources"] = {"overrides": overrides}
+        return self._upgrade_user_settings(config)
+
+    def _migrate_legacy_config(self) -> None:
+        legacy_state = read_json_file(self.data_file, {})
+        migrated = self._extract_config_from_state(legacy_state)
+        self._write_config(migrated)
+
+    def _apply_user_settings_to_state(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        state["llm"] = deepcopy_json(config.get("llm", default_llm_state()))
+        channels = state.setdefault("channels", {})
+        channels["wechat"] = ensure_channel_defaults(config.get("wechat", {}))
+        settings = state.setdefault("settings", {})
+        user_settings = config.get("settings", {}) if isinstance(config.get("settings"), dict) else {}
+        settings["max_workers"] = int(user_settings.get("max_workers", 8) or 8)
+        settings["tavily_api_key"] = str(user_settings.get("tavily_api_key") or "").strip()
+        settings.setdefault("entity_watchlist", [])
+        self._apply_source_overrides_to_state(
+            state,
+            config.get("sources", {}).get("overrides", {}) if isinstance(config.get("sources"), dict) else {},
+        )
+        return state
+
+    def _apply_source_overrides_to_state(self, state: dict[str, Any], overrides: dict[str, Any]) -> None:
+        if not isinstance(overrides, dict):
+            return
+        for source in state.get("sources", []):
+            if not isinstance(source, dict):
+                continue
+            source_key = str(source.get("key") or "").strip()
+            if not source_key:
+                continue
+            override = overrides.get(source_key)
+            if not isinstance(override, dict):
+                continue
+            for field in ("enabled", "schedule", "priority", "url", "tags", "weight", "auth"):
+                if field in override:
+                    source[field] = deepcopy_json(override[field])
+            source["interval_minutes"] = schedule_to_minutes(source.get("schedule")) or source.get("interval_minutes") or 30
+
+    def _setup_status(self, state: dict[str, Any], browser: dict[str, Any]) -> dict[str, Any]:
+        llm = state.get("llm", {})
+        profiles = llm.get("profiles", []) if isinstance(llm, dict) else []
+        has_llm = any(bool(str(profile.get("api_key") or "").strip()) and "****" not in str(profile.get("api_key") or "") for profile in profiles if isinstance(profile, dict))
+        browser_ready = bool(browser.get("user_data_dir"))
+        browser_logged_in = bool(browser.get("logged_in"))
+        return {
+            "llm_ready": has_llm,
+            "wechat_browser_configured": browser_ready,
+            "wechat_logged_in": browser_logged_in,
+            "needs_setup": not (has_llm and browser_logged_in),
+        }
+
+    def system_doctor(self) -> SystemDoctorResult:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_browser_session(state)
+        llm_cfg = state.get("llm", {})
+        profiles = llm_cfg.get("profiles", []) if isinstance(llm_cfg, dict) else []
+        enabled_profiles = [profile for profile in profiles if isinstance(profile, dict) and bool(str(profile.get("api_key") or "").strip()) and "****" not in str(profile.get("api_key") or "")]
+        items = [
+            SystemCheckItem(
+                key="backend",
+                label="后端服务",
+                ok=True,
+                detail="后端接口可访问。",
+                next_action=None,
+            ),
+            SystemCheckItem(
+                key="frontend_dist",
+                label="前端资源",
+                ok=(Path(__file__).resolve().parents[2] / "frontend" / "dist" / "index.html").exists(),
+                detail="已检测到前端构建产物。" if (Path(__file__).resolve().parents[2] / "frontend" / "dist" / "index.html").exists() else "缺少 frontend/dist，请先运行发布构建或开发构建。",
+                next_action=None if (Path(__file__).resolve().parents[2] / "frontend" / "dist" / "index.html").exists() else "运行 npm run build 生成前端资源。",
+            ),
+            SystemCheckItem(
+                key="llm",
+                label="AI 模型",
+                ok=bool(enabled_profiles),
+                detail=f"已配置 {len(enabled_profiles)} 个可用 profile。" if enabled_profiles else "尚未配置可用的 AI profile。",
+                next_action=None if enabled_profiles else "前往设置 > AI 模型，填入至少一个 API Key 并测试连接。",
+            ),
+            SystemCheckItem(
+                key="wechat_profile",
+                label="微信浏览器配置",
+                ok=bool(str(browser.get('user_data_dir') or '').strip()),
+                detail=f"当前 profile：{browser.get('user_data_dir')}" if str(browser.get("user_data_dir") or "").strip() else "尚未配置微信浏览器 profile。",
+                next_action=None if str(browser.get("user_data_dir") or "").strip() else "前往设置 > 微信浏览器，先保存浏览器与 profile 路径。",
+            ),
+            SystemCheckItem(
+                key="wechat_login",
+                label="公众号登录态",
+                ok=bool(browser.get("logged_in")),
+                detail="已检测到可复用的公众号登录态。" if browser.get("logged_in") else str(browser.get("last_error") or "尚未完成公众号后台登录检查。"),
+                next_action=None if browser.get("logged_in") else "前往设置 > 微信浏览器，打开公众号后台并完成登录检查。",
+            ),
+        ]
+        ok = all(item.ok for item in items)
+        summary = "系统已满足分发版基本使用条件。" if ok else "系统仍有未完成项，请按建议补齐后再投入使用。"
+        return SystemDoctorResult(checked_at=now_iso(), ok=ok, items=items, summary=summary)
+
+    def export_config_bundle(self) -> Path:
+        config = self._upgrade_user_settings(self._read_config())
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        export_path = BACKUP_DIR / f"config-export-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.json"
+        atomic_write_json(export_path, config)
+        return export_path
+
+    def export_backup_bundle(self) -> Path:
+        state = self._upgrade_state(self._read())
+        config = self._upgrade_user_settings(self._read_config())
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        export_path = BACKUP_DIR / f"studio-backup-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.zip"
+        with zipfile.ZipFile(export_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("config/user-settings.json", json.dumps(config, ensure_ascii=False, indent=2))
+            zf.writestr("data/state.json", json.dumps(state, ensure_ascii=False, indent=2))
+            recent_logs = {"logs": state.get("logs", [])[:200]}
+            zf.writestr("logs/recent-logs.json", json.dumps(recent_logs, ensure_ascii=False, indent=2))
+        return export_path
+
+    def import_backup_bundle(self, file_path: Path) -> ImportBackupResponse:
+        if not file_path.exists():
+            raise ValueError("备份文件不存在。")
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        rollback = BACKUP_DIR / f"rollback-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
+        rollback.mkdir(parents=True, exist_ok=True)
+        backup_file(self.data_file, rollback, "state")
+        backup_file(self.config_file, rollback, "config")
+        with zipfile.ZipFile(file_path, "r") as zf:
+            if "config/user-settings.json" in zf.namelist():
+                config = json.loads(zf.read("config/user-settings.json").decode("utf-8"))
+                self._write_config(self._upgrade_user_settings(config))
+            if "data/state.json" in zf.namelist():
+                state = json.loads(zf.read("data/state.json").decode("utf-8"))
+                self._write(self._upgrade_state(state))
+        return ImportBackupResponse(ok=True, message="已导入备份。若为新机器，请重新登录公众号后台。", backup_path=str(rollback))
+
     def _build_source_registry(self) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = deepcopy(discover_sources())
         seen_keys = {item["key"] for item in merged}
@@ -524,7 +745,9 @@ class StudioStore:
 
     def _read(self) -> dict[str, Any]:
         with self._lock:
-            return json.loads(self.data_file.read_text(encoding="utf-8"))
+            state = json.loads(self.data_file.read_text(encoding="utf-8"))
+            config = self._upgrade_user_settings(read_json_file(self.config_file, self._bootstrap_user_settings()))
+            return self._apply_user_settings_to_state(state, config)
 
     def _write(self, payload: dict[str, Any]) -> None:
         with self._lock:
@@ -551,8 +774,10 @@ class StudioStore:
                 raise last_error
 
     def _upgrade_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        config = self._upgrade_user_settings(read_json_file(self.config_file, self._bootstrap_user_settings()))
+        state = self._apply_user_settings_to_state(state, config)
         self._prune_unsupported_sources(state)
-        state.setdefault("llm", default_llm_state())
+        state.setdefault("llm", deepcopy_json(config.get("llm", default_llm_state())))
         llm = state["llm"]
         existing_profiles = llm.get("profiles", [])
         if not existing_profiles:
@@ -634,9 +859,9 @@ class StudioStore:
         state.setdefault("event_deep_dives", [])
         state.setdefault("briefs", [])
         settings = state.setdefault("settings", {})
-        settings.setdefault("max_workers", 8)
+        settings["max_workers"] = int(config.get("settings", {}).get("max_workers", 8) or 8)
         settings.setdefault("entity_watchlist", [])
-        settings.setdefault("tavily_api_key", "")
+        settings["tavily_api_key"] = str(config.get("settings", {}).get("tavily_api_key") or "").strip()
         state.setdefault("runtime_plan", {})
         state.setdefault("notifications", {
             "webhook": {
@@ -648,7 +873,7 @@ class StudioStore:
             "delivery_log": [],
         })
         channels = state.setdefault("channels", {})
-        raw_wechat_channel = dict(channels.setdefault("wechat", {}))
+        raw_wechat_channel = dict(config.get("wechat", channels.setdefault("wechat", {})))
         raw_browser_name = str(raw_wechat_channel.get("browser_name") or "").strip().lower()
         raw_profile_path = str(raw_wechat_channel.get("browser_profile_path") or "").strip()
         if raw_browser_name == "chrome" and (
@@ -4063,9 +4288,21 @@ class StudioStore:
         source = self._find_source(state, source_key)
         source.update(payload.model_dump(exclude_none=True))
         source["updated_at"] = now_iso()
+        config = self._read_config()
+        overrides = config.setdefault("sources", {}).setdefault("overrides", {})
+        overrides[source_key] = {
+            "enabled": bool(source.get("enabled", True)),
+            "schedule": str(source.get("schedule") or "").strip(),
+            "priority": int(source.get("priority") or 5),
+            "url": source.get("url"),
+            "tags": deepcopy_json(source.get("tags", [])),
+            "weight": float(source.get("weight") or 0.7),
+            "auth": deepcopy_json(source.get("auth", {})),
+        }
         self._append_log(state, "success", "source", f"已更新来源配置：{source['name']}")
         runtime = self._runtime(state)
         runtime["next_collect_at"] = self._calculate_next_collect_at(state, minimum_interval_minutes=self._collect_interval_for_profile(state))
+        self._write_config(self._upgrade_user_settings(config))
         self._write(state)
         return SourceConnector(**source)
 
@@ -4107,7 +4344,11 @@ class StudioStore:
         state = self._upgrade_state(self._read())
         self._find_source(state, source_key)
         state["sources"] = [s for s in state["sources"] if s["key"] != source_key]
+        config = self._read_config()
+        overrides = config.setdefault("sources", {}).setdefault("overrides", {})
+        overrides.pop(source_key, None)
         self._append_log(state, "success", "source", f"已删除来源：{source_key}")
+        self._write_config(self._upgrade_user_settings(config))
         self._write(state)
 
     def sync_sources(self) -> SourceSyncResponse:
@@ -4183,20 +4424,26 @@ class StudioStore:
         )
 
     def get_settings(self) -> dict[str, Any]:
-        state = self._upgrade_state(self._read())
-        return state.get("settings", {})
+        config = self._upgrade_user_settings(self._read_config())
+        return deepcopy_json(config.get("settings", {}))
 
     def update_settings(self, updates: dict[str, Any]) -> dict[str, Any]:
         state = self._upgrade_state(self._read())
         settings = state.setdefault("settings", {})
+        config = self._read_config()
+        config_settings = config.setdefault("settings", {})
         if "max_workers" in updates:
             value = int(updates["max_workers"])
             if not 1 <= value <= 20:
                 raise ValueError("max_workers 必须在 1-20 之间")
             settings["max_workers"] = value
+            config_settings["max_workers"] = value
         if "tavily_api_key" in updates:
-            settings["tavily_api_key"] = str(updates.get("tavily_api_key") or "").strip()
+            compact = str(updates.get("tavily_api_key") or "").strip()
+            settings["tavily_api_key"] = compact
+            config_settings["tavily_api_key"] = compact
         self._append_log(state, "success", "settings", f"已更新设置: {list(updates.keys())}")
+        self._write_config(self._upgrade_user_settings(config))
         self._write(state)
         return settings
 
@@ -4538,6 +4785,36 @@ class StudioStore:
         with self._lock:
             state = self._upgrade_state(self._read())
             brief = self._find_brief(state, brief_id)
+            current_revision = self._brief_revision(brief)
+            already_synced_same_revision = (
+                str(brief.get("stage") or "") == "synced"
+                and not bool(brief.get("needs_resync"))
+                and str(brief.get("last_synced_revision") or "").strip()
+                and str(brief.get("last_synced_revision") or "").strip() == current_revision
+            )
+            if already_synced_same_revision:
+                message = "该版本简报已同步到微信草稿箱，无需重复上传。"
+                state["publish_tasks"].insert(
+                    0,
+                    create_publish_task(
+                        brief_id,
+                        "sync_wechat_draft",
+                        "completed",
+                        message,
+                        triggered_by,
+                        str(state["channels"]["wechat"]["selectors_version"]),
+                        step_logs=["命中手动同步幂等保护，跳过重复上传。"],
+                    ),
+                )
+                self._append_log(
+                    state,
+                    "info",
+                    "wechat",
+                    f"{message}{brief['title']}",
+                    detail=current_revision,
+                )
+                self._write(state)
+                return BriefItem(**brief)
             if not brief.get("wechat_target_id"):
                 brief["wechat_target_id"] = build_wechat_target_id(str(brief["id"]))
             brief["preview_url"] = build_preview_url(str(brief["id"]))
@@ -4681,13 +4958,22 @@ class StudioStore:
         mapping_rows: list[WeChatMappingRow] = []
         matched_brief_ids: set[str] = set()
         remote_index: dict[str, dict[str, Any]] = {}
+        remote_key_index: dict[str, dict[str, Any]] = {}
         for item in remote_items:
             if not isinstance(item, dict):
                 continue
             title = str(item.get("title") or "").strip()
+            remote_key = str(item.get("remote_key") or "").strip() or build_remote_draft_key(
+                title,
+                str(item.get("url") or "").strip(),
+                str(item.get("appmsg_id") or "").strip() or None,
+                str(item.get("updated_at") or "").strip() or None,
+                len(remote_key_index),
+            )
             appmsg_id = str(item.get("appmsg_id") or "").strip() or None
             url = str(item.get("url") or "").strip()
             remote_index[f"title:{normalize_title(title)}"] = item
+            remote_key_index[remote_key] = item
             if appmsg_id:
                 remote_index[f"appmsg:{appmsg_id}"] = item
             if url:
@@ -4697,6 +4983,13 @@ class StudioStore:
             if not isinstance(item, dict):
                 continue
             remote_title = str(item.get("title") or "").strip()
+            remote_key = str(item.get("remote_key") or "").strip() or build_remote_draft_key(
+                remote_title,
+                str(item.get("url") or "").strip(),
+                str(item.get("appmsg_id") or "").strip() or None,
+                str(item.get("updated_at") or "").strip() or None,
+                len(mapping_rows),
+            )
             remote_appmsg_id = str(item.get("appmsg_id") or "").strip() or None
             remote_url = str(item.get("url") or "").strip()
             remote_updated_at = str(item.get("updated_at") or "").strip() or None
@@ -4724,6 +5017,7 @@ class StudioStore:
                 mapping_rows.append(
                     WeChatMappingRow(
                         remote_title=remote_title,
+                        remote_key=remote_key,
                         remote_appmsg_id=remote_appmsg_id,
                         remote_url=remote_url,
                         remote_updated_at=remote_updated_at,
@@ -4737,6 +5031,7 @@ class StudioStore:
                 mapping_rows.append(
                     WeChatMappingRow(
                         remote_title=remote_title,
+                        remote_key=remote_key,
                         remote_appmsg_id=remote_appmsg_id,
                         remote_url=remote_url,
                         remote_updated_at=remote_updated_at,
@@ -4754,6 +5049,12 @@ class StudioStore:
                 mapping_rows.append(
                     WeChatMappingRow(
                         remote_title=str(brief.get("title") or ""),
+                        remote_key=build_remote_draft_key(
+                            str(brief.get("title") or ""),
+                            str(brief.get("wechat_editor_url") or ""),
+                            str(brief.get("wechat_remote_appmsg_id") or "") or None,
+                            None,
+                        ),
                         remote_appmsg_id=str(brief.get("wechat_remote_appmsg_id") or "") or None,
                         remote_url=str(brief.get("wechat_editor_url") or ""),
                         local_brief_id=brief_id,
@@ -4791,7 +5092,8 @@ class StudioStore:
         target_row = next(
             (
                 row for row in mapping.mapping_rows
-                if str(row.remote_appmsg_id or "") == remote_key
+                if str(row.remote_key or "") == remote_key
+                or str(row.remote_appmsg_id or "") == remote_key
                 or str(row.remote_url or "") == remote_key
             ),
             None,
@@ -4890,16 +5192,19 @@ class StudioStore:
         return DictOkResponse(ok=True, message="已删除本地简报。")
 
     def get_wechat_config(self) -> WeChatChannelConfig:
-        state = self._upgrade_state(self._read())
-        return WeChatChannelConfig(**state["channels"]["wechat"])
+        config = self._upgrade_user_settings(self._read_config())
+        return WeChatChannelConfig(**ensure_channel_defaults(config.get("wechat", {})))
 
     def update_wechat_config(self, payload: ChannelConfigPayload) -> WeChatChannelConfig:
         state = self._upgrade_state(self._read())
         state["channels"]["wechat"].update(payload.model_dump())
         state["channels"]["wechat"] = ensure_channel_defaults(state["channels"]["wechat"])
+        config = self._read_config()
+        config["wechat"] = deepcopy_json(state["channels"]["wechat"])
         WECHAT_BROWSER_MANAGER.reset("wechat_config_updated")
         self._refresh_browser_session(state)
         self._append_log(state, "success", "channel", "已更新微信公众号配置。")
+        self._write_config(self._upgrade_user_settings(config))
         self._write(state)
         return WeChatChannelConfig(**state["channels"]["wechat"])
 
@@ -4914,9 +5219,14 @@ class StudioStore:
         state["channels"]["wechat"]["browser_name"] = payload.browser_name
         state["channels"]["wechat"]["browser_profile_path"] = payload.user_data_dir
         state["channels"]["wechat"] = ensure_channel_defaults(state["channels"]["wechat"])
+        config = self._read_config()
+        config.setdefault("wechat", {})
+        config["wechat"]["browser_name"] = state["channels"]["wechat"]["browser_name"]
+        config["wechat"]["browser_profile_path"] = state["channels"]["wechat"]["browser_profile_path"]
         WECHAT_BROWSER_MANAGER.reset("browser_session_updated")
         browser = self._refresh_browser_session(state)
         self._append_log(state, "info", "browser", "已刷新浏览器会话配置。")
+        self._write_config(self._upgrade_user_settings(config))
         self._write(state)
         return BrowserSessionState(**browser)
 
@@ -5739,8 +6049,8 @@ class StudioStore:
     # ── LLM config ────────────────────────────────────────────────
 
     def get_llm_config(self) -> dict[str, Any]:
-        state = self._upgrade_state(self._read())
-        cfg = deepcopy(state.get("llm", {}))
+        config = self._upgrade_user_settings(self._read_config())
+        cfg = deepcopy(config.get("llm", {}))
         cfg.pop("tasks", None)
         for profile in cfg.get("profiles", []):
             key = str(profile.get("api_key", ""))
@@ -5791,13 +6101,17 @@ class StudioStore:
             if provider_key and api_key and "****" not in api_key and provider_key not in providers_map:
                 providers_map[provider_key] = build_provider_from_profile(profile)
 
-        state["llm"] = {
+        next_llm = {
             "current_profile_id": current_profile_id,
             "fallback_profile_id": fallback_profile_id or None,
             "profiles": profiles,
             "providers": list(providers_map.values()),
             "usage_today": existing.get("usage_today", {}),
         }
+        state["llm"] = next_llm
+        settings_config = self._read_config()
+        settings_config["llm"] = deepcopy_json(next_llm)
+        self._write_config(self._upgrade_user_settings(settings_config))
         self._write(state)
         self._append_log(state, "info", "config", "已更新 AI 模型配置")
         return state["llm"]
@@ -5926,6 +6240,8 @@ class StudioStore:
         github_watch = self._github_watch(snapshot)
         execution_chain = self._execution_chain(snapshot, browser)
         entity_watchlist_summary = self._build_entity_watchlist_summary(snapshot)
+        setup_status = self._setup_status(snapshot, browser)
+        doctor = self.system_doctor()
         stats = {
             "total_sources": top_bar.total_sources,
             "healthy_sources": top_bar.healthy_sources,
@@ -5961,4 +6277,6 @@ class StudioStore:
             sources=[SourceConnector(**item) for item in snapshot["sources"]],
             browser_session=BrowserSessionState(**browser),
             publish_backends=[PublishBackendStatus(**item) for item in backends],
+            setup_status=setup_status,
+            doctor_summary=doctor.model_dump(),
         )

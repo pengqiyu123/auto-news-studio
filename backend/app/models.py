@@ -44,6 +44,8 @@ SourceKind = Literal[
     "vvhan",
     "legacy",
     "page",
+    "monitor",
+    "wordpress",
 ]
 SourceHealth = Literal["idle", "healthy", "warning", "error"]
 AutomationRunStatus = Literal["idle", "running", "completed", "failed", "abandoned"]
@@ -251,6 +253,7 @@ class WeChatRemoteDraftItem(BaseModel):
     url: str = ""
     appmsg_id: Optional[str] = None
     updated_at: Optional[str] = None
+    remote_key: Optional[str] = None
 
 
 class WeChatDraftSyncCheckResult(BaseModel):
@@ -272,6 +275,7 @@ class WeChatMappingStatus(str):
 
 class WeChatMappingRow(BaseModel):
     remote_title: str = ""
+    remote_key: Optional[str] = None
     remote_appmsg_id: Optional[str] = None
     remote_url: str = ""
     remote_updated_at: Optional[str] = None
@@ -882,6 +886,8 @@ class DashboardResponse(BaseModel):
     sources: list[SourceConnector]
     browser_session: BrowserSessionState
     publish_backends: list[PublishBackendStatus]
+    setup_status: dict[str, Any] = Field(default_factory=dict)
+    doctor_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntelSnapshotResponse(BaseModel):
@@ -967,6 +973,31 @@ class BrowserSessionResponse(BaseModel):
 
 class WeChatChannelResponse(BaseModel):
     item: WeChatChannelConfig
+
+
+class SystemCheckItem(BaseModel):
+    key: str
+    label: str
+    ok: bool
+    detail: str
+    next_action: Optional[str] = None
+
+
+class SystemDoctorResult(BaseModel):
+    checked_at: str
+    ok: bool = False
+    items: list[SystemCheckItem] = Field(default_factory=list)
+    summary: str = ""
+
+
+class SystemDoctorResponse(BaseModel):
+    item: SystemDoctorResult
+
+
+class ImportBackupResponse(BaseModel):
+    ok: bool = True
+    message: str = ""
+    backup_path: Optional[str] = None
 
 
 class AutomationModesResponse(BaseModel):

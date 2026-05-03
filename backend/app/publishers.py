@@ -198,6 +198,24 @@ def create_publish_task(
     }
 
 
+def build_remote_draft_key(
+    title: str,
+    url: str,
+    appmsg_id: str | None = None,
+    updated_at: str | None = None,
+    occurrence: int | None = None,
+) -> str:
+    compact_url = str(url or "").strip()
+    compact_id = str(appmsg_id or "").strip()
+    if compact_id:
+        return f"appmsg:{compact_id}"
+    if compact_url:
+        return f"url:{compact_url}"
+    if occurrence is not None:
+        return f"card:{occurrence}"
+    return ""
+
+
 def refresh_browser_session(channel: dict[str, object], current: dict[str, object]) -> dict[str, object]:
     channel = ensure_channel_defaults(channel)
     profile_path = resolve_profile_path(channel.get("browser_profile_path"), channel.get("browser_name"))
@@ -747,15 +765,12 @@ def _scrape_wechat_draft_items(page) -> list[dict[str, str | None]]:
             """() => {
                 const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
                 const results = [];
-                const seen = new Set();
-                const pushItem = (title, url, updatedAt) => {
+                const seenStable = new Set();
+                const pushItem = (title, url, updatedAt, occurrence) => {
                     const cleanTitle = normalize(title);
                     const cleanUrl = normalize(url);
                     if (cleanTitle.length < 8) return;
                     const normalizedUrl = cleanUrl.startsWith('javascript:') ? '' : cleanUrl;
-                    const key = `${cleanTitle}||${normalizedUrl}`;
-                    if (seen.has(key)) return;
-                    seen.add(key);
                     let appmsgId = null;
                     try {
                         if (normalizedUrl) {
@@ -763,11 +778,21 @@ def _scrape_wechat_draft_items(page) -> list[dict[str, str | None]]:
                             appmsgId = parsed.searchParams.get("appmsgid");
                         }
                     } catch (_) {}
+                    const stableKey = appmsgId
+                        ? `appmsg:${appmsgId}`
+                        : normalizedUrl
+                            ? `url:${normalizedUrl}`
+                            : '';
+                    if (stableKey) {
+                        if (seenStable.has(stableKey)) return;
+                        seenStable.add(stableKey);
+                    }
                     results.push({
                         title: cleanTitle,
                         url: normalizedUrl,
                         appmsg_id: appmsgId,
                         updated_at: normalize(updatedAt),
+                        remote_key: stableKey || `card:${cleanTitle}|${normalize(updatedAt)}|${occurrence}`,
                     });
                 };
 
@@ -777,7 +802,7 @@ def _scrape_wechat_draft_items(page) -> list[dict[str, str | None]]:
                     )
                 );
 
-                containers.forEach((container) => {
+                containers.forEach((container, index) => {
                     const titleNode =
                         container.querySelector('.weui-desktop-publish__cover__title span') ||
                         container.querySelector('.weui-desktop-publish__cover__title') ||
@@ -790,7 +815,7 @@ def _scrape_wechat_draft_items(page) -> list[dict[str, str | None]]:
                     const containerText = normalize(container.innerText || '');
                     const updatedAtMatch = containerText.match(/更新于\\s*([0-9]{1,2}:[0-9]{2}|[0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2})/);
                     const updatedAt = updatedAtMatch ? `更新于 ${updatedAtMatch[1]}` : '';
-                    pushItem(title, href, updatedAt);
+                    pushItem(title, href, updatedAt, index);
                 });
 
                 return results
@@ -812,6 +837,7 @@ def _scrape_wechat_draft_items(page) -> list[dict[str, str | None]]:
                 "url": str(row.get("url") or "").strip(),
                 "appmsg_id": str(row.get("appmsg_id") or "").strip() or None,
                 "updated_at": str(row.get("updated_at") or "").strip() or None,
+                "remote_key": str(row.get("remote_key") or "").strip() or None,
             }
         )
     return items
@@ -1038,6 +1064,7 @@ def _match_remote_draft_item(
 
 
 def _delete_wechat_draft_in_page(page, target: dict[str, object], step_logs: list[str]) -> None:
+    compact_key = str(target.get("remote_key") or "").strip()
     compact_id = str(target.get("appmsg_id") or "").strip()
     compact_url = str(target.get("url") or "").strip()
     compact_title = re.sub(r"\s+", " ", str(target.get("title") or "").replace("\xa0", " ")).strip()
@@ -1059,7 +1086,16 @@ def _delete_wechat_draft_in_page(page, target: dict[str, object], step_logs: lis
     rows = page.locator(".publish_card_container, .weui-desktop-card.weui-desktop-publish, .weui-desktop-media__list-col .weui-desktop-card")
     count = rows.count()
     matched_index: int | None = None
+    if compact_key.startswith("card:"):
+        try:
+            raw_index = int(compact_key.split(":", 1)[1])
+            if 0 <= raw_index < count:
+                matched_index = raw_index
+        except Exception:
+            matched_index = None
     for index in range(count):
+        if matched_index is not None:
+            break
         row = rows.nth(index)
         try:
             row.hover(timeout=2500)
@@ -1410,15 +1446,12 @@ def _scrape_wechat_draft_items_strict(page) -> list[dict[str, str | None]]:
         """() => {
             const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
             const results = [];
-            const seen = new Set();
-            const pushItem = (title, url, updatedAt) => {
+            const seenStable = new Set();
+            const pushItem = (title, url, updatedAt, occurrence) => {
                 const cleanTitle = normalize(title);
                 const cleanUrl = normalize(url);
                 if (cleanTitle.length < 8) return;
                 const normalizedUrl = cleanUrl.startsWith('javascript:') ? '' : cleanUrl;
-                const key = `${cleanTitle}||${normalizedUrl}`;
-                if (seen.has(key)) return;
-                seen.add(key);
                 let appmsgId = null;
                 try {
                     if (normalizedUrl) {
@@ -1426,11 +1459,21 @@ def _scrape_wechat_draft_items_strict(page) -> list[dict[str, str | None]]:
                         appmsgId = parsed.searchParams.get("appmsgid");
                     }
                 } catch (_) {}
+                const stableKey = appmsgId
+                    ? `appmsg:${appmsgId}`
+                    : normalizedUrl
+                        ? `url:${normalizedUrl}`
+                        : '';
+                if (stableKey) {
+                    if (seenStable.has(stableKey)) return;
+                    seenStable.add(stableKey);
+                }
                 results.push({
                     title: cleanTitle,
                     url: normalizedUrl,
                     appmsg_id: appmsgId,
                     updated_at: normalize(updatedAt),
+                    remote_key: stableKey || `card:${cleanTitle}|${normalize(updatedAt)}|${occurrence}`,
                 });
             };
 
@@ -1440,7 +1483,7 @@ def _scrape_wechat_draft_items_strict(page) -> list[dict[str, str | None]]:
                 )
             );
 
-            containers.forEach((container) => {
+            containers.forEach((container, index) => {
                 const titleNode =
                     container.querySelector('.weui-desktop-publish__cover__title span') ||
                     container.querySelector('.weui-desktop-publish__cover__title') ||
@@ -1453,7 +1496,7 @@ def _scrape_wechat_draft_items_strict(page) -> list[dict[str, str | None]]:
                 const containerText = normalize(container.innerText || '');
                 const updatedAtMatch = containerText.match(/更新于\\s*([0-9]{1,2}:[0-9]{2}|[0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2})/);
                 const updatedAt = updatedAtMatch ? `更新于 ${updatedAtMatch[1]}` : '';
-                pushItem(title, href, updatedAt);
+                pushItem(title, href, updatedAt, index);
             });
 
             return results.filter((item) => item.title || item.url).slice(0, 80);
@@ -1471,6 +1514,7 @@ def _scrape_wechat_draft_items_strict(page) -> list[dict[str, str | None]]:
                 "url": str(row.get("url") or "").strip(),
                 "appmsg_id": str(row.get("appmsg_id") or "").strip() or None,
                 "updated_at": str(row.get("updated_at") or "").strip() or None,
+                "remote_key": str(row.get("remote_key") or "").strip() or None,
             }
         )
     return items

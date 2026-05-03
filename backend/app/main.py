@@ -35,6 +35,7 @@ from .models import (
     IntelEventsResponse,
     IntelSnapshotResponse,
     IntelSummaryResponse,
+    ImportBackupResponse,
     LLMConfigResponse,
     LLMProviderPayload,
     LLMTaskPayload,
@@ -50,6 +51,7 @@ from .models import (
     SchedulerStatusResponse,
     SourceConnectorPayload,
     SourceSyncResponse,
+    SystemDoctorResponse,
     SourcesResponse,
     WeChatChannelResponse,
     WeChatDraftSyncCheckResponse,
@@ -67,6 +69,13 @@ BACKEND_PID_FILE = RUNTIME_DIR / "backend.pid"
 scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 SCHEDULER_TICK_SECONDS = 10
 WECHAT_DRAFT_POLL_SECONDS = 30
+
+
+def _cors_origins() -> list[str]:
+    raw = str(os.getenv("CORS_ORIGINS") or "").strip()
+    if raw:
+        return [item.strip() for item in raw.split(",") if item.strip()]
+    return ["http://127.0.0.1:8000", "http://localhost:8000"]
 
 
 def _pid_is_alive(pid: int) -> bool:
@@ -146,7 +155,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
@@ -366,6 +375,34 @@ def update_settings(payload: dict[str, Any]):
         return {"item": store.update_settings(payload)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/system/doctor", response_model=SystemDoctorResponse)
+def get_system_doctor():
+    return SystemDoctorResponse(item=store.system_doctor())
+
+
+@app.post("/api/admin/system/export-config")
+def export_system_config():
+    path = store.export_config_bundle()
+    return FileResponse(path, filename=path.name, media_type="application/json")
+
+
+@app.post("/api/admin/system/export-backup")
+def export_system_backup():
+    path = store.export_backup_bundle()
+    return FileResponse(path, filename=path.name, media_type="application/zip")
+
+
+@app.post("/api/admin/system/import-backup", response_model=ImportBackupResponse)
+async def import_system_backup(file: UploadFile = File(...)):
+    suffix = Path(file.filename or "backup.zip").suffix or ".zip"
+    temp_path = RUNTIME_DIR / f"import-backup-{uuid4().hex}{suffix}"
+    temp_path.write_bytes(await file.read())
+    try:
+        return store.import_backup_bundle(temp_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 @app.post("/api/admin/sources/sync", response_model=SourceSyncResponse)

@@ -19,6 +19,7 @@ frontend/dist/
 
 # Runtime data (contains API keys, state, logs)
 backend/data/
+config/
 data/
 runtime/
 

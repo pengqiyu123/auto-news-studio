@@ -6,11 +6,16 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
 
 DATA_FILE = Path(__file__).resolve().parent.parent.parent / "data" / "state.json"
+CONFIG_DIR = Path(__file__).resolve().parent.parent.parent / "config"
+CONFIG_FILE = CONFIG_DIR / "user-settings.json"
+BACKUP_DIR = Path(__file__).resolve().parent.parent.parent / "runtime" / "backups"
+LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 UTC = timezone.utc
 LOCAL_TZ = timezone(timedelta(hours=8))
 MAX_RAW_ITEMS = 480
@@ -67,6 +72,38 @@ INTENT_STAGE_PLANS: dict[str, list[dict[str, str]]] = {
     "collect_validation": [{"key": "collecting", "label": "采集素材"}],
     "event_rebuild": [{"key": "clustering", "label": "重建热点事件"}],
     "alert_rebuild": [{"key": "scoring", "label": "重算预警"}],
+}
+
+
+DEFAULT_USER_SETTINGS: dict[str, Any] = {
+    "schema_version": 1,
+    "llm": {
+        "current_profile_id": "",
+        "fallback_profile_id": None,
+        "profiles": [],
+        "providers": [],
+    },
+    "wechat": {
+        "app_id": "",
+        "app_secret_masked": "",
+        "author": "Auto News Studio",
+        "default_cover_strategy": "auto",
+        "default_digest_strategy": "balanced",
+        "draft_mode": True,
+        "preview_enabled": True,
+        "auto_send_window": "09:00-10:00",
+        "risk_keywords": [],
+        "browser_name": "edge",
+        "browser_profile_path": "",
+        "publish_entry_url": "https://mp.weixin.qq.com/",
+        "selectors_version": "wechat-mp-v1",
+        "sidecar_url": "http://127.0.0.1:8091",
+    },
+    "sources": {"overrides": {}},
+    "settings": {
+        "max_workers": 8,
+        "tavily_api_key": "",
+    },
 }
 
 
@@ -181,3 +218,35 @@ def _extract_json_payload(text: str) -> Any | None:
             return json.loads(match.group(1))
         except json.JSONDecodeError:
             return None
+
+
+def ensure_parent_dir(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    ensure_parent_dir(path)
+    content = json.dumps(payload, ensure_ascii=False, indent=2)
+    temp_file = path.with_name(f"{path.stem}.{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}.tmp")
+    temp_file.write_text(content, encoding="utf-8")
+    temp_file.replace(path)
+
+
+def read_json_file(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not path.exists():
+        return deepcopy_json(default or {})
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def deepcopy_json(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def backup_file(path: Path, backup_root: Path, prefix: str) -> Path | None:
+    if not path.exists():
+        return None
+    backup_root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    backup_path = backup_root / f"{prefix}-{stamp}{path.suffix}"
+    shutil.copy2(path, backup_path)
+    return backup_path

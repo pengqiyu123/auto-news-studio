@@ -84,17 +84,10 @@ if (-not (Test-Path $venvPython)) {
 }
 
 if (-not (Test-Path $frontendDist)) {
-    Write-Host "[INFO] Frontend dist not found, building frontend..."
-    Push-Location (Join-Path $appRoot "frontend")
-    try {
-        & npm run build
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[ERROR] Frontend build failed."
-            exit 1
-        }
-    } finally {
-        Pop-Location
-    }
+    Write-Host "[ERROR] Frontend dist not found: $frontendDist"
+    Write-Host "[ERROR] For release packages, frontend assets should already be built."
+    Write-Host "[ERROR] In development, run 'cd frontend && npm run build' first."
+    exit 1
 }
 
 $projectBackends = @(Get-ProjectBackendProcesses)

@@ -184,6 +184,7 @@ export interface WeChatRemoteDraftItem {
   url: string;
   appmsg_id?: string | null;
   updated_at?: string | null;
+  remote_key?: string | null;
 }
 
 export interface WeChatDraftSyncCheckResult {
@@ -199,6 +200,7 @@ export type WeChatMappingStatus = "matched" | "remote_only" | "local_only" | "un
 
 export interface WeChatMappingRow {
   remote_title: string;
+  remote_key?: string | null;
   remote_appmsg_id?: string | null;
   remote_url: string;
   remote_updated_at?: string | null;
@@ -241,6 +243,21 @@ export interface WeChatChannelConfig {
   publish_entry_url: string;
   selectors_version: string;
   sidecar_url: string;
+}
+
+export interface SystemCheckItem {
+  key: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+  next_action?: string | null;
+}
+
+export interface SystemDoctorResult {
+  checked_at: string;
+  ok: boolean;
+  items: SystemCheckItem[];
+  summary: string;
 }
 
 export interface ReferenceProject {
@@ -831,4 +848,6 @@ export interface DashboardResponse {
   sources: SourceConnector[];
   browser_session: BrowserSessionState;
   publish_backends: PublishBackendStatus[];
+  setup_status?: Record<string, unknown>;
+  doctor_summary?: Record<string, unknown>;
 }

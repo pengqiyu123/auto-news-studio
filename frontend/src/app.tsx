@@ -43,6 +43,7 @@ import type {
   RuntimeIntent,
   RuntimePlan,
   SourceConnector,
+  SystemDoctorResult,
   WeChatMappingSnapshot,
   WeChatChannelConfig,
 } from "./types";
@@ -113,6 +114,7 @@ export default function App() {
   const [referenceProjects, setReferenceProjects] = useState<ReferenceProject[]>([]);
   const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
   const [appSettings, setAppSettings] = useState<Record<string, unknown>>({});
+  const [systemDoctor, setSystemDoctor] = useState<SystemDoctorResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingChannel, setSavingChannel] = useState(false);
@@ -187,6 +189,7 @@ export default function App() {
         referenceData,
         llmConfigData,
         settingsData,
+        doctorData,
       ] = await Promise.all([
         api.getDashboard(),
         api.getIntelSummary(),
@@ -204,6 +207,7 @@ export default function App() {
         api.getReferenceProjects(),
         api.getLLMConfig(),
         api.getSettings(),
+        api.getSystemDoctor(),
       ]);
       setDashboard((current) =>
         !current
@@ -230,12 +234,24 @@ export default function App() {
       setReferenceProjects(referenceData.items);
       setLlmConfig(llmConfigData.item);
       setAppSettings(settingsData.item);
+      setSystemDoctor(doctorData.item);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
     } finally {
       setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (activeTab === "settings") {
+      return;
+    }
+    const llmReady = Boolean(systemDoctor?.items.find((item) => item.key === "llm")?.ok);
+    const wechatReady = Boolean(systemDoctor?.items.find((item) => item.key === "wechat_login")?.ok);
+    if (!llmReady || !wechatReady) {
+      setActiveTab("settings");
+    }
+  }, [systemDoctor, activeTab]);
 
   useEffect(() => {
     void refreshAll();
@@ -448,9 +464,17 @@ export default function App() {
     setBusyBriefId(brief.id);
     try {
       if (kind === "sync") {
-        await api.syncBriefWeChatDraft(brief.id);
+        const response = await api.syncBriefWeChatDraft(brief.id);
         await refreshAll();
-        showToast("已同步到微信草稿箱");
+        const deliveryStatus = response.item.delivery_status;
+        const lastError = response.item.last_error;
+        if (deliveryStatus === "verified" && !lastError) {
+          showToast("已同步到微信草稿箱");
+        } else if (lastError?.includes("无需重复上传")) {
+          showToast("当前版本已同步，无需重复上传");
+        } else {
+          showToast("已处理微信草稿箱同步");
+        }
         return;
       } else if (kind === "copy") {
         await navigator.clipboard.writeText(brief.wechat_markdown || brief.prompt_package_markdown);
@@ -565,9 +589,51 @@ export default function App() {
     try {
       const result = await api.updateSettings(payload);
       setAppSettings(result.item);
+      const doctor = await api.getSystemDoctor();
+      setSystemDoctor(doctor.item);
       showToast("设置已保存");
     } catch (err) {
       setError(err instanceof Error ? err.message : "设置保存失败");
+    }
+  }
+
+  async function handleExportConfig() {
+    try {
+      const blob = await api.exportSystemConfig();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "auto-news-studio-config.json";
+      anchor.click();
+      URL.revokeObjectURL(url);
+      showToast("配置已导出");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "导出配置失败");
+    }
+  }
+
+  async function handleExportBackup() {
+    try {
+      const blob = await api.exportSystemBackup();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "auto-news-studio-backup.zip";
+      anchor.click();
+      URL.revokeObjectURL(url);
+      showToast("备份已导出");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "导出备份失败");
+    }
+  }
+
+  async function handleImportBackup(file: File) {
+    try {
+      const result = await api.importSystemBackup(file);
+      await refreshAll();
+      showToast(result.message || "备份已导入");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "导入备份失败");
     }
   }
 
@@ -986,6 +1052,7 @@ export default function App() {
                 syncingSourceKey={syncingSourceKey}
                 isSavingLLM={savingLLMConfig}
                 settings={appSettings}
+                doctor={systemDoctor}
                 wechatConfig={wechatConfig}
                 browserSession={browserSession}
                 isSavingChannel={savingChannel}
@@ -1001,6 +1068,9 @@ export default function App() {
                 onCreateSource={handleSourceCreate}
                 onDeleteSource={handleSourceDelete}
                 onSaveSettings={handleSaveSettings}
+                onExportConfig={handleExportConfig}
+                onExportBackup={handleExportBackup}
+                onImportBackup={handleImportBackup}
               />
             ) : null}
 

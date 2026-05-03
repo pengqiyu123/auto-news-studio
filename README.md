@@ -49,7 +49,7 @@ AI 驱动的新闻情报与发布平台，面向微信公众号（公众号）�
 - Node.js 20+
 - Chromium（Playwright 依赖）
 
-### 安装步骤
+### 安装步骤（开发）
 
 ```bash
 # 1. 克隆仓库
@@ -76,7 +76,12 @@ cd ..
 cp .env.example .env
 # 编辑 .env 填入你的 API Key
 
-# 7. 启动
+# 7. 构建前端
+cd frontend
+npm run build
+cd ..
+
+# 8. 启动
 start.bat                   # Windows（推荐）
 # 或手动启动：
 # cd backend && .venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -168,10 +173,17 @@ auto-news-studio/
 | POST | `/api/admin/runtime/start` | 启动自动化 |
 | POST | `/api/admin/runtime/stop` | 停止自动化 |
 
+## Windows 分发版
+
+- 分发对象：单用户、本机运行
+- 安装方式：运行 `install.bat`
+- 自检方式：运行 `doctor.bat`
+- 备份恢复：见 [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)
+
 ## 注意事项
 
-- **单用户设计**：当前无认证机制，CORS 完全开放，适用于单用户本地部署
-- **数据安全**：`data/state.json` 包含 LLM API Key（API 返回时已脱敏），请勿公开分享此文件
+- **单用户设计**：当前无认证机制，默认仅适用于单用户本地部署
+- **数据安全**：分发版配置保存在 `config/user-settings.json`，请勿公开分享
 - **微信发布**：使用 Playwright 浏览器自动化，不会自动点击最终发布按钮，需手动确认
 - **LLM 容错**：LLM 调用失败不会阻塞主管道，会降级为规则化简报
 

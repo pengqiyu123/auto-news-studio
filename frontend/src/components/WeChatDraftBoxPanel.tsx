@@ -171,8 +171,8 @@ export function WeChatDraftBoxPanel({
 
         <div className="intel-list">
           {filteredRows.length
-            ? filteredRows.map((row, index) => {
-                const remoteKey = row.remote_appmsg_id || row.remote_url || `${row.remote_title}-${index}`;
+              ? filteredRows.map((row, index) => {
+                const remoteKey = row.remote_key || row.remote_appmsg_id || row.remote_url || `${row.remote_title}-${index}`;
                 const deleting = deletingRemoteId === remoteKey;
                 return (
                   <article key={remoteKey} className="intel-row-card">
@@ -199,12 +199,12 @@ export function WeChatDraftBoxPanel({
                           打开编辑页
                         </a>
                       ) : null}
-                      {(row.remote_appmsg_id || row.remote_url) ? (
+                      {(row.remote_key || row.remote_appmsg_id || row.remote_url) ? (
                         <button
                           type="button"
                           className="ghost-button compact danger"
                           disabled={deleting}
-                          onClick={() => void onDeleteRemote(row.remote_appmsg_id || row.remote_url)}
+                          onClick={() => void onDeleteRemote(row.remote_key || row.remote_appmsg_id || row.remote_url)}
                         >
                           <Trash2 size={14} />
                           {deleting ? "删除中..." : "删除远端草稿"}

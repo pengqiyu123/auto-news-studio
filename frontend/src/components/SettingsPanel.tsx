@@ -8,6 +8,7 @@ import type {
   ReferenceProject,
   SettingsSectionKey,
   SourceConnector,
+  SystemDoctorResult,
   WeChatChannelConfig,
 } from "../types";
 import { LLMSettingsPanel } from "./LLMSettingsPanel";
@@ -25,6 +26,7 @@ interface SettingsPanelProps {
   syncingSourceKey?: string | null;
   isSavingLLM: boolean;
   settings: Record<string, unknown>;
+  doctor: SystemDoctorResult | null;
   wechatConfig: WeChatChannelConfig | null;
   browserSession: BrowserSessionState | null;
   isSavingChannel: boolean;
@@ -51,6 +53,9 @@ interface SettingsPanelProps {
   }) => Promise<void>;
   onDeleteSource: (sourceKey: string) => Promise<void>;
   onSaveSettings: (payload: Record<string, unknown>) => Promise<void>;
+  onExportConfig: () => Promise<void>;
+  onExportBackup: () => Promise<void>;
+  onImportBackup: (file: File) => Promise<void>;
 }
 
 export function SettingsPanel({
@@ -62,6 +67,7 @@ export function SettingsPanel({
   syncingSourceKey,
   isSavingLLM,
   settings,
+  doctor,
   wechatConfig,
   browserSession,
   isSavingChannel,
@@ -77,6 +83,9 @@ export function SettingsPanel({
   onCreateSource,
   onDeleteSource,
   onSaveSettings,
+  onExportConfig,
+  onExportBackup,
+  onImportBackup,
 }: SettingsPanelProps) {
   const [maxWorkers, setMaxWorkers] = useState(Number(settings?.max_workers ?? 8));
   const [savingSettings, setSavingSettings] = useState(false);
@@ -181,6 +190,52 @@ export function SettingsPanel({
               </p>
             </label>
           </div>
+          <div className="panel" style={{ marginTop: 16 }}>
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">恢复与自检</p>
+                <h2>安装状态与备份</h2>
+                <p className="subtle">{doctor?.summary ?? "尚未执行系统自检。"}</p>
+              </div>
+            </div>
+            <div className="source-grid">
+              {(doctor?.items ?? []).map((item) => (
+                <article key={item.key} className="source-card">
+                  <div className="source-card-header">
+                    <div>
+                      <strong>{item.label}</strong>
+                      <p>{item.detail}</p>
+                    </div>
+                    <SourceHealthBadge health={item.ok ? "healthy" : "warning"} />
+                  </div>
+                  {item.next_action ? <p className="subtle">{item.next_action}</p> : null}
+                </article>
+              ))}
+            </div>
+            <div className="intel-plan-actions" style={{ marginTop: 12, justifyContent: "flex-start" }}>
+              <button type="button" className="ghost-button compact" onClick={() => void onExportConfig()}>
+                导出配置
+              </button>
+              <button type="button" className="ghost-button compact" onClick={() => void onExportBackup()}>
+                导出备份
+              </button>
+              <label className="ghost-button compact" style={{ cursor: "pointer" }}>
+                导入备份
+                <input
+                  type="file"
+                  accept=".zip,.json"
+                  style={{ display: "none" }}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) {
+                      void onImportBackup(file);
+                    }
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+            </div>
+          </div>
           <div className="intel-plan-footer">
             <div className="intel-plan-status">
               {maxWorkersDirty ? <span className="dirty-chip">有未保存变更</span> : <span className="subtle-chip">已保存</span>}
@@ -209,4 +264,3 @@ export function SettingsPanel({
     </section>
   );
 }
-
