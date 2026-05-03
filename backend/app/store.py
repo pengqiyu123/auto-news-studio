@@ -11,12 +11,15 @@ import os
 import shutil
 import time
 import traceback
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 import zipfile
 from pathlib import Path
 import re
 from threading import RLock, Thread
 from typing import Any
 from uuid import uuid4
+import xml.etree.ElementTree as ET
 
 from .store_base import (
     BACKUP_DIR,
@@ -24,12 +27,15 @@ from .store_base import (
     CONFIG_DIR,
     DATA_FILE,
     DEFAULT_RUNTIME_INTENT,
+    DEFAULT_RELEASE_NOTES_URL,
+    DEFAULT_RELEASE_REPO,
     DEFAULT_USER_SETTINGS,
     INTENT_STAGE_PLANS,
     INTENT_TO_WORK_SCOPE,
     LOG_DIR,
     LOCAL_TZ,
     LOCAL_TZ as LTZ,
+    load_version_manifest,
     MAX_RAW_ITEMS,
     MODE_STAGE_PLANS,
     RUN_STALE_SECONDS,
@@ -64,6 +70,8 @@ from .intel_pipeline import build_intel_state
 from .llm import LLMService
 from .legacy_sources import build_legacy_rss_sources
 from .models import (
+    AppUpdateInfo,
+    AppVersionInfo,
     AutomationMode,
     AutomationModeDefinition,
     AutomationModeProfile,
@@ -259,6 +267,7 @@ class StudioStore:
             "cycle_started_at": None,
         }
         self._completion_hold_until: float = 0.0
+        self.version_manifest = load_version_manifest()
         self.data_file.parent.mkdir(parents=True, exist_ok=True)
         ensure_parent_dir(self.config_file)
         if not self.data_file.exists():
@@ -312,6 +321,10 @@ class StudioStore:
                     "events": ["breakout"],
                 },
                 "delivery_log": [],
+            },
+            "app_meta": {
+                "dismissed_update_version": None,
+                "last_update_check": None,
             },
             "channels": {
                 "wechat": {
@@ -540,6 +553,158 @@ class StudioStore:
                 if field in override:
                     source[field] = deepcopy_json(override[field])
             source["interval_minutes"] = schedule_to_minutes(source.get("schedule")) or source.get("interval_minutes") or 30
+
+    def _app_meta(self, state: dict[str, Any]) -> dict[str, Any]:
+        app_meta = state.setdefault("app_meta", {})
+        if not isinstance(app_meta, dict):
+            app_meta = {}
+            state["app_meta"] = app_meta
+        app_meta.setdefault("dismissed_update_version", None)
+        app_meta.setdefault("last_update_check", None)
+        return app_meta
+
+    @staticmethod
+    def _normalize_version_text(value: str | None) -> str:
+        compact = str(value or "").strip()
+        if compact.lower().startswith("v"):
+            compact = compact[1:]
+        return compact
+
+    @classmethod
+    def _version_parts(cls, value: str | None) -> tuple[int, ...]:
+        compact = cls._normalize_version_text(value)
+        match = re.match(r"(\d+(?:\.\d+)*)", compact)
+        if not match:
+            return (0,)
+        return tuple(int(part) for part in match.group(1).split("."))
+
+    @classmethod
+    def _is_version_newer(cls, latest: str | None, current: str | None) -> bool:
+        latest_parts = cls._version_parts(latest)
+        current_parts = cls._version_parts(current)
+        max_len = max(len(latest_parts), len(current_parts))
+        latest_padded = latest_parts + (0,) * (max_len - len(latest_parts))
+        current_padded = current_parts + (0,) * (max_len - len(current_parts))
+        return latest_padded > current_padded
+
+    def get_app_version_info(self) -> AppVersionInfo:
+        manifest = self.version_manifest
+        return AppVersionInfo(
+            version=str(manifest.get("version") or "0.2.0"),
+            release_channel=str(manifest.get("release_channel") or "stable"),
+            release_repo=str(manifest.get("release_repo") or DEFAULT_RELEASE_REPO),
+            release_notes_url=str(manifest.get("release_notes_url") or DEFAULT_RELEASE_NOTES_URL),
+        )
+
+    def _github_request_headers(self) -> dict[str, str]:
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "Auto-News-Studio",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        token = str(os.getenv("GITHUB_TOKEN") or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    def _fetch_latest_release_via_api(self, repo: str) -> dict[str, Any]:
+        url = f"https://api.github.com/repos/{repo}/releases/latest"
+        request = Request(url, headers=self._github_request_headers())
+        with urlopen(request, timeout=12) as response:  # noqa: S310 - controlled GitHub API URL
+            payload = json.loads(response.read().decode("utf-8"))
+        return {
+            "latest_version": str(payload.get("tag_name") or payload.get("name") or "").strip(),
+            "release_url": str(payload.get("html_url") or "").strip() or None,
+            "release_notes_url": str(payload.get("html_url") or "").strip() or None,
+            "published_at": str(payload.get("published_at") or payload.get("created_at") or "").strip() or None,
+            "source": "github_api",
+        }
+
+    def _fetch_latest_release_via_feed(self, repo: str) -> dict[str, Any]:
+        url = f"https://github.com/{repo}/releases.atom"
+        request = Request(url, headers={"User-Agent": "Auto-News-Studio", "Accept": "application/atom+xml,application/xml,text/xml"})
+        with urlopen(request, timeout=12) as response:  # noqa: S310 - controlled GitHub URL
+            xml_text = response.read().decode("utf-8", errors="replace")
+        root = ET.fromstring(xml_text)
+        namespace = {"atom": "http://www.w3.org/2005/Atom"}
+        entry = root.find("atom:entry", namespace)
+        if entry is None:
+            raise ValueError("未找到任何公开 Release 记录")
+        title = entry.findtext("atom:title", default="", namespaces=namespace).strip()
+        link_node = entry.find("atom:link", namespace)
+        updated_at = entry.findtext("atom:updated", default="", namespaces=namespace).strip() or None
+        href = link_node.get("href") if link_node is not None else None
+        version_match = re.search(r"\bv?\d+(?:\.\d+){1,}\b", title)
+        latest_version = version_match.group(0) if version_match else title
+        return {
+            "latest_version": latest_version,
+            "release_url": href,
+            "release_notes_url": href or f"https://github.com/{repo}/releases",
+            "published_at": updated_at,
+            "source": "github_feed",
+        }
+
+    def _fetch_latest_release(self, repo: str) -> tuple[dict[str, Any] | None, str | None]:
+        errors: list[str] = []
+        for fetcher in (self._fetch_latest_release_via_api, self._fetch_latest_release_via_feed):
+            try:
+                payload = fetcher(repo)
+                latest_version = str(payload.get("latest_version") or "").strip()
+                if not latest_version:
+                    raise ValueError("未返回版本号")
+                return payload, None
+            except HTTPError as exc:
+                errors.append(f"{fetcher.__name__}:{exc.code}")
+            except URLError as exc:
+                errors.append(f"{fetcher.__name__}:{exc.reason}")
+            except Exception as exc:
+                errors.append(f"{fetcher.__name__}:{exc}")
+        return None, "; ".join(errors) if errors else "unknown"
+
+    def get_app_update_info(self, force: bool = False) -> AppUpdateInfo:
+        current = self.get_app_version_info()
+        checked_at = now_iso()
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            app_meta = self._app_meta(state)
+            cached = app_meta.get("last_update_check")
+            if isinstance(cached, dict) and not force:
+                checked_dt = parse_time(str(cached.get("checked_at") or ""))
+                if checked_dt and (datetime.now(UTC) - checked_dt).total_seconds() < 1800:
+                    payload = deepcopy_json(cached)
+                    payload["dismissed_version"] = app_meta.get("dismissed_update_version")
+                    return AppUpdateInfo(**payload)
+
+        latest_payload, error = self._fetch_latest_release(current.release_repo)
+        update_payload = {
+            "current_version": current.version,
+            "latest_version": latest_payload.get("latest_version") if latest_payload else None,
+            "update_available": bool(latest_payload and self._is_version_newer(latest_payload.get("latest_version"), current.version)),
+            "checked_at": checked_at,
+            "source": latest_payload.get("source") if latest_payload else "unavailable",
+            "release_url": latest_payload.get("release_url") if latest_payload else None,
+            "release_notes_url": latest_payload.get("release_notes_url") if latest_payload else current.release_notes_url,
+            "published_at": latest_payload.get("published_at") if latest_payload else None,
+            "error": error,
+        }
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            app_meta = self._app_meta(state)
+            app_meta["last_update_check"] = deepcopy_json(update_payload)
+            self._write(state)
+            update_payload["dismissed_version"] = app_meta.get("dismissed_update_version")
+        return AppUpdateInfo(**update_payload)
+
+    def dismiss_app_update(self, version: str) -> AppUpdateInfo:
+        target_version = self._normalize_version_text(version)
+        if not target_version:
+            raise ValueError("缺少要关闭提示的版本号")
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            app_meta = self._app_meta(state)
+            app_meta["dismissed_update_version"] = target_version
+            self._write(state)
+        return self.get_app_update_info(force=False)
 
     def _setup_status(self, state: dict[str, Any], browser: dict[str, Any]) -> dict[str, Any]:
         llm = state.get("llm", {})
@@ -6227,6 +6392,8 @@ class StudioStore:
         browser = self._refresh_browser_session(snapshot)
         backends = self._publish_backends(snapshot)
         runtime = self._runtime(snapshot)
+        app_version = self.get_app_version_info()
+        update_info = self.get_app_update_info(force=False)
         runtime["next_collect_at"] = self._calculate_next_collect_at(snapshot)
         runtime["launch_mode"] = self._runtime_plan(snapshot).get("launch_mode", "interval_now")
         runtime_status = self._scheduler_status_from_state(snapshot)
@@ -6255,6 +6422,8 @@ class StudioStore:
         }
         snapshot["browser"]["wechat"] = browser
         return DashboardResponse(
+            app_version=app_version,
+            update_info=update_info,
             stats=DashboardStats(**stats),
             top_bar=top_bar,
             freshness=freshness,

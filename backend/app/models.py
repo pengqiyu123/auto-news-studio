@@ -864,6 +864,8 @@ class LogItem(BaseModel):
 
 
 class DashboardResponse(BaseModel):
+    app_version: AppVersionInfo
+    update_info: AppUpdateInfo
     stats: DashboardStats
     top_bar: DashboardTopBar
     freshness: FreshnessSnapshot
@@ -988,6 +990,34 @@ class SystemDoctorResult(BaseModel):
     ok: bool = False
     items: list[SystemCheckItem] = Field(default_factory=list)
     summary: str = ""
+
+
+class AppVersionInfo(BaseModel):
+    version: str
+    release_channel: str = "stable"
+    release_repo: str
+    release_notes_url: str
+
+
+class AppUpdateInfo(BaseModel):
+    current_version: str
+    latest_version: Optional[str] = None
+    update_available: bool = False
+    checked_at: str
+    source: str = "unknown"
+    release_url: Optional[str] = None
+    release_notes_url: Optional[str] = None
+    published_at: Optional[str] = None
+    error: Optional[str] = None
+    dismissed_version: Optional[str] = None
+
+
+class AppUpdateResponse(BaseModel):
+    item: AppUpdateInfo
+
+
+class AppUpdateDismissPayload(BaseModel):
+    version: str = ""
 
 
 class SystemDoctorResponse(BaseModel):

@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  ArrowUpRight,
   CheckCircle,
   FileStack,
   LayoutDashboard,
@@ -25,6 +26,8 @@ import { WeChatDraftBoxPanel } from "./components/WeChatDraftBoxPanel";
 import { api } from "./lib/api";
 import { deriveRuntimeDisplayStatus, isRuntimeActivelyProcessing, pickNewerRuntimeStatus, RUNTIME_INTENT_LABELS } from "./lib/runtimeIntent";
 import type {
+  AppUpdateInfo,
+  AppVersionInfo,
   BrowserSessionState,
   BriefItem,
   DashboardResponse,
@@ -115,6 +118,8 @@ export default function App() {
   const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
   const [appSettings, setAppSettings] = useState<Record<string, unknown>>({});
   const [systemDoctor, setSystemDoctor] = useState<SystemDoctorResult | null>(null);
+  const [appVersion, setAppVersion] = useState<AppVersionInfo | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingChannel, setSavingChannel] = useState(false);
@@ -166,6 +171,8 @@ export default function App() {
     setPublishTasks(publishTaskData.items);
     setWechatMapping(mappingData.item);
     setBrowserSession(dashboardData.browser_session);
+    setAppVersion(dashboardData.app_version);
+    setUpdateInfo(dashboardData.update_info);
   }, []);
 
   const refreshAll = useCallback(async () => {
@@ -231,6 +238,8 @@ export default function App() {
       setWechatMapping(mappingData.item);
       setWechatConfig(channelData.item);
       setBrowserSession(browserData.item);
+      setAppVersion(dashboardData.app_version);
+      setUpdateInfo(dashboardData.update_info);
       setReferenceProjects(referenceData.items);
       setLlmConfig(llmConfigData.item);
       setAppSettings(settingsData.item);
@@ -256,6 +265,22 @@ export default function App() {
   useEffect(() => {
     void refreshAll();
   }, [refreshAll]);
+
+  const handleCheckUpdate = useCallback(async () => {
+    const response = await api.getSystemUpdate(true);
+    setUpdateInfo(response.item);
+    if (response.item.update_available && response.item.latest_version) {
+      setToast(`发现新版本 ${response.item.latest_version}`);
+    } else if (!response.item.error) {
+      setToast("当前已经是最新版本");
+    }
+  }, []);
+
+  const handleDismissUpdate = useCallback(async (version: string) => {
+    const response = await api.dismissSystemUpdate(version);
+    setUpdateInfo(response.item);
+    setToast(`已忽略版本 ${version}`);
+  }, []);
 
   useEffect(() => {
     const runtimeAwareTabs: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "draft-box", "logs"];
@@ -910,6 +935,33 @@ export default function App() {
           </div>
         ) : null}
 
+        {updateInfo?.update_available &&
+        updateInfo.latest_version &&
+        updateInfo.latest_version !== updateInfo.dismissed_version ? (
+          <div className="update-banner">
+            <div>
+              <strong>发现新版本 {updateInfo.latest_version}</strong>
+              <p>
+                当前 {updateInfo.current_version}
+                {updateInfo.published_at ? `，发布于 ${updateInfo.published_at}` : ""}
+              </p>
+            </div>
+            <div className="update-banner-actions">
+              <button
+                type="button"
+                className="ghost-button compact"
+                onClick={() => window.open(updateInfo.release_url ?? updateInfo.release_notes_url ?? "", "_blank", "noopener,noreferrer")}
+              >
+                <ArrowUpRight size={14} />
+                查看更新
+              </button>
+              <button type="button" className="ghost-button compact" onClick={() => void handleDismissUpdate(updateInfo.latest_version ?? "")}>
+                忽略此版本
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {pendingDeepDiveTitle && activeTab !== "watchlist" ? (
           <div className="setup-banner">
             <strong>正在执行正文深挖</strong>
@@ -1053,6 +1105,8 @@ export default function App() {
                 isSavingLLM={savingLLMConfig}
                 settings={appSettings}
                 doctor={systemDoctor}
+                appVersion={appVersion}
+                updateInfo={updateInfo}
                 wechatConfig={wechatConfig}
                 browserSession={browserSession}
                 isSavingChannel={savingChannel}
@@ -1071,6 +1125,8 @@ export default function App() {
                 onExportConfig={handleExportConfig}
                 onExportBackup={handleExportBackup}
                 onImportBackup={handleImportBackup}
+                onCheckUpdate={handleCheckUpdate}
+                onDismissUpdate={handleDismissUpdate}
               />
             ) : null}
 

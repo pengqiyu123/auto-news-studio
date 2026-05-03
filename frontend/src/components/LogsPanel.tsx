@@ -1,3 +1,4 @@
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { formatDateTime, formatDuration } from "../lib/time";
@@ -9,29 +10,104 @@ interface LogsPanelProps {
   runtime: SchedulerStatus;
 }
 
+type SourceLogGroup = {
+  key: string;
+  label: string;
+  logs: LogItem[];
+};
+
+function renderLogRow(log: LogItem) {
+  return (
+    <div key={log.id} className={`log-plain-row log-plain-${log.level}`}>
+      <span className="log-plain-time">{formatDateTime(log.created_at, { fallback: "--:--" })}</span>
+      <span className="log-plain-level">{log.level}</span>
+      <span className="log-plain-cat">{log.category}</span>
+      <div className="log-plain-body">
+        <span className="log-plain-msg">{log.message}</span>
+        <span className="log-plain-meta">{log.stream} / {log.actor}</span>
+        {log.detail ? <pre className="log-plain-detail">{log.detail}</pre> : null}
+      </div>
+    </div>
+  );
+}
+
 export function LogsPanel({ logs, runtime }: LogsPanelProps) {
   const [levelFilter, setLevelFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const logEndRef = useRef<HTMLDivElement>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const systemLogListRef = useRef<HTMLDivElement>(null);
 
-  const sortedLogs = useMemo(() => {
+  const filteredLogs = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase();
     return [...logs]
       .filter((log) => {
         const matchesLevel = levelFilter === "all" || log.level === levelFilter;
-        const matchesSearch = !keyword || log.message.toLowerCase().includes(keyword);
+        const haystack = `${log.message}\n${log.detail ?? ""}\n${log.category}\n${log.actor}`.toLowerCase();
+        const matchesSearch = !keyword || haystack.includes(keyword);
         return matchesLevel && matchesSearch;
       })
       .sort((a, b) => {
-    const ta = a.created_at ?? "";
-    const tb = b.created_at ?? "";
-    return tb > ta ? 1 : tb < ta ? -1 : 0;
-    });
+        const ta = a.created_at ?? "";
+        const tb = b.created_at ?? "";
+        return ta < tb ? 1 : ta > tb ? -1 : 0;
+      });
   }, [logs, levelFilter, searchQuery]);
 
+  const sourceLogGroups = useMemo<SourceLogGroup[]>(() => {
+    const grouped = new Map<string, SourceLogGroup>();
+    for (const log of filteredLogs) {
+      const isSourceLog =
+        log.category === "collection" ||
+        log.category === "source" ||
+        log.actor === "scheduler" ||
+        log.message.includes("来源") ||
+        log.message.includes("同步");
+      if (!isSourceLog) {
+        continue;
+      }
+      let label = "信息源运行";
+      const matchedSource = log.message.match(/来源[《\s]?([^》，。,:\s]+)/);
+      if (matchedSource?.[1]) {
+        label = `来源：${matchedSource[1]}`;
+      } else if (log.category === "source") {
+        label = "来源配置";
+      } else if (log.category === "collection") {
+        label = "来源采集";
+      }
+      const key = label;
+      const current = grouped.get(key) ?? { key, label, logs: [] };
+      current.logs.push(log);
+      grouped.set(key, current);
+    }
+    return [...grouped.values()].sort((a, b) => {
+      const aTime = a.logs[0]?.created_at ?? "";
+      const bTime = b.logs[0]?.created_at ?? "";
+      return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
+    });
+  }, [filteredLogs]);
+
+  const systemLogs = useMemo(() => {
+    const sourceLogIds = new Set(sourceLogGroups.flatMap((group) => group.logs.map((log) => log.id)));
+    return filteredLogs.filter((log) => !sourceLogIds.has(log.id));
+  }, [filteredLogs, sourceLogGroups]);
+
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [sortedLogs.length]);
+    setCollapsedGroups((current) => {
+      const next = { ...current };
+      for (const group of sourceLogGroups) {
+        if (!(group.key in next)) {
+          next[group.key] = true;
+        }
+      }
+      return next;
+    });
+  }, [sourceLogGroups]);
+
+  useEffect(() => {
+    if (systemLogListRef.current) {
+      systemLogListRef.current.scrollTop = 0;
+    }
+  }, [systemLogs]);
 
   const cycleSummary = runtime.last_cycle_summary ?? null;
 
@@ -107,22 +183,52 @@ export function LogsPanel({ logs, runtime }: LogsPanelProps) {
         </section>
       ) : null}
 
-      <div className="log-plain-list">
-        {sortedLogs.map((log) => (
-          <div key={log.id} className={`log-plain-row log-plain-${log.level}`}>
-            <span className="log-plain-time">{formatDateTime(log.created_at, { fallback: "--:--" })}</span>
-            <span className="log-plain-level">{log.level}</span>
-            <span className="log-plain-cat">{log.category}</span>
-            <div className="log-plain-body">
-              <span className="log-plain-msg">{log.message}</span>
-              <span className="log-plain-meta">{log.stream} / {log.actor}</span>
-              {log.detail ? <pre className="log-plain-detail" style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{log.detail}</pre> : null}
-            </div>
+      <section className="logs-section">
+        <div className="logs-section-head">
+          <div>
+            <p className="eyebrow">信息源日志</p>
+            <h3>来源运行记录</h3>
           </div>
-        ))}
-        {!sortedLogs.length ? <p className="empty-state">暂无日志。</p> : null}
-        <div ref={logEndRef} />
-      </div>
+        </div>
+        {sourceLogGroups.length ? (
+          <div className="logs-accordion">
+            {sourceLogGroups.map((group) => {
+              const collapsed = collapsedGroups[group.key] ?? false;
+              return (
+                <article key={group.key} className="logs-group-card">
+                  <button
+                    type="button"
+                    className="logs-group-toggle"
+                    onClick={() => setCollapsedGroups((current) => ({ ...current, [group.key]: !collapsed }))}
+                  >
+                    <span className="logs-group-title">
+                      {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                      <strong>{group.label}</strong>
+                    </span>
+                    <span className="subtle">{group.logs.length} 条</span>
+                  </button>
+                  {!collapsed ? <div className="log-plain-list">{group.logs.map(renderLogRow)}</div> : null}
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="empty-state">暂无信息源相关日志。</p>
+        )}
+      </section>
+
+      <section className="logs-section">
+        <div className="logs-section-head">
+          <div>
+            <p className="eyebrow">系统日志</p>
+            <h3>系统与交付异常</h3>
+          </div>
+        </div>
+        <div ref={systemLogListRef} className="log-plain-list">
+          {systemLogs.map(renderLogRow)}
+          {!systemLogs.length ? <p className="empty-state">暂无系统日志。</p> : null}
+        </div>
+      </section>
     </section>
   );
 }

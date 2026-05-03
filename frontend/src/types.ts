@@ -260,6 +260,26 @@ export interface SystemDoctorResult {
   summary: string;
 }
 
+export interface AppVersionInfo {
+  version: string;
+  release_channel: string;
+  release_repo: string;
+  release_notes_url: string;
+}
+
+export interface AppUpdateInfo {
+  current_version: string;
+  latest_version?: string | null;
+  update_available: boolean;
+  checked_at: string;
+  source: string;
+  release_url?: string | null;
+  release_notes_url?: string | null;
+  published_at?: string | null;
+  error?: string | null;
+  dismissed_version?: string | null;
+}
+
 export interface ReferenceProject {
   local_name: string;
   upstream_repo: string;
@@ -816,6 +836,8 @@ export interface LLMTestResult {
 }
 
 export interface DashboardResponse {
+  app_version: AppVersionInfo;
+  update_info: AppUpdateInfo;
   stats: {
     total_sources: number;
     healthy_sources: number;

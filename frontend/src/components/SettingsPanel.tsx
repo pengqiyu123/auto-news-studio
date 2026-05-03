@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 
 import { formatDateTime, formatRelativeTime } from "../lib/time";
 import type {
+  AppUpdateInfo,
+  AppVersionInfo,
   BrowserSessionState,
   LLMConfig,
   ReferenceProject,
@@ -27,6 +29,8 @@ interface SettingsPanelProps {
   isSavingLLM: boolean;
   settings: Record<string, unknown>;
   doctor: SystemDoctorResult | null;
+  appVersion: AppVersionInfo | null;
+  updateInfo: AppUpdateInfo | null;
   wechatConfig: WeChatChannelConfig | null;
   browserSession: BrowserSessionState | null;
   isSavingChannel: boolean;
@@ -56,6 +60,8 @@ interface SettingsPanelProps {
   onExportConfig: () => Promise<void>;
   onExportBackup: () => Promise<void>;
   onImportBackup: (file: File) => Promise<void>;
+  onCheckUpdate: () => Promise<void>;
+  onDismissUpdate: (version: string) => Promise<void>;
 }
 
 export function SettingsPanel({
@@ -68,6 +74,8 @@ export function SettingsPanel({
   isSavingLLM,
   settings,
   doctor,
+  appVersion,
+  updateInfo,
   wechatConfig,
   browserSession,
   isSavingChannel,
@@ -86,6 +94,8 @@ export function SettingsPanel({
   onExportConfig,
   onExportBackup,
   onImportBackup,
+  onCheckUpdate,
+  onDismissUpdate,
 }: SettingsPanelProps) {
   const [maxWorkers, setMaxWorkers] = useState(Number(settings?.max_workers ?? 8));
   const [savingSettings, setSavingSettings] = useState(false);
@@ -189,6 +199,58 @@ export function SettingsPanel({
                 并发数越高采集越快，但过高可能触发目标服务器限流。基准测试显示 52 个来源在 8 并发时约 12.6 秒完成，10 并发时约 12.3 秒（瓶颈在慢源本身）。
               </p>
             </label>
+          </div>
+          <div className="panel" style={{ marginTop: 16 }}>
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">版本更新</p>
+                <h2>应用版本</h2>
+                <p className="subtle">
+                  当前 {appVersion?.version ?? "-"}
+                  {updateInfo?.update_available && updateInfo.latest_version ? `，可升级到 ${updateInfo.latest_version}` : ""}
+                </p>
+              </div>
+            </div>
+            <div className="source-grid">
+              <article className="source-card">
+                <div className="source-card-header">
+                  <div>
+                    <strong>当前版本</strong>
+                    <p>{appVersion?.version ?? "-"}</p>
+                  </div>
+                  <SourceHealthBadge health="healthy" />
+                </div>
+              </article>
+              <article className="source-card">
+                <div className="source-card-header">
+                  <div>
+                    <strong>最新版本</strong>
+                    <p>{updateInfo?.latest_version ?? "尚未发现正式 Release"}</p>
+                  </div>
+                  <SourceHealthBadge health={updateInfo?.update_available ? "warning" : "healthy"} />
+                </div>
+                <p className="subtle">
+                  {updateInfo?.error
+                    ? `检查结果：${updateInfo.error}`
+                    : `最近检查：${updateInfo ? formatRelativeTime(updateInfo.checked_at) : "未检查"}`}
+                </p>
+              </article>
+            </div>
+            <div className="intel-plan-actions" style={{ marginTop: 12, justifyContent: "flex-start" }}>
+              <button type="button" className="ghost-button compact" onClick={() => void onCheckUpdate()}>
+                立即检查
+              </button>
+              {updateInfo?.release_url ? (
+                <button type="button" className="ghost-button compact" onClick={() => window.open(updateInfo.release_url ?? updateInfo.release_notes_url ?? "", "_blank", "noopener,noreferrer")}>
+                  打开发布页
+                </button>
+              ) : null}
+              {updateInfo?.update_available && updateInfo.latest_version ? (
+                <button type="button" className="ghost-button compact" onClick={() => void onDismissUpdate(updateInfo.latest_version ?? "")}>
+                  忽略此版本
+                </button>
+              ) : null}
+            </div>
           </div>
           <div className="panel" style={{ marginTop: 16 }}>
             <div className="panel-header">

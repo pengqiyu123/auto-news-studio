@@ -1,4 +1,5 @@
 import type {
+  AppUpdateInfo,
   AutomationMode,
   AutomationModeDefinition,
   AutomationModeProfile,
@@ -193,7 +194,29 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     source_alerts: []
   };
 
+  const appVersion = dashboard.app_version ?? {
+    version: "0.2.0",
+    release_channel: "stable",
+    release_repo: "pengqiyu123/auto-news-studio",
+    release_notes_url: "https://github.com/pengqiyu123/auto-news-studio/releases"
+  };
+
+  const updateInfo: AppUpdateInfo = dashboard.update_info ?? {
+    current_version: appVersion.version,
+    latest_version: null,
+    update_available: false,
+    checked_at: new Date().toISOString(),
+    source: "unknown",
+    release_url: appVersion.release_notes_url,
+    release_notes_url: appVersion.release_notes_url,
+    published_at: null,
+    error: null,
+    dismissed_version: null
+  };
+
   return {
+    app_version: appVersion,
+    update_info: updateInfo,
     stats,
     top_bar: topBar,
     freshness,
@@ -433,6 +456,13 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   getSystemDoctor: () => request<{ item: SystemDoctorResult }>("/api/admin/system/doctor"),
+  getSystemUpdate: (force = false) =>
+    request<{ item: AppUpdateInfo }>(`/api/admin/system/update?force=${force ? "true" : "false"}`),
+  dismissSystemUpdate: (version: string) =>
+    request<{ item: AppUpdateInfo }>("/api/admin/system/update/dismiss", {
+      method: "POST",
+      body: JSON.stringify({ version })
+    }),
   exportSystemConfig: async () => {
     const response = await fetch(`${API_BASE}/api/admin/system/export-config`, { method: "POST" });
     if (!response.ok) throw new Error("导出配置失败");

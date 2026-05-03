@@ -12,6 +12,8 @@ from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .models import (
+    AppUpdateDismissPayload,
+    AppUpdateResponse,
     AutomationModeProfile,
     AutomationModesResponse,
     AutomationProfilesResponse,
@@ -60,9 +62,11 @@ from .models import (
 )
 from .publishers import WECHAT_BROWSER_MANAGER
 from .store import StudioStore
+from .store_base import load_version_manifest
 
 
 store = StudioStore()
+VERSION_MANIFEST = load_version_manifest()
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 RUNTIME_DIR = Path(__file__).resolve().parents[2] / "runtime"
 BACKEND_PID_FILE = RUNTIME_DIR / "backend.pid"
@@ -148,7 +152,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Auto News Studio API",
-    version="0.2.0",
+    version=str(VERSION_MANIFEST.get("version") or "0.2.0"),
     description="自动化新闻助手运营后台 API，覆盖信息采集、候选选题、公众号草稿和浏览器会话。",
     lifespan=lifespan,
 )
@@ -186,6 +190,19 @@ def frontend_index():
 @app.get("/api/admin/dashboard")
 def get_dashboard():
     return store.get_dashboard()
+
+
+@app.get("/api/admin/system/update", response_model=AppUpdateResponse)
+def get_system_update(force: bool = False):
+    return AppUpdateResponse(item=store.get_app_update_info(force=force))
+
+
+@app.post("/api/admin/system/update/dismiss", response_model=AppUpdateResponse)
+def dismiss_system_update(payload: AppUpdateDismissPayload):
+    try:
+        return AppUpdateResponse(item=store.dismiss_app_update(payload.version))
+    except ValueError as exc:
+        raise _http_from_value_error(exc) from exc
 
 
 @app.get("/api/admin/intel", response_model=IntelSnapshotResponse)

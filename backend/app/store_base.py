@@ -16,6 +16,7 @@ CONFIG_DIR = Path(__file__).resolve().parent.parent.parent / "config"
 CONFIG_FILE = CONFIG_DIR / "user-settings.json"
 BACKUP_DIR = Path(__file__).resolve().parent.parent.parent / "runtime" / "backups"
 LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
+VERSION_FILE = Path(__file__).resolve().parent.parent.parent / "version.json"
 UTC = timezone.utc
 LOCAL_TZ = timezone(timedelta(hours=8))
 MAX_RAW_ITEMS = 480
@@ -105,6 +106,23 @@ DEFAULT_USER_SETTINGS: dict[str, Any] = {
         "tavily_api_key": "",
     },
 }
+
+DEFAULT_APP_VERSION = "0.2.0"
+DEFAULT_RELEASE_CHANNEL = "stable"
+DEFAULT_RELEASE_REPO = "pengqiyu123/auto-news-studio"
+DEFAULT_RELEASE_NOTES_URL = "https://github.com/pengqiyu123/auto-news-studio/releases"
+
+
+def load_version_manifest() -> dict[str, Any]:
+    payload = read_json_file(VERSION_FILE, {})
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "version": str(payload.get("version") or DEFAULT_APP_VERSION).strip() or DEFAULT_APP_VERSION,
+        "release_channel": str(payload.get("release_channel") or DEFAULT_RELEASE_CHANNEL).strip() or DEFAULT_RELEASE_CHANNEL,
+        "release_repo": str(payload.get("release_repo") or DEFAULT_RELEASE_REPO).strip() or DEFAULT_RELEASE_REPO,
+        "release_notes_url": str(payload.get("release_notes_url") or DEFAULT_RELEASE_NOTES_URL).strip() or DEFAULT_RELEASE_NOTES_URL,
+    }
 
 
 def now_iso() -> str:
