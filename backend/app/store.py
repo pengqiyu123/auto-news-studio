@@ -1465,6 +1465,11 @@ class StudioStore:
         limit = max(int(plan.get("batch_limit", 3) or 3), 1)
         fallback_candidates: list[dict[str, Any]] = []
         for event in projected_events:
+            if not bool(event.get("worth_to_brief")):
+                continue
+            alert_state = str(event.get("alert_state") or "")
+            if alert_state == "cooling" or alert_state == "new":
+                continue
             if filters["require_watchlisted"] and not bool(event.get("watchlisted")):
                 continue
             if filters["require_entity_match"] and not list(event.get("entity_names", [])):
@@ -1534,12 +1539,15 @@ class StudioStore:
             fallback_event = events[0]
             self._append_log(
                 state,
-                "info",
+                "warning",
                 "delivery",
                 f"严格筛选未命中，本轮改为兜底推进最高分事件：{fallback_event.get('title') or fallback_event.get('id') or 'unknown'}",
                 stream="system_runtime",
                 actor=triggered_by,
             )
+        elif not events and not strict_matches and not due_for_upload:
+            self._append_log(state, "info", "delivery", "本轮严格筛选和兜底筛选均未命中，跳过交付。", stream="system_runtime", actor=triggered_by)
+            return
 
         stage_plan = self._stage_plan(runtime)
         stage_positions = {item["key"]: index + 1 for index, item in enumerate(stage_plan)}
@@ -4511,8 +4519,10 @@ class StudioStore:
             result["new_delivery_status"] = "verified"
             result["last_delivery_error_kind"] = None
         elif verify_status == "target_missing":
+            result["new_stage"] = "prepared"
             result["new_delivery_status"] = "target_missing"
             result["last_delivery_error_kind"] = "target_missing"
+            result["should_clear_last_synced_revision"] = True
         elif verify_status == "scrape_failed":
             result["new_delivery_status"] = "check_failed"
             result["last_delivery_error_kind"] = "scrape_failed"
@@ -4578,12 +4588,22 @@ class StudioStore:
                     brief["wechat_editor_url"] = str(resolved_editor_url)
                 if resolved_remote_appmsg_id:
                     brief["wechat_remote_appmsg_id"] = str(resolved_remote_appmsg_id)
-                if verification_status in {"verification_failed", "target_missing", "check_failed", "scrape_failed"}:
+                if verification_status == "target_missing":
+                    brief["stage"] = "prepared"
+                    brief["delivery_status"] = "target_missing"
+                    brief["wechat_editor_url"] = None
+                    brief["wechat_remote_appmsg_id"] = None
+                    brief["last_synced_revision"] = None
+                    brief["last_successful_upload_at"] = None
+                    brief["last_error"] = verification_message or "已上传，但远端草稿箱未确认到目标稿件，回退为 prepared。"
+                elif verification_status in {"verification_failed", "check_failed", "scrape_failed"}:
                     brief["last_error"] = verification_message or "已上传，但草稿箱确认未完成。"
+                    brief["last_synced_revision"] = None
+                    brief["last_successful_upload_at"] = None
                 else:
                     brief["last_error"] = None
-                brief["last_synced_revision"] = self._brief_revision(brief)
-                brief["last_successful_upload_at"] = now_iso()
+                    brief["last_synced_revision"] = self._brief_revision(brief)
+                    brief["last_successful_upload_at"] = now_iso()
                 if verification_status == "verified":
                     brief["last_verified_at"] = now_iso()
             brief["updated_at"] = now_iso()

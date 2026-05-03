@@ -172,10 +172,6 @@ export function IntelOverviewPage({
     setPlanDraft(buildPlanDraft(runtimePlan));
   }, [runtimePlan]);
 
-  useEffect(() => {
-    setPlanDraft(buildPlanDraft(runtimePlan));
-  }, [runtimePlan]);
-
   // Track when the cycle starts (first non-zero percent)
   useEffect(() => {
     const pct = runtime.current_cycle_progress_percent;
