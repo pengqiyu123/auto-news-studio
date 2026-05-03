@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import { EntityWatchlistPanel } from "./EntityWatchlistPanel";
 import { explainEventsEmptyState } from "../lib/runtimeIntent";
+import { historyStatusLabel, historyStatusTone } from "../lib/eventUtils";
 import { formatDateTime, formatRelativeTime } from "../lib/time";
 import type { EntityWatchlistItem, EntityWatchlistSummaryItem, HistoryRecordStatus, IntelEvent, IntelEventHistoryItem, SchedulerStatus } from "../types";
 
@@ -36,18 +37,6 @@ interface IntelEventsPageProps {
   busyEventId?: string | null;
 }
 
-function historyStatusLabel(status: HistoryRecordStatus) {
-  if (status === "active") return "仍活跃";
-  if (status === "source_uncertain") return "待确认";
-  return "已回落";
-}
-
-function historyStatusTone(status: HistoryRecordStatus) {
-  if (status === "active") return "success";
-  if (status === "source_uncertain") return "warning";
-  return "neutral";
-}
-
 export function IntelEventsPage({
   items,
   historyItems,
@@ -67,7 +56,16 @@ export function IntelEventsPage({
   const [historyFilter, setHistoryFilter] = useState<HistoryRecordStatus | "all">("all");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [historyVisibleCount, setHistoryVisibleCount] = useState(PAGE_SIZE);
+  const [expandedCards, setExpandedCards] = useState<Set<string>>(() => new Set());
 
+
+  function toggleExpanded(id: string) {
+    setExpandedCards((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  }
   const entityOptions = useMemo(() => {
     const lookup = new Map<string, { entity_id: string; entity_name: string }>();
     for (const event of items) {
@@ -195,13 +193,22 @@ export function IntelEventsPage({
                   <span>新鲜 {event.freshness_score}</span>
                   <span>{formatRelativeTime(event.latest_collected_at, "刚抓到")}</span>
                 </div>
-                <div className="intel-score-row">
+
+                <button
+                  type="button"
+                  className="ghost-button compact"
+                  style={{ marginBottom: 4, fontSize: 12 }}
+                  onClick={() => toggleExpanded(event.id)}>
+                  {expandedCards.has(event.id) ? "收起详情" : "详情"}
+                </button>
+                {expandedCards.has(event.id) ? (
+               <div className="intel-score-row">
                   <span>成员增量 {event.member_delta >= 0 ? `+${event.member_delta}` : event.member_delta}</span>
                   <span>平台增量 {event.platform_delta >= 0 ? `+${event.platform_delta}` : event.platform_delta}</span>
                   <span>首次 {formatDateTime(event.first_seen_at, { fallback: "未知" })}</span>
                   <span>最近 {formatDateTime(event.last_seen_at, { fallback: "未知" })}</span>
                 </div>
-                <div className="intel-inline-actions">
+                ) : null}                <div className="intel-inline-actions">
                   <a href={event.representative_link} target="_blank" rel="noreferrer">查看原文</a>
                   <button type="button" className="ghost-button compact" disabled={event.watchlisted} onClick={() => void onWatchEvent(event.id)}>
                     {event.watchlisted ? "已加入深挖池" : "加入深挖池"}

@@ -64,6 +64,12 @@ export function formatDuration(seconds?: number | null, fallback = "未知") {
   return `${remainingSeconds}秒`;
 }
 
+export function formatDurationMs(value?: number | null) {
+  if (value == null) return "暂无";
+  if (value < 1000) return `${value}ms`;
+  return `${(value / 1000).toFixed(1)}s`;
+}
+
 export function toDateTimeLocalValue(value?: string | null) {
   const date = parseDate(value);
   if (!date) {

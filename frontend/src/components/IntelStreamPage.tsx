@@ -8,11 +8,67 @@ const PAGE_SIZE = 20;
 type TimeFilter = "all" | "1h" | "6h" | "24h" | "72h";
 type ChangeFilter = "all" | "new_item" | "updated_item" | "seen_item";
 type HeatFilter = "all" | "none" | "low" | "mid" | "high";
+type SortKey = "collected_at" | "engagement_score" | "platform" | "source_name";
+
+const SORT_OPTIONS: Array<{ key: SortKey; label: string }> = [
+  { key: "collected_at", label: "抓取时间" },
+  { key: "engagement_score", label: "热度" },
+  { key: "platform", label: "平台" },
+  { key: "source_name", label: "来源" },
+];
 
 interface IntelStreamPageProps {
   items: DiscoveryItem[];
 }
 
+interface GithubMeta {
+  stars: number;
+  forks: number;
+  watchers: number;
+  starsToday: number;
+}
+
+function StreamCard({ item }: { item: DiscoveryItem }) {
+  function githubMeta(entry: DiscoveryItem): GithubMeta | null {
+    const metadata = (entry.metadata ?? {}) as Record<string, unknown>;
+    const stars = Number(metadata.github_stars_total ?? 0);
+    const forks = Number(metadata.github_forks_total ?? 0);
+    const watchers = Number(metadata.github_watchers_total ?? 0);
+    const starsToday = Number(metadata.github_stars_today ?? 0);
+    if (!stars && !forks && !watchers && !starsToday) return null;
+    return { stars, forks, watchers, starsToday };
+  }
+
+  const gh = githubMeta(item);
+
+  return (
+    <>
+      <div className="intel-card-topline">
+        <span>{item.source_name}</span>
+        <span>{formatRelativeTime(item.collected_at, "刚刚")}</span>
+      </div>
+      <strong>{item.title}</strong>
+      <p>{item.summary}</p>
+      <div className="intel-score-row">
+        <span>{item.platform}</span>
+        <span>
+          {item.item_state === "new_item" ? "本轮新增" : item.item_state === "updated_item" ? "内容更新" : "重复出现"}
+        </span>
+        <span>{formatDateTime(item.published_at, { fallback: "发布时间未知" })}</span>
+        <span>热度 {item.engagement_score}</span>
+      </div>
+      {gh ? (
+        <div className="intel-score-row">
+          <span>Stars {gh.stars}</span>
+          <span>Forks {gh.forks}</span>
+          {gh.watchers > 0 ? <span>Watch {gh.watchers}</span> : null}
+          {gh.starsToday > 0 ? <span>今日 +{gh.starsToday}</span> : null}
+        </div>
+      ) : null}
+      <a href={item.link} target="_blank" rel="noreferrer">查看原文</a>
+    </>
+  );
+}
 export function IntelStreamPage({ items }: IntelStreamPageProps) {
   const [query, setQuery] = useState("");
   const [timeFilter, setTimeFilter] = useState<TimeFilter>("24h");
@@ -20,6 +76,7 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
   const [sourceFilter, setSourceFilter] = useState("all");
   const [changeFilter, setChangeFilter] = useState<ChangeFilter>("all");
   const [heatFilter, setHeatFilter] = useState<HeatFilter>("all");
+  const [sortBy, setSortBy] = useState<SortKey>("collected_at");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   const platformOptions = useMemo(
@@ -34,7 +91,7 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [query, timeFilter, platformFilter, sourceFilter, changeFilter, heatFilter]);
+  }, [query, timeFilter, platformFilter, sourceFilter, changeFilter, heatFilter, sortBy]);
 
   const filtered = useMemo(() => {
     const now = Date.now();
@@ -75,8 +132,20 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
     });
   }, [items, query, timeFilter, platformFilter, sourceFilter, changeFilter, heatFilter]);
 
-  const visible = filtered.slice(0, visibleCount);
-  const hasMore = visibleCount < filtered.length;
+  const sorted = useMemo(() => {
+    return [...filtered].sort((a, b) => {
+      if (sortBy === "collected_at") {
+        return (Date.parse(b.collected_at ?? "") || 0) - (Date.parse(a.collected_at ?? "") || 0);
+      }
+      if (sortBy === "engagement_score") {
+        return (Number(b.engagement_score) || 0) - (Number(a.engagement_score) || 0);
+      }
+      return (a[sortBy] ?? "").toString().localeCompare((b[sortBy] ?? "").toString(), "zh-CN");
+    });
+  }, [filtered, sortBy]);
+
+  const visible = sorted.slice(0, visibleCount);
+  const hasMore = visibleCount < sorted.length;
 
   function resetFilters() {
     setQuery("");
@@ -87,17 +156,7 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
     setHeatFilter("all");
   }
 
-  function githubMeta(item: DiscoveryItem) {
-    const metadata = (item.metadata ?? {}) as Record<string, unknown>;
-    const stars = Number(metadata.github_stars_total ?? 0);
-    const forks = Number(metadata.github_forks_total ?? 0);
-    const watchers = Number(metadata.github_watchers_total ?? 0);
-    const starsToday = Number(metadata.github_stars_today ?? 0);
-    if (!stars && !forks && !watchers && !starsToday) return null;
-    return { stars, forks, watchers, starsToday };
-  }
-
-  return (
+ return (
     <section className="panel">
       <div className="panel-header compact">
         <div>
@@ -150,44 +209,39 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
           <RotateCcw size={14} />
         </button>
       </div>
+      <div className="intel-chip-filter-bar">
+        <div className="intel-chip-row">
+          {SORT_OPTIONS.map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              className={`filter-chip ${sortBy === opt.key ? "filter-chip-active" : ""}`}
+              onClick={() => setSortBy(opt.key)}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="intel-score-row">
-        <span>当前显示 {visible.length}/{filtered.length} 条</span>
+        <span>当前显示 {visible.length}/{sorted.length} 条</span>
         <span>总素材 {items.length} 条</span>
-        <span>默认按抓取时间倒序</span>
+        <span>排序 {SORT_OPTIONS.find((o) => o.key === sortBy)?.label}</span>
       </div>
       <div className="intel-list">
-        {visible.length ? visible.map((item) => (
-          <article key={item.id} className="intel-row-card">
-            {(() => {
-              const gh = githubMeta(item);
-              return (
-                <>
-            <div className="intel-card-topline">
-              <span>{item.source_name}</span>
-              <span>{formatRelativeTime(item.collected_at, "刚刚")}</span>
-            </div>
-            <strong>{item.title}</strong>
-            <p>{item.summary}</p>
-            <div className="intel-score-row">
-              <span>{item.platform}</span>
-              <span>
-                {item.item_state === "new_item" ? "本轮新增" : item.item_state === "updated_item" ? "内容更新" : "重复出现"}
-              </span>
-              <span>{formatDateTime(item.published_at, { fallback: "发布时间未知" })}</span>
-              <span>热度 {item.engagement_score}</span>
-            </div>
-            {gh ? (
-              <div className="intel-score-row">
-                <span>Stars {gh.stars}</span>
-                <span>Forks {gh.forks}</span>
-                {gh.watchers > 0 ? <span>Watch {gh.watchers}</span> : null}
-                {gh.starsToday > 0 ? <span>今日 +{gh.starsToday}</span> : null}
+        {!items.length ? (
+          <div className="skeleton-list">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="skeleton-card">
+                <div className="skeleton-line skeleton-short" />
+                <div className="skeleton-line skeleton-medium" />
+                <div className="skeleton-line skeleton-long" />
               </div>
-            ) : null}
-            <a href={item.link} target="_blank" rel="noreferrer">查看原文</a>
-                </>
-              );
-            })()}
+            ))}
+          </div>
+        ) : visible.length ? visible.map((item) => (
+          <article key={item.id} className="intel-row-card">
+            <StreamCard item={item} />
           </article>
         )) : (
           <p className="empty-state">
@@ -198,7 +252,7 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
       {hasMore ? (
         <div className="intel-load-more">
           <button type="button" className="ghost-button" onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}>
-            加载更多 ({filtered.length - visibleCount} 条)
+            加载更多 ({sorted.length - visibleCount} 条)
           </button>
         </div>
       ) : null}

@@ -25,9 +25,7 @@ import type {
   LogItem,
   LLMConfig,
   LLMTestResult,
-  ModeDefinition,
   PublishBackendStatus,
-  PublishMode,
   PublishTask,
   ReferenceProject,
   RuntimePlan,
@@ -35,7 +33,8 @@ import type {
   SchedulerStatus,
   SourceConnector,
   WeChatChannelConfig,
-  WeChatDraftSyncCheckResult
+  WeChatDraftSyncCheckResult,
+  WeChatMappingSnapshot
 } from "../types";
 
 const API_BASE =
@@ -45,16 +44,10 @@ const API_BASE =
 function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>): DashboardResponse {
   const dashboard = payload as Partial<DashboardResponse>;
   const stats = dashboard.stats ?? {
-    current_mode: "draft_only",
-    mode_label: "仅初稿",
     total_sources: 0,
     healthy_sources: 0,
     collected_today: 0,
-    candidate_count: 0,
-    total_drafts: 0,
-    waiting_review: 0,
-    preview_ready: 0,
-    published_today: 0,
+    event_count: 0,
     deep_dive_ready: 0,
     brief_total: 0,
     brief_prepared: 0,
@@ -62,26 +55,13 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     publish_blocked: 0
   };
 
-  const currentMode = dashboard.current_mode ?? {
-    key: stats.current_mode,
-    label: stats.mode_label,
-    description: "",
-    auto_collect: true,
-    auto_draft: true,
-    sync_to_wechat_draft: true,
-    auto_open_preview: false,
-    requires_human_review: true,
-    allow_auto_send: false,
-    allow_auto_retry: true
-  };
-
   const topBar = dashboard.top_bar ?? {
-    current_mode_label: dashboard.current_automation_mode?.label ?? currentMode.label,
+    current_mode_label: dashboard.current_automation_mode?.label ?? "自动监测",
     healthy_sources: stats.healthy_sources,
     total_sources: stats.total_sources,
     latest_collected_at: null,
     latest_published_at: null,
-    waiting_review: stats.waiting_review,
+    pending_briefs: stats.brief_prepared,
     blocked_publish_count: 0
   };
 
@@ -102,8 +82,8 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     label: "仅雷达捕获",
     description: "",
     auto_collect: true,
-    auto_generate_candidates: true,
-    auto_generate_drafts: false,
+    auto_build_events: true,
+    auto_build_briefs: false,
     auto_publish_enabled: false,
     available: true
   };
@@ -115,8 +95,8 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     current_mode: currentAutomationMode.key,
     work_scope: "collect_events_alerts",
     last_collect_at: null,
-    last_candidate_at: null,
-    last_draft_at: null,
+    last_event_sync_at: null,
+    last_brief_at: null,
     next_collect_at: null,
     delivery_mode: "immediate",
     delivery_schedule_time: null,
@@ -162,11 +142,11 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
   const currentAutomationProfile: AutomationModeProfile = dashboard.current_automation_profile ?? {
     mode: currentAutomationMode.key,
     collect_interval_minutes: 30,
-    draft_trigger: currentAutomationMode.auto_generate_drafts ? "after_sync" : "manual",
-    draft_schedule_time: null,
-    draft_delivery: "local_only",
-    draft_selection: "top_scored",
-    draft_limit: 6,
+    brief_trigger: currentAutomationMode.auto_build_briefs ? "after_sync" : "manual",
+    brief_schedule_time: null,
+    delivery_target: "local_only",
+    selection_mode: "top_scored",
+    brief_limit: 6,
     publish_strategy: "disabled",
     publish_schedule_time: null,
     require_approval: true,
@@ -197,8 +177,8 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
 
   const executionChain: ExecutionChainSnapshot = dashboard.execution_chain ?? {
     collect_status: "idle",
-    candidate_status: "idle",
-    draft_status: "idle",
+    admission_status: "idle",
+    briefing_status: "idle",
     review_status: "idle",
     wechat_status: "idle",
     publish_status: "idle",
@@ -229,7 +209,6 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     recent_alerts_24h: dashboard.recent_alerts_24h ?? [],
     recent_events_24h: dashboard.recent_events_24h ?? [],
     entity_watchlist_summary: (dashboard.entity_watchlist_summary ?? []) as EntityWatchlistSummaryItem[],
-    current_mode: currentMode,
     recent_logs: dashboard.recent_logs ?? [],
     briefs: dashboard.briefs ?? [],
     deep_dives: dashboard.deep_dives ?? [],
@@ -240,7 +219,11 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
       user_data_dir: "",
       logged_in: false,
       selectors_version: "wechat-mp-v1",
-      sidecar_health: "offline"
+      sidecar_health: "offline",
+      manager_alive: false,
+      window_state: "unknown",
+      resident_page: null,
+      busy: false
     },
     publish_backends: dashboard.publish_backends ?? []
   };
@@ -287,6 +270,10 @@ export const api = {
     request<{ item: BriefItem }>(`/api/admin/briefs/${briefId}/wechat-draft`, {
       method: "POST"
     }),
+  deleteBrief: (briefId: string, remote = "auto") =>
+    request<{ ok: boolean; message: string }>(`/api/admin/briefs/${briefId}?remote=${encodeURIComponent(remote)}`, {
+      method: "DELETE"
+    }),
   copyBriefPackage: (briefId: string) =>
     request<{ markdown: string }>(`/api/admin/briefs/${briefId}/copy-package`, {
       method: "POST"
@@ -302,12 +289,6 @@ export const api = {
     request<{ item: IntelEvent }>(`/api/admin/intel/watchlist/${eventId}`, { method: "POST" }),
   ignoreEvent: (eventId: string) =>
     request<{ item: IntelEvent }>(`/api/admin/intel/ignore/${eventId}`, { method: "POST" }),
-  getModes: () => request<{ current: ModeDefinition; items: ModeDefinition[] }>("/api/admin/modes"),
-  setMode: (mode: PublishMode) =>
-    request<{ current: ModeDefinition }>("/api/admin/modes/current", {
-      method: "PUT",
-      body: JSON.stringify({ mode })
-    }),
   getAutomationModes: () =>
     request<{ current: AutomationModeDefinition; items: AutomationModeDefinition[] }>("/api/admin/automation/modes"),
   getCurrentAutomationMode: () =>
@@ -364,12 +345,12 @@ export const api = {
   deleteSource: (sourceKey: string) =>
     request<{ ok: boolean }>(`/api/admin/sources/${sourceKey}`, { method: "DELETE" }),
   syncSources: () =>
-    request<{ raw_count: number; normalized_count: number; candidate_count: number; synced_at: string; warnings: string[] }>(
+    request<{ raw_count: number; normalized_count: number; event_count: number; synced_at: string; warnings: string[] }>(
       "/api/admin/sources/sync",
       { method: "POST" }
     ),
   syncSource: (sourceKey: string) =>
-    request<{ raw_count: number; normalized_count: number; candidate_count: number; synced_at: string; warnings: string[] }>(
+    request<{ raw_count: number; normalized_count: number; event_count: number; synced_at: string; warnings: string[] }>(
       `/api/admin/sources/${sourceKey}/sync`,
       { method: "POST" }
     ),
@@ -399,6 +380,16 @@ export const api = {
   checkWeChatDraftBox: () =>
     request<{ item: WeChatDraftSyncCheckResult }>("/api/admin/browser/wechat/check-drafts", {
       method: "POST"
+    }),
+  getWeChatMapping: () =>
+    request<{ item: WeChatMappingSnapshot }>("/api/admin/wechat/mapping"),
+  refreshWeChatMapping: () =>
+    request<{ item: WeChatMappingSnapshot }>("/api/admin/wechat/mapping/refresh", {
+      method: "POST"
+    }),
+  deleteWeChatRemoteDraft: (remoteId: string) =>
+    request<{ ok: boolean; message: string }>(`/api/admin/wechat/remote-drafts/${encodeURIComponent(remoteId)}`, {
+      method: "DELETE"
     }),
   getPublishBackends: () =>
     request<{ items: PublishBackendStatus[] }>("/api/admin/publish/backends"),

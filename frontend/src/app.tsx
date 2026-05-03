@@ -19,9 +19,9 @@ import { IntelEventsPage } from "./components/IntelEventsPage";
 import { IntelOverviewPage } from "./components/IntelOverviewPage";
 import { IntelStreamPage } from "./components/IntelStreamPage";
 import { LogsPanel } from "./components/LogsPanel";
-import { PublishPanel } from "./components/PublishPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SourceHealthPage } from "./components/SourceHealthPage";
+import { WeChatDraftBoxPanel } from "./components/WeChatDraftBoxPanel";
 import { api } from "./lib/api";
 import { deriveRuntimeDisplayStatus, isRuntimeActivelyProcessing, pickNewerRuntimeStatus, RUNTIME_INTENT_LABELS } from "./lib/runtimeIntent";
 import type {
@@ -43,6 +43,7 @@ import type {
   RuntimeIntent,
   RuntimePlan,
   SourceConnector,
+  WeChatMappingSnapshot,
   WeChatChannelConfig,
 } from "./types";
 
@@ -53,8 +54,8 @@ type TabKey =
   | "alerts"
   | "source-health"
   | "watchlist"
-  | "drafts"
-  | "publish"
+  | "briefs"
+  | "draft-box"
   | "settings"
   | "logs";
 
@@ -68,8 +69,8 @@ const intelTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboar
 
 const draftTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }> = [
   { key: "watchlist", label: "深挖池", icon: Sparkles },
-  { key: "drafts", label: "简报", icon: FileStack },
-  { key: "publish", label: "发布", icon: RadioTower },
+  { key: "briefs", label: "简报", icon: FileStack },
+  { key: "draft-box", label: "微信草稿箱", icon: RadioTower },
 ];
 
 const systemTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }> = [
@@ -84,8 +85,8 @@ const pageMeta: Record<TabKey, { eyebrow: string; title: string }> = {
   alerts: { eyebrow: "趋势判断", title: "热点预警列表" },
   "source-health": { eyebrow: "来源巡检", title: "来源运行状态" },
   watchlist: { eyebrow: "深挖池", title: "待深挖的观察事件" },
-  drafts: { eyebrow: "简报", title: "简报工作台" },
-  publish: { eyebrow: "发布", title: "微信草稿箱交付" },
+  briefs: { eyebrow: "简报", title: "简报工作台" },
+  "draft-box": { eyebrow: "微信草稿箱", title: "远端草稿与本地简报对照" },
   settings: { eyebrow: "系统配置", title: "AI 模型、信息源与系统偏好" },
   logs: { eyebrow: "运行记录", title: "系统日志与异常" },
 };
@@ -106,6 +107,7 @@ export default function App() {
   const [selectedEntityId, setSelectedEntityId] = useState<string>("all");
   const [publishTasks, setPublishTasks] = useState<PublishTask[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
+  const [wechatMapping, setWechatMapping] = useState<WeChatMappingSnapshot | null>(null);
   const [wechatConfig, setWechatConfig] = useState<WeChatChannelConfig | null>(null);
   const [browserSession, setBrowserSession] = useState<BrowserSessionState | null>(null);
   const [referenceProjects, setReferenceProjects] = useState<ReferenceProject[]>([]);
@@ -122,7 +124,8 @@ export default function App() {
   const [busyBriefId, setBusyBriefId] = useState<string | null>(null);
   const [refreshingBrowser, setRefreshingBrowser] = useState(false);
   const [openingBrowser, setOpeningBrowser] = useState(false);
-  const [checkingDraftBox, setCheckingDraftBox] = useState(false);
+  const [refreshingMapping, setRefreshingMapping] = useState(false);
+  const [deletingRemoteId, setDeletingRemoteId] = useState<string | null>(null);
   const [busyRuntimeAction, setBusyRuntimeAction] = useState<"start" | "stop" | null>(null);
   const [busyMaintenanceIntent, setBusyMaintenanceIntent] = useState<RuntimeIntent | null>(null);
   const [savingRuntimePlan, setSavingRuntimePlan] = useState(false);
@@ -131,7 +134,7 @@ export default function App() {
   const [pendingBriefTitle, setPendingBriefTitle] = useState<string | null>(null);
 
   const refreshIntelCore = useCallback(async () => {
-    const [dashboardData, summaryData, streamData, eventData, alertData, sourceData, logData, publishTaskData] = await Promise.all([
+    const [dashboardData, summaryData, streamData, eventData, alertData, sourceData, logData, publishTaskData, mappingData] = await Promise.all([
       api.getDashboard(),
       api.getIntelSummary(),
       api.getDiscoveryItems(),
@@ -140,6 +143,7 @@ export default function App() {
       api.getIntelSources(),
       api.getLogs(),
       api.getPublishTasks(),
+      api.getWeChatMapping(),
     ]);
     setDashboard((current) =>
       !current
@@ -158,6 +162,7 @@ export default function App() {
     setSources(sourceData.items);
     setLogs(logData.items);
     setPublishTasks(publishTaskData.items);
+    setWechatMapping(mappingData.item);
     setBrowserSession(dashboardData.browser_session);
   }, []);
 
@@ -176,6 +181,7 @@ export default function App() {
         entityWatchlistData,
         publishTaskData,
         logData,
+        mappingData,
         channelData,
         browserData,
         referenceData,
@@ -192,6 +198,7 @@ export default function App() {
         api.getEntityWatchlist(),
         api.getPublishTasks(),
         api.getLogs(),
+        api.getWeChatMapping(),
         api.getWeChatConfig(),
         api.getBrowserSession(),
         api.getReferenceProjects(),
@@ -217,6 +224,7 @@ export default function App() {
       setEntityWatchlist(entityWatchlistData.items);
       setPublishTasks(publishTaskData.items);
       setLogs(logData.items);
+      setWechatMapping(mappingData.item);
       setWechatConfig(channelData.item);
       setBrowserSession(browserData.item);
       setReferenceProjects(referenceData.items);
@@ -234,7 +242,7 @@ export default function App() {
   }, [refreshAll]);
 
   useEffect(() => {
-    const runtimeAwareTabs: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "publish", "logs"];
+    const runtimeAwareTabs: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "draft-box", "logs"];
     if (!runtimeAwareTabs.includes(activeTab)) {
       return;
     }
@@ -426,7 +434,7 @@ export default function App() {
               runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
             },
       );
-      setActiveTab("drafts");
+      setActiveTab("briefs");
       showToast(response.item.brief_level === "enhanced" ? `AI增强简报已生成：${response.item.title}` : `规则简报已生成：${response.item.title}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "简报生成失败");
@@ -441,6 +449,9 @@ export default function App() {
     try {
       if (kind === "sync") {
         await api.syncBriefWeChatDraft(brief.id);
+        await refreshAll();
+        showToast("已同步到微信草稿箱");
+        return;
       } else if (kind === "copy") {
         await navigator.clipboard.writeText(brief.wechat_markdown || brief.prompt_package_markdown);
         showToast("简报已复制");
@@ -472,6 +483,25 @@ export default function App() {
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "简报动作执行失败");
+    } finally {
+      setBusyBriefId(null);
+    }
+  }
+
+  async function handleDeleteBrief(brief: BriefItem) {
+    const confirmed = window.confirm(
+      brief.stage === "synced"
+        ? `确定删除《${brief.title}》吗？这会默认尝试先删除微信草稿箱里的远端稿件，再删除本地简报。`
+        : `确定删除《${brief.title}》吗？这会直接删除本地简报。`,
+    );
+    if (!confirmed) return;
+    setBusyBriefId(brief.id);
+    try {
+      await api.deleteBrief(brief.id, "auto");
+      await refreshAll();
+      showToast("简报已删除");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "简报删除失败");
     } finally {
       setBusyBriefId(null);
     }
@@ -567,17 +597,43 @@ export default function App() {
     }
   }
 
-  async function handleCheckDraftBox() {
-    setCheckingDraftBox(true);
+  async function handleRefreshWeChatMapping() {
+    setRefreshingMapping(true);
     try {
-      const result = await api.checkWeChatDraftBox();
-      await refreshAll();
-      showToast(result.item.message || `已检查微信草稿箱：远端 ${result.item.remote_count} 条，本地缺失 ${result.item.missing_count} 条`);
+      const result = await api.refreshWeChatMapping();
+      setWechatMapping(result.item);
+      const browserData = await api.getBrowserSession();
+      setBrowserSession(browserData.item);
+      showToast(result.item.message || "公众号映射已刷新");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "微信草稿箱检查失败");
+      setError(err instanceof Error ? err.message : "公众号映射刷新失败");
     } finally {
-      setCheckingDraftBox(false);
+      setRefreshingMapping(false);
     }
+  }
+
+  async function handleDeleteRemoteDraft(remoteId: string) {
+    const confirmed = window.confirm("确定删除这个微信远端草稿吗？删除后不可恢复。");
+    if (!confirmed) return;
+    setDeletingRemoteId(remoteId);
+    try {
+      await api.deleteWeChatRemoteDraft(remoteId);
+      await refreshAll();
+      showToast("远端草稿已删除");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "远端草稿删除失败");
+    } finally {
+      setDeletingRemoteId(null);
+    }
+  }
+
+  async function handleSyncBriefById(briefId: string) {
+    const brief = briefs.find((item) => item.id === briefId);
+    if (!brief) {
+      setError("未找到对应简报，无法重新同步");
+      return;
+    }
+    await handleBriefAction("sync", brief);
   }
 
   async function handleStartRuntime() {
@@ -795,7 +851,7 @@ export default function App() {
           </div>
         ) : null}
 
-        {pendingBriefTitle && activeTab !== "drafts" ? (
+        {pendingBriefTitle && activeTab !== "briefs" ? (
           <div className="setup-banner">
             <strong>正在生成简报</strong>
             <p>正在把《{pendingBriefTitle}》的已抓取全文与证据全部交给 AI，完成后会更新简报工作台。</p>
@@ -895,30 +951,28 @@ export default function App() {
               />
             ) : null}
 
-            {activeTab === "drafts" ? (
+            {activeTab === "briefs" ? (
               <BriefTable
                 briefs={briefs}
                 busyBriefId={busyBriefId}
                 onRefreshBrief={(eventId) => handleCreateBrief(eventId)}
                 onCopyBrief={handleCopyBrief}
                 onCopyPackage={handleCopyBriefPackage}
+                onSyncBrief={(brief) => handleBriefAction("sync", brief)}
+                onDeleteBrief={handleDeleteBrief}
               />
             ) : null}
 
-            {activeTab === "publish" ? (
-              <PublishPanel
-                config={wechatConfig}
+            {activeTab === "draft-box" ? (
+              <WeChatDraftBoxPanel
+                mapping={wechatMapping}
                 browserSession={browserSession}
-                publishBackends={dashboard.publish_backends}
                 publishTasks={publishTasks}
-                isSaving={savingChannel}
-                isRefreshingBrowser={refreshingBrowser}
-                isOpeningBrowser={openingBrowser}
-                isCheckingDraftBox={checkingDraftBox}
-                onSave={handleSaveChannel}
-                onRefreshBrowser={handleRefreshBrowser}
-                onOpenBrowserDashboard={handleOpenBrowserDashboard}
-                onCheckDraftBox={handleCheckDraftBox}
+                refreshing={refreshingMapping}
+                deletingRemoteId={deletingRemoteId}
+                onRefresh={handleRefreshWeChatMapping}
+                onDeleteRemote={handleDeleteRemoteDraft}
+                onSyncBrief={handleSyncBriefById}
               />
             ) : null}
 
@@ -931,6 +985,15 @@ export default function App() {
                 savingSourceKey={savingSourceKey}
                 syncingSourceKey={syncingSourceKey}
                 isSavingLLM={savingLLMConfig}
+                settings={appSettings}
+                wechatConfig={wechatConfig}
+                browserSession={browserSession}
+                isSavingChannel={savingChannel}
+                isRefreshingBrowser={refreshingBrowser}
+                isOpeningBrowser={openingBrowser}
+                onSaveChannel={handleSaveChannel}
+                onRefreshBrowser={handleRefreshBrowser}
+                onOpenBrowserDashboard={handleOpenBrowserDashboard}
                 onSaveLLMConfig={handleSaveLLMConfig}
                 onSyncSources={handleSourceSync}
                 onSyncSource={handleSourceSyncOne}
@@ -938,7 +1001,6 @@ export default function App() {
                 onCreateSource={handleSourceCreate}
                 onDeleteSource={handleSourceDelete}
                 onSaveSettings={handleSaveSettings}
-                settings={appSettings}
               />
             ) : null}
 

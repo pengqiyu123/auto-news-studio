@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { deriveRuntimeDisplayStatus, deriveRuntimeVisualState, describeLastOutcome, explainAlertsEmptyState, explainEventsEmptyState, getRuntimeProgressMeta, isLoopLaunchMode, RUNTIME_INTENT_LABELS, runtimeDisplayTone } from "../lib/runtimeIntent";
 import { formatDateTime, formatDuration, formatRelativeTime, toDateTimeLocalValue } from "../lib/time";
+import { formatRuntimeIssueLabel } from "../lib/runtimeUtils";
 import type { EntityWatchlistSummaryItem, HistoryRecordStatus, IntelAlert, IntelAlertHistoryItem, IntelEvent, IntelEventHistoryItem, IntelOverviewSummary, RuntimeIntent, RuntimePlan, SchedulerStatus } from "../types";
 
 type OverviewTab = "alerts" | "events" | "source-health";
@@ -40,9 +41,9 @@ const DELIVERY_MODE_LABELS: Record<RuntimePlan["delivery_mode"], string> = {
 };
 
 const ADMISSION_STRATEGY_LABELS: Record<RuntimePlan["admission_strategy"], string> = {
-  conservative: "保守",
-  balanced: "平衡",
-  aggressive: "激进",
+  conservative: "仅爆发",
+  balanced: "上升+爆发",
+  aggressive: "上升+爆发+观察",
 };
 
 function plansEqual(left: Omit<RuntimePlan, "effective_mode">, right: RuntimePlan) {
@@ -111,10 +112,6 @@ function historyLevelTone(level: IntelAlertHistoryItem["highest_level"] | IntelE
   return "neutral";
 }
 
-function formatRuntimeIssueLabel(sourceName: string | null | undefined, message: string) {
-  return `${sourceName?.trim() ? `${sourceName}: ` : "系统异常："}${message}`;
-}
-
 function formatCountdown(target?: string | null, fallback = "未安排", nowMs = Date.now()) {
   if (!target) return fallback;
   const date = new Date(target);
@@ -133,6 +130,15 @@ function formatCountdown(target?: string | null, fallback = "未安排", nowMs =
     return `还有 ${minutes}分${seconds}秒`;
   }
   return `还有 ${seconds}秒`;
+}
+
+function CountdownTimer({ target, fallback = "未安排" }: { target?: string | null; fallback?: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return formatCountdown(target, fallback, now);
 }
 
 export function IntelOverviewPage({
@@ -157,7 +163,7 @@ export function IntelOverviewPage({
   const [planDraft, setPlanDraft] = useState<Omit<RuntimePlan, "effective_mode">>(buildPlanDraft(runtimePlan));
   const [planExpanded, setPlanExpanded] = useState(false);
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
-  const [countdownNow, setCountdownNow] = useState(() => Date.now());
+  const [cycleSummaryCollapsed, setCycleSummaryCollapsed] = useState(true);
 
   const cycleStartRef = useRef<number | null>(null);
   const prevPercentRef = useRef<number>(0);
@@ -167,9 +173,8 @@ export function IntelOverviewPage({
   }, [runtimePlan]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setCountdownNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
+    setPlanDraft(buildPlanDraft(runtimePlan));
+  }, [runtimePlan]);
 
   // Track when the cycle starts (first non-zero percent)
   useEffect(() => {
@@ -237,7 +242,6 @@ export function IntelOverviewPage({
     return `交付层${DELIVERY_MODE_LABELS[planDraft.delivery_mode]} ${planDraft.delivery_schedule_time || "未设定"}`;
   }, [planDraft.delivery_mode, planDraft.delivery_schedule_time]);
   const nextRunTime = summary.next_run_at ?? runtime.next_collect_at ?? null;
-  const nextRunCountdown = useMemo(() => formatCountdown(nextRunTime, "未安排", countdownNow), [countdownNow, nextRunTime]);
   const lastRunResultLabel = useMemo(() => {
     if (visualState === "one_shot_done") return "上一轮完成";
     if (visualState === "one_shot_failed") return "上一轮失败";
@@ -267,7 +271,7 @@ export function IntelOverviewPage({
       default:
         return `${scheduleDescriptor} · ${deliveryDescriptor}`;
     }
-  }, [cycleSummary, deliveryDescriptor, nextRunCountdown, nextRunTime, runtime.last_cycle_duration_seconds, scheduleDescriptor, visualState]);
+  }, [cycleSummary, deliveryDescriptor, nextRunTime, runtime.last_cycle_duration_seconds, scheduleDescriptor, visualState]);
 
   async function handleStart() {
     if (planDirty) {
@@ -423,7 +427,7 @@ export function IntelOverviewPage({
             </span>
             <span>{formatDateTime(nextRunTime, { fallback: "未设定" })}</span>
             <span className="subtle">
-              {visualState === "waiting_next" ? "距离下一轮" : "距离开始"}：{nextRunCountdown}
+              {visualState === "waiting_next" ? "距离下一轮" : "距离开始"}：<CountdownTimer target={nextRunTime} />
             </span>
             {isLoopMode ? <span className="subtle">今日已运行 {runtime.completed_cycles_today} 次</span> : null}
             {isLoopMode ? <span className="subtle">最近一轮耗时 {formatDuration(runtime.last_cycle_duration_seconds, "暂无")}</span> : null}
@@ -432,131 +436,147 @@ export function IntelOverviewPage({
 
         {/* 展开的计划配置面板 */}
         {planExpanded ? (
-          <div className="intel-plan-grid">
-            <label>
-              <span>启动方式</span>
-              <select
-                value={planDraft.launch_mode}
-                onChange={(event) =>
-                  setPlanDraft((current) => ({
-                    ...current,
-                    launch_mode: event.target.value as RuntimePlan["launch_mode"],
-                    start_at: event.target.value.endsWith("_at") ? current.start_at : null,
-                    interval_minutes: event.target.value.includes("interval") ? current.interval_minutes ?? 30 : null,
-                  }))
-                }
-              >
-                <option value="once_now">立即一次</option>
-                <option value="once_at">定时一次</option>
-                <option value="interval_now">立即循环</option>
-                <option value="interval_at">定时循环</option>
-              </select>
-            </label>
+          <div className="intel-plan-groups">
+            <section className="intel-plan-group">
+              <div className="intel-plan-group-header">
+                <p className="eyebrow">信息获取</p>
+                <h3>信息获取与事件筛选</h3>
+              </div>
+              <div className="intel-plan-stack">
+                <label>
+                  <span>信息获取方式</span>
+                  <select
+                    value={planDraft.launch_mode}
+                    onChange={(event) =>
+                      setPlanDraft((current) => ({
+                        ...current,
+                        launch_mode: event.target.value as RuntimePlan["launch_mode"],
+                        start_at: event.target.value.endsWith("_at") ? current.start_at : null,
+                        interval_minutes: event.target.value.includes("interval") ? current.interval_minutes ?? 30 : null,
+                      }))
+                    }
+                  >
+                    <option value="once_now">立即一次</option>
+                    <option value="once_at">定时一次</option>
+                    <option value="interval_now">立即循环</option>
+                    <option value="interval_at">定时循环</option>
+                  </select>
+                </label>
 
-            {(planDraft.launch_mode === "once_at" || planDraft.launch_mode === "interval_at") ? (
-              <label>
-                <span>开始时间</span>
-                <input
-                  type="datetime-local"
-                  value={toDateTimeLocalValue(planDraft.start_at)}
-                  onChange={(event) =>
-                    setPlanDraft((current) => ({
-                      ...current,
-                      start_at: event.target.value ? new Date(event.target.value).toISOString() : null,
-                    }))
-                  }
-                />
-              </label>
-            ) : null}
+                {(planDraft.launch_mode === "once_at" || planDraft.launch_mode === "interval_at") ? (
+                  <label className="intel-plan-subfield">
+                    <span>开始时间</span>
+                    <input
+                      type="datetime-local"
+                      value={toDateTimeLocalValue(planDraft.start_at)}
+                      onChange={(event) =>
+                        setPlanDraft((current) => ({
+                          ...current,
+                          start_at: event.target.value ? new Date(event.target.value).toISOString() : null,
+                        }))
+                      }
+                    />
+                  </label>
+                ) : null}
 
-            {(planDraft.launch_mode === "interval_now" || planDraft.launch_mode === "interval_at") ? (
-              <label>
-                <span>频率</span>
-                <select
-                  value={String(planDraft.interval_minutes ?? 30)}
-                  onChange={(event) =>
-                    setPlanDraft((current) => ({
-                      ...current,
-                      interval_minutes: Number(event.target.value),
-                    }))
-                  }
-                >
-                  <option value="10">10 分钟</option>
-                  <option value="15">15 分钟</option>
-                  <option value="20">20 分钟</option>
-                  <option value="30">30 分钟</option>
-                  <option value="60">60 分钟</option>
-                </select>
-              </label>
-            ) : null}
+                {(planDraft.launch_mode === "interval_now" || planDraft.launch_mode === "interval_at") ? (
+                  <label className="intel-plan-subfield">
+                    <span>频率</span>
+                    <select
+                      value={String(planDraft.interval_minutes ?? 30)}
+                      onChange={(event) =>
+                        setPlanDraft((current) => ({
+                          ...current,
+                          interval_minutes: Number(event.target.value),
+                        }))
+                      }
+                    >
+                      <option value="10">10 分钟</option>
+                      <option value="15">15 分钟</option>
+                      <option value="20">20 分钟</option>
+                      <option value="30">30 分钟</option>
+                      <option value="60">60 分钟</option>
+                    </select>
+                  </label>
+                ) : null}
 
-            <label>
-              <span>交付模式</span>
-              <select
-                value={planDraft.delivery_mode}
-                onChange={(event) =>
-                  setPlanDraft((current) => ({
-                    ...current,
-                    delivery_mode: event.target.value as RuntimePlan["delivery_mode"],
-                    delivery_schedule_time: event.target.value === "scheduled_batch" ? (current.delivery_schedule_time ?? "09:00") : null,
-                  }))
-                }
-              >
-                <option value="immediate">立即上传</option>
-                <option value="scheduled_batch">定时批量上传</option>
-              </select>
-            </label>
+                <label>
+                  <span>事件筛选</span>
+                  <select
+                    value={planDraft.admission_strategy}
+                    onChange={(event) =>
+                      setPlanDraft((current) => ({
+                        ...current,
+                        admission_strategy: event.target.value as RuntimePlan["admission_strategy"],
+                      }))
+                    }
+                  >
+                    <option value="conservative">仅爆发</option>
+                    <option value="balanced">上升+爆发</option>
+                    <option value="aggressive">上升+爆发+观察</option>
+                  </select>
+                </label>
+              </div>
+            </section>
 
-            {planDraft.delivery_mode === "scheduled_batch" ? (
-              <label>
-                <span>批量时间</span>
-                <input
-                  type="time"
-                  value={planDraft.delivery_schedule_time ?? "09:00"}
-                  onChange={(event) =>
-                    setPlanDraft((current) => ({
-                      ...current,
-                      delivery_schedule_time: event.target.value || "09:00",
-                    }))
-                  }
-                />
-              </label>
-            ) : null}
+            <section className="intel-plan-group">
+              <div className="intel-plan-group-header">
+                <p className="eyebrow">交付设置</p>
+                <h3>交付方式与每轮上限</h3>
+              </div>
+              <div className="intel-plan-stack">
+                <label>
+                  <span>交付模式</span>
+                  <select
+                    value={planDraft.delivery_mode}
+                    onChange={(event) =>
+                      setPlanDraft((current) => ({
+                        ...current,
+                        delivery_mode: event.target.value as RuntimePlan["delivery_mode"],
+                        delivery_schedule_time: event.target.value === "scheduled_batch" ? (current.delivery_schedule_time ?? "09:00") : null,
+                      }))
+                    }
+                  >
+                    <option value="immediate">立即上传</option>
+                    <option value="scheduled_batch">定时批量上传</option>
+                  </select>
+                </label>
 
-            <label>
-              <span>准入策略</span>
-              <select
-                value={planDraft.admission_strategy}
-                onChange={(event) =>
-                  setPlanDraft((current) => ({
-                    ...current,
-                    admission_strategy: event.target.value as RuntimePlan["admission_strategy"],
-                  }))
-                }
-              >
-                <option value="conservative">保守</option>
-                <option value="balanced">平衡</option>
-                <option value="aggressive">激进</option>
-              </select>
-            </label>
+                {planDraft.delivery_mode === "scheduled_batch" ? (
+                  <label className="intel-plan-subfield">
+                    <span>批量时间</span>
+                    <input
+                      type="time"
+                      value={planDraft.delivery_schedule_time ?? "09:00"}
+                      onChange={(event) =>
+                        setPlanDraft((current) => ({
+                          ...current,
+                          delivery_schedule_time: event.target.value || "09:00",
+                        }))
+                      }
+                    />
+                  </label>
+                ) : null}
 
-            <label>
-              <span>每轮上限</span>
-              <select
-                value={String(planDraft.batch_limit)}
-                onChange={(event) =>
-                  setPlanDraft((current) => ({
-                    ...current,
-                    batch_limit: Number(event.target.value),
-                  }))
-                }
-              >
-                <option value="1">1 条</option>
-                <option value="2">2 条</option>
-                <option value="3">3 条</option>
-                <option value="5">5 条</option>
-              </select>
-            </label>
+                <label>
+                  <span>每轮上限</span>
+                  <select
+                    value={String(planDraft.batch_limit)}
+                    onChange={(event) =>
+                      setPlanDraft((current) => ({
+                        ...current,
+                        batch_limit: Number(event.target.value),
+                      }))
+                    }
+                  >
+                    <option value="1">1 条</option>
+                    <option value="2">2 条</option>
+                    <option value="3">3 条</option>
+                    <option value="5">5 条</option>
+                  </select>
+                </label>
+              </div>
+            </section>
           </div>
         ) : null}
 
@@ -568,7 +588,7 @@ export function IntelOverviewPage({
               <span>上轮: {formatDateTime(runtime.last_cycle_started_at, { fallback: "尚未执行" })}</span>
               <span>耗时: {formatDuration(runtime.last_cycle_duration_seconds, "暂无")}</span>
               <span>交付: {DELIVERY_MODE_LABELS[planDraft.delivery_mode]}</span>
-              <span>策略: {ADMISSION_STRATEGY_LABELS[planDraft.admission_strategy]}</span>
+              <span>筛选: {ADMISSION_STRATEGY_LABELS[planDraft.admission_strategy]}</span>
             </div>
             <div className="intel-plan-actions">
               {planDirty ? <span className="dirty-chip">有未保存变更</span> : <span className="subtle-chip">已保存</span>}
@@ -759,7 +779,10 @@ export function IntelOverviewPage({
             </div>
           </div>
             {cycleSummary ? (
-            <div className="intel-runtime-summary">
+            <div className="intel-runtime-summary" style={cycleSummaryCollapsed ? { maxHeight: "3.5em", overflow: "hidden" } : undefined}>
+              <button type="button" className="ghost-button compact" style={{ float: "right", fontSize: "0.75rem" }} onClick={() => setCycleSummaryCollapsed(c => !c)}>
+                {cycleSummaryCollapsed ? "展开详情" : "收起"}
+              </button>
               <div className="intel-score-row">
                 <span>成功来源 {cycleSummary.success_source_count}</span>
                 <span>失败来源 {cycleSummary.failed_source_count}</span>

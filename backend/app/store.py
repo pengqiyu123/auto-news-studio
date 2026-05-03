@@ -4,6 +4,8 @@ from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import hashlib
+from html import escape
 import json
 import time
 import traceback
@@ -41,7 +43,6 @@ from .store_base import (
     schedule_to_minutes,
 )
 
-from .composer import _markdown_to_html, _wechat_html, compose_draft
 from .connectors import _collect_with_retry, collect_enabled_sources, collect_from_source
 from .briefing import build_prompt_package_markdown, build_rule_brief_payload
 from .deep_dive import canonicalize_url, fetch_and_extract_link, search_tavily
@@ -53,18 +54,15 @@ from .models import (
     AutomationMode,
     AutomationModeDefinition,
     AutomationModeProfile,
-    BatchDraftResponse,
     BriefItem,
     BrowserSessionPayload,
     BrowserSessionState,
-    CandidateTopic,
     ChannelConfigPayload,
     ChainStateCard,
     DashboardResponse,
     DashboardStats,
     DashboardTopBar,
     EventDeepDive,
-    DraftItem,
     DiscoveryItem,
     EntityWatchlistItem,
     EntityWatchlistSummaryItem,
@@ -79,16 +77,13 @@ from .models import (
     IntelOverviewSummary,
     IntelSummaryResponse,
     HotClusterCard,
-    IntelSnapshot,
     IntelStreamItem,
     LogItem,
     RuntimeCycleSummary,
     RuntimeIssueItem,
     RuntimeSlowSource,
     SchedulerStatus,
-    ModeDefinition,
     PublishBackendStatus,
-    PublishMode,
     PublishTask,
     ReferenceProject,
     RuntimePlan,
@@ -99,8 +94,12 @@ from .models import (
     CreateSourcePayload,
     SourceSyncResponse,
     WeChatDraftSyncCheckResult,
+    WeChatMappingResponse,
+    WeChatMappingRow,
+    WeChatMappingSnapshot,
     WeChatRemoteDraftItem,
     WeChatChannelConfig,
+    DictOkResponse,
 )
 from .store_llm import (
     build_provider_from_profile,
@@ -115,14 +114,15 @@ from .store_defaults import (
     DEFAULT_SOURCES,
     AUTOMATION_MODE_DEFINITIONS,
     DEFAULT_AUTOMATION_PROFILES,
-    MODE_DEFINITIONS,
 )
-from .pipeline import build_candidates, normalize_raw_items
+from .pipeline import normalize_raw_items
 from .publishers import (
+    WECHAT_BROWSER_MANAGER,
     build_preview_url,
-    build_wechat_draft_id,
+    build_wechat_target_id,
     collect_backend_status,
     create_publish_task,
+    delete_wechat_remote_draft,
     default_browser_profile_path,
     ensure_channel_defaults,
     extract_wechat_appmsg_id,
@@ -134,86 +134,6 @@ from .publishers import (
 )
 from .reference_projects import write_reference_baseline
 from .sources import discover_sources
-
-
-def default_image_slots(draft: dict[str, Any]) -> list[dict[str, Any]]:
-    title = str(draft.get("title") or "").strip()
-    return [
-        {
-            "slot_id": "hero",
-            "label": "头图",
-            "position": "lead",
-            "suggestion": "请补一张与主题直接相关的头图后再走预览或发表。",
-            "required_image": True,
-            "fulfilled": False,
-            "keywords": [title] if title else [],
-        }
-    ]
-
-
-def legacy_body_blocks(draft: dict[str, Any]) -> list[dict[str, Any]]:
-    markdown = str(draft.get("markdown") or "").strip()
-    if not markdown:
-        summary = str(draft.get("summary") or "").strip()
-        if not summary:
-            return []
-        return [{"kind": "intro", "content": summary, "evidence_links": list(draft.get("evidence_links", [])), "required_image": True}]
-    blocks: list[dict[str, Any]] = []
-    current_heading: str | None = None
-    current_lines: list[str] = []
-    for raw_line in markdown.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if line.startswith("# "):
-            continue
-        if line.startswith("## "):
-            if current_lines:
-                blocks.append(
-                    {
-                        "kind": "section",
-                        "heading": current_heading,
-                        "content": "\n".join(current_lines).strip(),
-                        "evidence_links": list(draft.get("evidence_links", []))[:2],
-                        "required_image": current_heading in {None, "正文初稿"},
-                    }
-                )
-                current_lines = []
-            current_heading = line[3:].strip()
-            continue
-        current_lines.append(line)
-    if current_lines:
-        blocks.append(
-            {
-                "kind": "section",
-                "heading": current_heading,
-                "content": "\n".join(current_lines).strip(),
-                "evidence_links": list(draft.get("evidence_links", []))[:2],
-                "required_image": current_heading in {None, "正文初稿"},
-            }
-        )
-    return blocks
-
-
-def legacy_brief(draft: dict[str, Any]) -> dict[str, Any]:
-    trace = draft.get("composition_trace", {}) if isinstance(draft.get("composition_trace"), dict) else {}
-    facts = [str(item).strip() for item in trace.get("facts", []) if str(item).strip()]
-    return {
-        "headline": draft.get("title", ""),
-        "one_line": draft.get("summary", ""),
-        "facts": facts,
-        "evidence_links": list(draft.get("evidence_links", [])),
-        "source_names": [],
-        "source_count": int(draft.get("source_count", 0) or 0),
-        "published_at": None,
-        "collected_at": None,
-        "event_judgement": "该稿件来自旧版生成器，建议重新生成后再发布。",
-        "risk_notes": list(draft.get("risk_flags", [])),
-        "time_context": {
-            "published_at_label": "发布时间未知",
-            "collected_at_label": "采集时间未知",
-        },
-    }
 
 
 def _migrate_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -262,13 +182,53 @@ def automation_to_publish_mode(mode: str) -> str:
 
 JOB_LABELS = {
     "collect_news": "雷达获取",
-    "rebuild_candidates": "重建候选池",
-    "build_digest": "批量生成初稿",
+    "rebuild_candidates": "刷新事件聚合",
+    "build_digest": "批量生成简报",
     "sync_wechat_draft": "同步微信草稿",
     "open_preview": "准备网页预览",
     "publish_pipeline": "执行浏览器发布链",
     "check_browser": "检查浏览器会话",
 }
+
+
+def _wechat_html(markdown: str) -> str:
+    blocks: list[str] = []
+    list_items: list[str] = []
+    quote_items: list[str] = []
+
+    def flush_lists() -> None:
+        nonlocal list_items, quote_items
+        if list_items:
+            blocks.append("<ul>" + "".join(f"<li>{item}</li>" for item in list_items) + "</ul>")
+            list_items = []
+        if quote_items:
+            blocks.append("<blockquote>" + "<br/>".join(quote_items) + "</blockquote>")
+            quote_items = []
+
+    for raw in str(markdown or "").splitlines():
+        text = raw.strip()
+        if not text:
+            flush_lists()
+            continue
+        if text.startswith("# "):
+            flush_lists()
+            blocks.append(f"<h1>{escape(text[2:].strip())}</h1>")
+            continue
+        if text.startswith("## "):
+            flush_lists()
+            blocks.append(f"<h2>{escape(text[3:].strip())}</h2>")
+            continue
+        if text.startswith("- "):
+            list_items.append(escape(text[2:].strip()))
+            continue
+        if text.startswith("> "):
+            quote_items.append(escape(text[2:].strip()))
+            continue
+        flush_lists()
+        blocks.append(f"<p>{escape(text)}</p>")
+
+    flush_lists()
+    return "<section style='font-size:15px;line-height:1.8;color:#222;'>" + "".join(blocks) + "</section>"
 
 
 class StudioStore:
@@ -286,7 +246,7 @@ class StudioStore:
             self._write(self._bootstrap_state())
             return
         state = self._upgrade_state(self._read())
-        required_keys = {"current_mode", "sources", "channels", "browser", "reference_projects"}
+        required_keys = {"sources", "channels", "browser", "reference_projects"}
         source_shape_ok = bool(state.get("sources")) and all("driver" in item for item in state.get("sources", []))
         channel_shape_ok = "sidecar_url" in state.get("channels", {}).get("wechat", {})
         has_legacy_imports = any("legacy-import" in item.get("capabilities", []) for item in state.get("sources", []))
@@ -305,10 +265,8 @@ class StudioStore:
         sources = self._build_source_registry()
         state = {
             "automation_mode": "radar_only",
-            "current_mode": "draft_only",
             "automation_mode_definitions": deepcopy(AUTOMATION_MODE_DEFINITIONS),
             "automation_profiles": deepcopy(DEFAULT_AUTOMATION_PROFILES),
-            "mode_definitions": deepcopy(MODE_DEFINITIONS),
             "sources": sources,
             "raw_items": [],
             "discovery_items": [],
@@ -320,8 +278,6 @@ class StudioStore:
             "event_deep_dives": [],
             "briefs": [],
             "normalized_items": [],
-            "candidates": [],
-            "drafts": [],
             "publish_tasks": [],
             "jobs": [],
             "logs": [],
@@ -364,9 +320,18 @@ class StudioStore:
                     "selectors_version": "wechat-mp-v1",
                     "last_screenshot": None,
                     "last_selector_check": None,
-                    "current_page": None,
-                    "sidecar_health": "offline",
-                    "last_draft_check": None,
+                "current_page": None,
+                "sidecar_health": "offline",
+                "manager_alive": False,
+                "window_state": "unknown",
+                "resident_page": None,
+                "busy": False,
+                "last_reset_reason": None,
+                "session_generation": 0,
+                "last_action": None,
+                "last_action_phase": None,
+                "is_session_level_error": False,
+                "last_draft_check": None,
                 }
             },
             "llm": default_llm_state(),
@@ -390,8 +355,8 @@ class StudioStore:
                 "current_mode": "radar_only",
                 "work_scope": "collect_events_alerts",
                 "last_collect_at": None,
-                "last_candidate_at": None,
-                "last_draft_at": None,
+                "last_event_sync_at": None,
+                "last_brief_at": None,
                 "next_collect_at": None,
                 "delivery_mode": "immediate",
                 "delivery_schedule_time": None,
@@ -446,7 +411,7 @@ class StudioStore:
             state,
             "info",
             "system",
-            "已完成 Auto News Studio 初始化，当前未自动抓取素材，也未自动生成稿件。",
+            "已完成 Auto News Studio 初始化，当前未自动抓取素材，也未开始自动交付。",
             stream="system_runtime",
         )
         return state
@@ -506,46 +471,16 @@ class StudioStore:
             item["collected_at"] = collected_at
             item["freshness_bucket"] = freshness_bucket(collected_at)
 
-        candidates = build_candidates(normalized, state.get("current_mode", "draft_only"))
-        candidate_ids = {item["id"] for item in candidates}
-
-        drafts_before = list(state.get("drafts", []))
-        drafts: list[dict[str, Any]] = []
-        event_ids = {
-            str(item.get("id") or "")
-            for item in state.get("intel_events", [])
-            if isinstance(item, dict) and item.get("id")
-        }
-        for draft in drafts_before:
-            candidate_id = str(draft.get("candidate_topic_id") or "")
-            source_event_id = str(draft.get("source_event_id") or "").strip() or self._event_id_from_candidate_id(candidate_id) or ""
-            if candidate_id not in candidate_ids and (not source_event_id or source_event_id not in event_ids):
-                continue
-            if (
-                _contains_synthetic_marker(draft.get("evidence_links"))
-                or _contains_synthetic_marker(draft.get("markdown"))
-                or _contains_synthetic_marker(draft.get("brief"))
-                or _contains_synthetic_marker(draft.get("composition_trace"))
-            ):
-                continue
-            drafts.append(draft)
-
-        draft_candidate_ids = {draft["candidate_topic_id"] for draft in drafts}
-        for candidate in candidates:
-            candidate["draft_exists"] = candidate["id"] in draft_candidate_ids
-            if candidate["draft_exists"]:
-                candidate["status"] = "drafted"
-            elif candidate.get("status") == "drafted":
-                candidate["status"] = "new"
-
-        kept_draft_ids = {draft["id"] for draft in drafts}
         kept_brief_ids = {
             str(item.get("id") or "")
             for item in state.get("briefs", [])
             if isinstance(item, dict) and item.get("id")
         }
-        kept_publish_owner_ids = kept_draft_ids | kept_brief_ids | {"session-wechat"}
-        publish_tasks = [task for task in state.get("publish_tasks", []) if str(task.get("draft_id") or "") in kept_publish_owner_ids]
+        kept_publish_owner_ids = kept_brief_ids | {"session-wechat"}
+        for task in state.get("publish_tasks", []):
+            if "draft_id" in task and "target_id" not in task:
+                task["target_id"] = task.get("draft_id")
+        publish_tasks = [task for task in state.get("publish_tasks", []) if str(task.get("target_id") or "") in kept_publish_owner_ids]
         logs = [
             log
             for log in state.get("logs", [])
@@ -553,7 +488,6 @@ class StudioStore:
         ]
         jobs = [job for job in state.get("jobs", []) if not _contains_synthetic_marker(job.get("message"))]
 
-        removed_drafts = len(drafts_before) - len(drafts)
         removed_logs = len(state.get("logs", [])) - len(logs)
 
         source_counts: dict[str, int] = {}
@@ -574,18 +508,16 @@ class StudioStore:
 
         state["raw_items"] = raw_items
         state["normalized_items"] = normalized
-        state["candidates"] = candidates
-        state["drafts"] = drafts
         state["publish_tasks"] = publish_tasks
         state["logs"] = logs
         state["jobs"] = jobs
 
-        if removed_raw or removed_drafts or removed_logs:
+        if removed_raw or removed_logs:
             self._append_log(
                 state,
                 "warning",
                 "cleanup",
-                f"已清理历史伪造数据：删除 {removed_raw} 条伪素材、{removed_drafts} 篇关联稿件。",
+                f"已清理历史伪造数据：删除 {removed_raw} 条伪素材。",
                 stream="system_runtime",
                 actor="system",
             )
@@ -741,6 +673,15 @@ class StudioStore:
         browser_wechat.setdefault("last_selector_check", None)
         browser_wechat.setdefault("current_page", wechat_channel["publish_entry_url"])
         browser_wechat.setdefault("sidecar_health", "offline")
+        browser_wechat.setdefault("manager_alive", False)
+        browser_wechat.setdefault("window_state", "unknown")
+        browser_wechat.setdefault("resident_page", None)
+        browser_wechat.setdefault("busy", False)
+        browser_wechat.setdefault("last_reset_reason", None)
+        browser_wechat.setdefault("session_generation", 0)
+        browser_wechat.setdefault("last_action", None)
+        browser_wechat.setdefault("last_action_phase", None)
+        browser_wechat.setdefault("is_session_level_error", False)
         browser_wechat.setdefault("last_draft_check", None)
         runtime = state.setdefault("runtime", {})
         runtime.setdefault("scheduler_running", False)
@@ -749,8 +690,8 @@ class StudioStore:
         runtime.setdefault("current_mode", state.get("automation_mode", "radar_only"))
         runtime.setdefault("work_scope", state.get("runtime_plan", {}).get("work_scope", "collect_events_alerts"))
         runtime.setdefault("last_collect_at", None)
-        runtime.setdefault("last_candidate_at", None)
-        runtime.setdefault("last_draft_at", None)
+        runtime.setdefault("last_event_sync_at", None)
+        runtime.setdefault("last_brief_at", None)
         runtime.setdefault("next_collect_at", None)
         runtime.setdefault("delivery_mode", "immediate")
         runtime.setdefault("delivery_schedule_time", None)
@@ -801,21 +742,11 @@ class StudioStore:
         for event in state.get("intel_events", []):
             event.setdefault("entity_ids", [])
             event.setdefault("entity_names", [])
-            event.setdefault("draft_ready", False)
-            event.setdefault("draft_score", 0.0)
-            event.setdefault("draft_reason", "")
-            event.setdefault("draft_exists", False)
-            event.setdefault("draft_id", None)
             event.setdefault("deep_dive_id", None)
             event.setdefault("brief_id", None)
         for alert in state.get("intel_alerts", []):
             alert.setdefault("entity_ids", [])
             alert.setdefault("entity_names", [])
-            alert.setdefault("draft_ready", False)
-            alert.setdefault("draft_score", 0.0)
-            alert.setdefault("draft_reason", "")
-            alert.setdefault("draft_exists", False)
-            alert.setdefault("draft_id", None)
             alert.setdefault("deep_dive_id", None)
             alert.setdefault("brief_id", None)
         state["intel_event_history"] = self._prune_intel_event_history(state.get("intel_event_history", []))
@@ -841,12 +772,6 @@ class StudioStore:
             log.setdefault("stream", "business_event")
             log.setdefault("actor", "system")
             log.setdefault("detail", None)
-        for candidate in state.get("candidates", []):
-            candidate.setdefault("published_at", None)
-            candidate.setdefault("collected_at", None)
-            candidate.setdefault("freshness_bucket", "unknown")
-            candidate.setdefault("draft_exists", False)
-            candidate.setdefault("normalized_score", float(candidate.get("score", 0)))
         for deep_dive in state.get("event_deep_dives", []):
             deep_dive.setdefault("status", "pending")
             deep_dive.setdefault("started_at", None)
@@ -867,6 +792,8 @@ class StudioStore:
                 if isinstance(source, dict):
                     source.setdefault("cleaned_full_text", "")
         for brief in state.get("briefs", []):
+            if "wechat_draft_id" in brief and "wechat_target_id" not in brief:
+                brief["wechat_target_id"] = brief.get("wechat_draft_id")
             brief.setdefault("brief_level", "rule")
             brief.setdefault("stage", "prepared")
             brief.setdefault("one_line", "")
@@ -880,80 +807,56 @@ class StudioStore:
             brief.setdefault("prompt_package_markdown", "")
             brief.setdefault("wechat_markdown", "")
             brief.setdefault("wechat_html", "")
-            brief.setdefault("wechat_draft_id", None)
+            brief.setdefault("wechat_target_id", None)
             brief.setdefault("wechat_editor_url", None)
             brief.setdefault("wechat_remote_appmsg_id", None)
             brief.setdefault("preview_url", None)
             brief.setdefault("last_error", None)
+            brief.setdefault("delivery_status", "idle")
+            brief.setdefault("delivery_attempt_count", 0)
+            brief.setdefault("last_delivery_attempt_at", None)
+            brief.setdefault("last_verified_at", None)
+            brief.setdefault("last_delivery_error_kind", None)
+            brief.setdefault("needs_resync", False)
+            brief.setdefault("last_synced_revision", None)
+            brief.setdefault("last_successful_upload_at", None)
             brief.setdefault("updated_at", now_iso())
-        for draft in state.get("drafts", []):
-            if draft.get("pipeline_stage") == "drafted" and draft.get("wechat_draft_id"):
-                draft["pipeline_stage"] = "draft_synced"
-            draft.setdefault("source_event_id", None)
-            draft.setdefault("source_alert_level", None)
-            draft.setdefault("generation_mode", "manual")
-            draft.setdefault("draft_window_id", None)
-            draft.setdefault("brief", legacy_brief(draft))
-            draft.setdefault("outline", {
-                "title_options": list(draft.get("title_options", [])),
-                "lead_direction": str(draft.get("summary", "")),
-                "key_points": list(draft.get("composition_trace", {}).get("facts", [])) if isinstance(draft.get("composition_trace"), dict) else [],
-                "section_order": ["导语", "关键信息", "事件解读", "影响判断", "结尾"],
-                "closing_line": "旧版稿件建议重新生成后再进入正式发布链路。",
-            })
-            draft.setdefault("article_variant", "flash_explainer")
-            draft.setdefault("reader_summary", str(draft.get("summary", "")))
-            draft.setdefault("body_blocks", legacy_body_blocks(draft))
-            draft.setdefault("image_slots", default_image_slots(draft))
-            draft.setdefault("editor_notes", ["这是旧版稿件，建议点击“重生成”切换到正式稿结构。"])
-            draft.setdefault("wechat_draft_id", None)
-            draft.setdefault("wechat_editor_url", None)
-            draft.setdefault("wechat_remote_appmsg_id", None)
-            draft.setdefault("preview_url", None)
-            draft.setdefault("last_error", None)
-            draft.setdefault("render_backend", "python-template")
-            draft.setdefault("approval_required", True)
-            draft.setdefault("composition_trace", {})
-            if not draft.get("summary") and draft.get("reader_summary"):
-                draft["summary"] = draft["reader_summary"]
-            if not draft.get("brief"):
-                draft["brief"] = legacy_brief(draft)
-            if not draft.get("body_blocks"):
-                draft["body_blocks"] = legacy_body_blocks(draft)
-        self._sync_draft_metadata(state)
+            brief.pop("wechat_draft_id", None)
         profiles_by_mode = {item["mode"]: item for item in state.get("automation_profiles", []) if isinstance(item, dict)}
         merged_profiles: list[dict[str, Any]] = []
         for default_profile in deepcopy(DEFAULT_AUTOMATION_PROFILES):
             profile = profiles_by_mode.get(default_profile["mode"], {})
+            if "draft_trigger" in profile and "brief_trigger" not in profile:
+                profile["brief_trigger"] = profile.get("draft_trigger")
+            if "draft_schedule_time" in profile and "brief_schedule_time" not in profile:
+                profile["brief_schedule_time"] = profile.get("draft_schedule_time")
+            if "draft_delivery" in profile and "delivery_target" not in profile:
+                profile["delivery_target"] = profile.get("draft_delivery")
+            if "draft_selection" in profile and "selection_mode" not in profile:
+                profile["selection_mode"] = profile.get("draft_selection")
+            if "draft_limit" in profile and "brief_limit" not in profile:
+                profile["brief_limit"] = profile.get("draft_limit")
             merged = {**default_profile, **profile}
+            merged.pop("draft_trigger", None)
+            merged.pop("draft_schedule_time", None)
+            merged.pop("draft_delivery", None)
+            merged.pop("draft_selection", None)
+            merged.pop("draft_limit", None)
             merged_profiles.append(merged)
         state["automation_profiles"] = merged_profiles
         mode_defs_by_key = {item["key"]: item for item in state.get("automation_mode_definitions", []) if isinstance(item, dict)}
         merged_mode_defs: list[dict[str, Any]] = []
         for default_mode in deepcopy(AUTOMATION_MODE_DEFINITIONS):
             existing_mode = mode_defs_by_key.get(default_mode["key"], {})
+            if "auto_generate_candidates" in existing_mode and "auto_build_events" not in existing_mode:
+                existing_mode["auto_build_events"] = existing_mode.get("auto_generate_candidates")
+            if "auto_generate_drafts" in existing_mode and "auto_build_briefs" not in existing_mode:
+                existing_mode["auto_build_briefs"] = existing_mode.get("auto_generate_drafts")
             merged_mode_defs.append({**existing_mode, **default_mode})
         state["automation_mode_definitions"] = merged_mode_defs
+        state.pop("current_mode", None)
+        state.pop("mode_definitions", None)
         return state
-
-    def _draft_image_blockers(self, draft: dict[str, Any]) -> list[str]:
-        image_slots = draft.get("image_slots", [])
-        if not isinstance(image_slots, list):
-            return ["稿件图片槽位信息缺失，请重新生成稿件。"]
-        pending = [
-            slot for slot in image_slots
-            if isinstance(slot, dict) and slot.get("required_image") and not slot.get("fulfilled")
-        ]
-        if not pending:
-            return []
-        labels = "、".join(str(slot.get("label") or "配图") for slot in pending)
-        return [f"待补图：{labels} 尚未满足，当前不能进入微信预览或发表。"]
-
-    def _mode_map(self, state: dict[str, Any]) -> dict[str, dict[str, Any]]:
-        return {item["key"]: item for item in state["mode_definitions"]}
-
-    def _current_mode_def(self, state: dict[str, Any]) -> dict[str, Any]:
-        return self._mode_map(state)[state["current_mode"]]
 
     def _automation_mode_map(self, state: dict[str, Any]) -> dict[str, dict[str, Any]]:
         return {item["key"]: item for item in state["automation_mode_definitions"]}
@@ -1170,88 +1073,8 @@ class StudioStore:
                 return source
         raise ValueError(f"Source not found: {source_key}")
 
-    def _find_candidate(self, state: dict[str, Any], candidate_id: str) -> dict[str, Any]:
-        for candidate in state["candidates"]:
-            if candidate["id"] == candidate_id:
-                return candidate
-        raise ValueError(f"Candidate not found: {candidate_id}")
-
-    def _find_draft(self, state: dict[str, Any], draft_id: str) -> dict[str, Any]:
-        for draft in state["drafts"]:
-            if draft["id"] == draft_id:
-                return draft
-        raise ValueError(f"Draft not found: {draft_id}")
-
-    def _candidate_id_for_event(self, event_id: str) -> str:
-        return f"cand-{event_id}"
-
     def _normalized_id_for_event(self, event_id: str) -> str:
         return f"norm-{event_id}"
-
-    def _event_id_from_candidate_id(self, candidate_id: str | None) -> str | None:
-        candidate_id = str(candidate_id or "").strip()
-        if candidate_id.startswith("cand-"):
-            return candidate_id[5:] or None
-        return None
-
-    def _draft_window_id_for_event(self, state: dict[str, Any], event: dict[str, Any]) -> str:
-        event_id = str(event.get("id") or "").strip()
-        if not event_id:
-            return f"window-{now_iso()[:10]}"
-        for item in state.get("intel_event_history", []):
-            if not isinstance(item, dict) or str(item.get("event_id") or "") != event_id:
-                continue
-            discovered_at = parse_time(item.get("discovered_at"))
-            if discovered_at:
-                return f"window-{event_id}-{discovered_at.astimezone(UTC).strftime('%Y-%m-%d')}"
-        first_seen = parse_time(event.get("first_seen_at")) or parse_time(event.get("published_at")) or datetime.now(UTC)
-        return f"window-{event_id}-{first_seen.astimezone(UTC).strftime('%Y-%m-%d')}"
-
-    def _draft_metrics_for_event(self, event: dict[str, Any]) -> tuple[bool, float, str]:
-        alert_state = str(event.get("alert_state") or "new")
-        platform_count = int(event.get("platform_count", 0) or 0)
-        source_count = int(event.get("source_count", 0) or 0)
-        member_count = int(event.get("member_count", 0) or 0)
-        representative_link = str(event.get("representative_link") or "").strip()
-        ignored = bool(event.get("ignored"))
-        composite_score = float(event.get("composite_score", 0) or 0)
-        entity_count = len(event.get("entity_ids", []) or [])
-
-        ready = (
-            alert_state in {"rising", "breakout"}
-            and bool(representative_link)
-            and not ignored
-            and (platform_count >= 2 or source_count >= 2 or member_count >= 3)
-        )
-
-        score = composite_score
-        if alert_state == "breakout":
-            score += 12
-        elif alert_state == "rising":
-            score += 6
-        score += min(platform_count * 4, 12)
-        score += min(source_count * 3, 12)
-        if member_count == 1:
-            score -= 18
-        elif member_count >= 3:
-            score += min(member_count * 2, 10)
-        if not representative_link:
-            score -= 10
-        if entity_count == 0:
-            score -= 6
-        score = round(max(0.0, min(score, 100.0)), 1)
-
-        if ignored:
-            reason = "该事件已被忽略，不进入稿件优先队列。"
-        elif not representative_link:
-            reason = "缺少代表链接，建议补充证据后再生成稿件。"
-        elif alert_state not in {"rising", "breakout"}:
-            reason = "当前仍非上升或爆发态，更适合继续观察。"
-        elif platform_count < 2 and source_count < 2 and member_count < 3:
-            reason = "当前扩散范围仍偏窄，建议继续观察信号。"
-        else:
-            reason = f"{'爆发' if alert_state == 'breakout' else '上升'}事件，覆盖 {platform_count} 平台 / {source_count} 来源，已具备写稿条件。"
-        return ready, score, reason
 
     def _build_normalized_item_from_event(self, event: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1500,7 +1323,49 @@ class StudioStore:
             return True
         return last_verified < slot_dt
 
-    def _select_delivery_events(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+    def _background_draft_check_due(self, state: dict[str, Any], now: datetime | None = None) -> bool:
+        now = now or datetime.now(UTC)
+        browser = state.get("browser", {}).get("wechat", {})
+        if not isinstance(browser, dict):
+            return False
+        if not bool(browser.get("logged_in")):
+            return False
+        if bool(browser.get("busy")):
+            return False
+        checked_at = parse_time(browser.get("last_draft_check", {}).get("checked_at") if isinstance(browser.get("last_draft_check"), dict) else None)
+        if not checked_at:
+            return True
+        return (now - checked_at).total_seconds() >= 120
+
+    def run_background_wechat_draft_check(self) -> dict[str, Any]:
+        state = self._upgrade_state(self._read())
+        now = datetime.now(UTC)
+        if not self._background_draft_check_due(state, now):
+            return {"status": "skipped", "reason": "not_due"}
+        try:
+            result = self.check_wechat_draft_box()
+            return {
+                "status": "checked",
+                "checked_at": result.checked_at,
+                "remote_count": result.remote_count,
+                "matched_count": result.matched_count,
+                "missing_count": result.missing_count,
+            }
+        except Exception as exc:
+            latest_state = self._upgrade_state(self._read())
+            self._append_log(
+                latest_state,
+                "warning",
+                "browser",
+                f"后台静默草稿箱检查失败：{exc}",
+                stream="system_runtime",
+                actor="wechat_poll",
+            )
+            with self._lock:
+                self._write(latest_state)
+            return {"status": "failed", "reason": str(exc)}
+
+    def _select_delivery_events_strict(self, state: dict[str, Any]) -> list[dict[str, Any]]:
         plan = self._delivery_plan(state)
         strategy = str(plan.get("admission_strategy") or "balanced")
         filters = self._delivery_filters(state)
@@ -1569,15 +1434,112 @@ class StudioStore:
         selected.sort(key=sort_key, reverse=True)
         return selected[:limit]
 
+    def _select_delivery_events(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        plan = self._delivery_plan(state)
+        filters = self._delivery_filters(state)
+        selected = self._select_delivery_events_strict(state)
+        if selected:
+            return selected
+
+        projected_events = [
+            self._project_event_runtime_fields(state, item)
+            for item in state.get("intel_events", [])
+            if isinstance(item, dict) and not bool(item.get("ignored"))
+        ]
+
+        def sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+            alert_rank = {"breakout": 3, "rising": 2, "watch": 1, "cooling": 0, "new": 0}.get(str(item.get("alert_state") or "new"), 0)
+            deep_dive = self._find_deep_dive_for_event(state, str(item.get("id") or ""))
+            evidence_score = int(deep_dive.get("success_count", 0) or 0) if deep_dive else 0
+            return (
+                alert_rank,
+                float(item.get("worth_to_brief") or False),
+                float(item.get("composite_score", 0) or 0),
+                float(item.get("velocity_score", 0) or 0),
+                float(item.get("coverage_score", 0) or 0),
+                float(item.get("freshness_score", 0) or 0),
+                evidence_score,
+                len(list(item.get("entity_names", []))),
+            )
+
+        limit = max(int(plan.get("batch_limit", 3) or 3), 1)
+        fallback_candidates: list[dict[str, Any]] = []
+        for event in projected_events:
+            if filters["require_watchlisted"] and not bool(event.get("watchlisted")):
+                continue
+            if filters["require_entity_match"] and not list(event.get("entity_names", [])):
+                continue
+            if int(event.get("source_count", 0) or 0) < filters["min_source_count"]:
+                continue
+            if filters["exclude_existing_brief"] and str(event.get("brief_id") or "").strip():
+                continue
+            if filters["exclude_synced_brief"]:
+                brief = self._find_brief_for_event(state, str(event.get("id") or ""))
+                if brief and str(brief.get("stage") or "") == "synced":
+                    continue
+            if str(event.get("alert_state") or "") == "cooling":
+                continue
+            fallback_candidates.append(event)
+
+        fallback_candidates.sort(key=sort_key, reverse=True)
+        return fallback_candidates[:1]
+
+    def _select_retry_briefs(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        candidates = [
+            item for item in state.get("briefs", [])
+            if isinstance(item, dict) and (
+                bool(item.get("needs_resync"))
+                or str(item.get("stage") or "") in {"prepared", "failed"}
+            )
+        ]
+
+        def retry_rank(item: dict[str, Any]) -> tuple[Any, ...]:
+            needs_resync = bool(item.get("needs_resync"))
+            stage = str(item.get("stage") or "")
+            if needs_resync:
+                priority = 0
+            elif stage == "failed":
+                priority = 1
+            else:
+                priority = 2
+            event = self._find_event(state, str(item.get("event_id") or "")) if str(item.get("event_id") or "").strip() else None
+            updated_at = parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC)
+            composite_score = float((event or {}).get("composite_score", 0) or 0)
+            watchlisted = 1 if bool((event or {}).get("watchlisted")) else 0
+            return (
+                priority,
+                -updated_at.timestamp(),
+                -composite_score,
+                -watchlisted,
+            )
+
+        candidates.sort(key=retry_rank)
+        limit = max(int(self._delivery_plan(state).get("batch_limit", 3) or 3), 1)
+        return candidates[:limit]
+
     def _run_delivery_pipeline(self, state: dict[str, Any], runtime: dict[str, Any], *, triggered_by: str) -> None:
         plan = self._delivery_plan(state)
-        events = self._select_delivery_events(state)
+        due_for_upload = self._select_retry_briefs(state)
+        events: list[dict[str, Any]] = []
+        if len(due_for_upload) < max(int(plan.get("batch_limit", 3) or 3), 1):
+            events = self._select_delivery_events(state)
         selected_titles = [str(item.get("title") or "").strip() for item in events if str(item.get("title") or "").strip()]
         self._set_runtime_cycle_metric(runtime, "selected_event_count", len(events))
         runtime.setdefault("current_cycle_metrics", {})["selected_titles"] = selected_titles[:5]
-        if not events:
-            self._append_log(state, "info", "delivery", "本轮没有符合自动交付条件的事件。", stream="system_runtime", actor=triggered_by)
+        if not due_for_upload and not events:
+            self._append_log(state, "info", "delivery", "本轮没有符合自动交付条件的事件，也没有待补传简报。", stream="system_runtime", actor=triggered_by)
             return
+        strict_matches = self._select_delivery_events_strict(state)
+        if events and not strict_matches:
+            fallback_event = events[0]
+            self._append_log(
+                state,
+                "info",
+                "delivery",
+                f"严格筛选未命中，本轮改为兜底推进最高分事件：{fallback_event.get('title') or fallback_event.get('id') or 'unknown'}",
+                stream="system_runtime",
+                actor=triggered_by,
+            )
 
         stage_plan = self._stage_plan(runtime)
         stage_positions = {item["key"]: index + 1 for index, item in enumerate(stage_plan)}
@@ -1589,84 +1551,83 @@ class StudioStore:
         verify_completed = 0
         brief_titles: list[str] = []
         synced_titles: list[str] = []
-        due_for_upload: list[dict[str, Any]] = []
+        if events:
+            runtime["current_cycle"] = "deep_dive"
+            self._set_runtime_progress(
+                runtime,
+                percent=self._stage_progress_percent(runtime, "deep_dive", 5),
+                done=0,
+                total=max(len(events), 1),
+                label=f"阶段 {stage_positions.get('deep_dive', stage_total)}/{stage_total}：开始正文深挖",
+            )
+            self._progress_snapshot["cycle"] = "deep_dive"
+            self._heartbeat_runtime_run(runtime, stage="deep_dive")
+            self._write_runtime_checkpoint(state)
 
-        runtime["current_cycle"] = "deep_dive"
-        self._set_runtime_progress(
-            runtime,
-            percent=self._stage_progress_percent(runtime, "deep_dive", 5),
-            done=0,
-            total=max(len(events), 1),
-            label=f"阶段 {stage_positions.get('deep_dive', stage_total)}/{stage_total}：开始正文深挖",
-        )
-        self._progress_snapshot["cycle"] = "deep_dive"
-        self._heartbeat_runtime_run(runtime, stage="deep_dive")
-        self._write_runtime_checkpoint(state)
+            for index, event in enumerate(events, start=1):
+                event_id = str(event.get("id") or "")
+                try:
+                    deep_dive = self.create_event_deep_dive(event_id).model_dump()
+                    state.update(self._upgrade_state(self._read()))
+                    if str(deep_dive.get("status") or "") not in {"ready", "partial"}:
+                        continue
+                    if int(deep_dive.get("success_count", 0) or 0) < max(int(self._delivery_filters(state)["min_fulltext_count"]), 0):
+                        continue
+                    deep_dives_completed += 1
+                    self._set_runtime_cycle_metric(runtime, "deep_dive_count", deep_dives_completed)
+                    self._set_runtime_progress(
+                        runtime,
+                        percent=self._stage_progress_percent(runtime, "deep_dive", index / max(len(events), 1) * 100),
+                        done=index,
+                        total=max(len(events), 1),
+                        label=f"已完成正文深挖 {index}/{max(len(events), 1)}",
+                    )
+                    self._heartbeat_runtime_run(runtime, stage="deep_dive")
+                    self._write_runtime_checkpoint(state)
+                except Exception as exc:
+                    self._append_log(state, "warning", "delivery", f"正文深挖失败：{event.get('title') or event_id} - {exc}", stream="system_runtime", actor=triggered_by)
 
-        for index, event in enumerate(events, start=1):
-            event_id = str(event.get("id") or "")
-            try:
-                deep_dive = self.create_event_deep_dive(event_id).model_dump()
-                state.update(self._upgrade_state(self._read()))
-                if str(deep_dive.get("status") or "") not in {"ready", "partial"}:
+            runtime["current_cycle"] = "briefing"
+            self._set_runtime_progress(
+                runtime,
+                percent=self._stage_progress_percent(runtime, "briefing", 5),
+                done=0,
+                total=max(len(events), 1),
+                label=f"阶段 {stage_positions.get('briefing', stage_total)}/{stage_total}：开始生成简报",
+            )
+            self._progress_snapshot["cycle"] = "briefing"
+            self._heartbeat_runtime_run(runtime, stage="briefing")
+            self._write_runtime_checkpoint(state)
+
+            for index, event in enumerate(events, start=1):
+                event_id = str(event.get("id") or "")
+                refreshed_state = self._upgrade_state(self._read())
+                deep_dive = self._find_deep_dive_for_event(refreshed_state, event_id)
+                if not deep_dive or str(deep_dive.get("status") or "") not in {"ready", "partial"}:
                     continue
-                if int(deep_dive.get("success_count", 0) or 0) < max(int(self._delivery_filters(state)["min_fulltext_count"]), 0):
+                if int(deep_dive.get("success_count", 0) or 0) < max(int(self._delivery_filters(refreshed_state)["min_fulltext_count"]), 0):
                     continue
-                deep_dives_completed += 1
-                self._set_runtime_cycle_metric(runtime, "deep_dive_count", deep_dives_completed)
-                self._set_runtime_progress(
-                    runtime,
-                    percent=self._stage_progress_percent(runtime, "deep_dive", index / max(len(events), 1) * 100),
-                    done=index,
-                    total=max(len(events), 1),
-                    label=f"已完成正文深挖 {index}/{max(len(events), 1)}",
-                )
-                self._heartbeat_runtime_run(runtime, stage="deep_dive")
-                self._write_runtime_checkpoint(state)
-            except Exception as exc:
-                self._append_log(state, "warning", "delivery", f"正文深挖失败：{event.get('title') or event_id} - {exc}", stream="system_runtime", actor=triggered_by)
-
-        runtime["current_cycle"] = "briefing"
-        self._set_runtime_progress(
-            runtime,
-            percent=self._stage_progress_percent(runtime, "briefing", 5),
-            done=0,
-            total=max(len(events), 1),
-            label=f"阶段 {stage_positions.get('briefing', stage_total)}/{stage_total}：开始生成简报",
-        )
-        self._progress_snapshot["cycle"] = "briefing"
-        self._heartbeat_runtime_run(runtime, stage="briefing")
-        self._write_runtime_checkpoint(state)
-
-        for index, event in enumerate(events, start=1):
-            event_id = str(event.get("id") or "")
-            refreshed_state = self._upgrade_state(self._read())
-            deep_dive = self._find_deep_dive_for_event(refreshed_state, event_id)
-            if not deep_dive or str(deep_dive.get("status") or "") not in {"ready", "partial"}:
-                continue
-            if int(deep_dive.get("success_count", 0) or 0) < max(int(self._delivery_filters(refreshed_state)["min_fulltext_count"]), 0):
-                continue
-            try:
-                brief = self.create_brief_from_event(event_id).model_dump()
-                state.update(self._upgrade_state(self._read()))
-                briefs_completed += 1
-                due_for_upload.append(brief)
-                brief_title = str(brief.get("title") or "").strip()
-                if brief_title:
-                    brief_titles.append(brief_title)
-                self._set_runtime_cycle_metric(runtime, "brief_count", briefs_completed)
-                runtime.setdefault("current_cycle_metrics", {})["brief_titles"] = brief_titles[:5]
-                self._set_runtime_progress(
-                    runtime,
-                    percent=self._stage_progress_percent(runtime, "briefing", index / max(len(events), 1) * 100),
-                    done=index,
-                    total=max(len(events), 1),
-                    label=f"已生成简报 {briefs_completed}/{max(len(events), 1)}",
-                )
-                self._heartbeat_runtime_run(runtime, stage="briefing")
-                self._write_runtime_checkpoint(state)
-            except Exception as exc:
-                self._append_log(state, "warning", "delivery", f"简报生成失败：{event.get('title') or event_id} - {exc}", stream="system_runtime", actor=triggered_by)
+                try:
+                    brief = self.create_brief_from_event(event_id).model_dump()
+                    state.update(self._upgrade_state(self._read()))
+                    briefs_completed += 1
+                    due_for_upload.append(brief)
+                    brief_title = str(brief.get("title") or "").strip()
+                    if brief_title:
+                        brief_titles.append(brief_title)
+                    self._set_runtime_cycle_metric(runtime, "brief_count", briefs_completed)
+                    runtime.setdefault("current_cycle_metrics", {})["brief_titles"] = brief_titles[:5]
+                    self._set_runtime_progress(
+                        runtime,
+                        percent=self._stage_progress_percent(runtime, "briefing", index / max(len(events), 1) * 100),
+                        done=index,
+                        total=max(len(events), 1),
+                        label=f"已生成简报 {briefs_completed}/{max(len(events), 1)}",
+                    )
+                    self._heartbeat_runtime_run(runtime, stage="briefing")
+                    self._write_runtime_checkpoint(state)
+                except Exception as exc:
+                    self._append_log(state, "warning", "delivery", f"简报生成失败：{event.get('title') or event_id} - {exc}", stream="system_runtime", actor=triggered_by)
 
         delivery_due = self._delivery_mode_due(state)
         delivery_mode = str(plan.get("delivery_mode") or "immediate")
@@ -1707,9 +1668,30 @@ class StudioStore:
                     self._heartbeat_runtime_run(runtime, stage="wechat_sync")
                     self._write_runtime_checkpoint(state)
                 except Exception as exc:
-                    runtime["blocked_reason"] = f"微信上传失败：{exc}"
-                    self._append_log(state, "error", "delivery", runtime["blocked_reason"], stream="system_runtime", actor=triggered_by)
-                    raise
+                    error_text = str(exc)
+                    latest_state = self._upgrade_state(self._read())
+                    latest_brief = self._find_brief(latest_state, brief_id)
+                    if bool(latest_state.get("browser", {}).get("wechat", {}).get("is_session_level_error")):
+                        runtime["blocked_reason"] = f"微信上传失败：{error_text}"
+                        self._append_log(state, "error", "delivery", runtime["blocked_reason"], stream="system_runtime", actor=triggered_by)
+                        raise
+                    self._append_log(
+                        state,
+                        "warning",
+                        "delivery",
+                        f"简报上传失败，继续下一条：{brief.get('title') or brief_id} - {error_text}",
+                        stream="system_runtime",
+                        actor=triggered_by,
+                    )
+                    self._set_runtime_progress(
+                        runtime,
+                        percent=self._stage_progress_percent(runtime, "wechat_sync", index / max(len(due_for_upload), 1) * 100),
+                        done=index,
+                        total=max(len(due_for_upload), 1),
+                        label=f"已处理微信上传 {index}/{max(len(due_for_upload), 1)}",
+                    )
+                    self._heartbeat_runtime_run(runtime, stage="wechat_sync")
+                    self._write_runtime_checkpoint(state)
 
             runtime["current_cycle"] = "wechat_verify"
             self._set_runtime_progress(
@@ -1939,185 +1921,6 @@ class StudioStore:
                 break
         return timeline[:6]
 
-    def _build_candidate_from_event(
-        self,
-        state: dict[str, Any],
-        event: dict[str, Any],
-        normalized_item: dict[str, Any],
-    ) -> dict[str, Any]:
-        candidate_id = self._candidate_id_for_event(str(event.get("id") or ""))
-        evidence_pack = self._event_evidence_pack(state, event)
-        return {
-            "id": candidate_id,
-            "normalized_item_id": normalized_item["id"],
-            "title": event.get("title", ""),
-            "summary": event.get("summary", ""),
-            "recommended_angle": "持续追踪事件变化、平台扩散和下一步影响。",
-            "article_type": "专题" if float(event.get("composite_score", 0) or 0) >= 75 else "快讯",
-            "rationale": event.get("alert_reason") or "已从事件聚合结果进入写稿链路。",
-            "evidence_links": [item["link"] for item in evidence_pack if item.get("link")],
-            "evidence_pack": evidence_pack,
-            "source_names": list(event.get("source_names", [])),
-            "source_count": int(event.get("source_count", 0) or 0),
-            "score": float(event.get("composite_score", 0) or 0),
-            "status": "new",
-            "recommended_mode": state["current_mode"],
-            "facts": [
-                f"30 分钟速度分 {event.get('velocity_score', 0)}",
-                f"覆盖 {event.get('platform_count', 0)} 个平台 / {event.get('source_count', 0)} 个来源",
-                str(event.get("alert_reason") or ""),
-            ],
-            "entity_names": list(event.get("entity_names", [])),
-            "alert_state": event.get("alert_state"),
-            "alert_reason": str(event.get("alert_reason") or ""),
-            "angles": [
-                {
-                    "name": "热点快评",
-                    "tone": "克制",
-                    "focus": "先说事件本身，再说它为什么值得继续跟。",
-                    "why": "适合公众号运营做持续观察。",
-                }
-            ],
-            "selected_angle": "先说事件本身，再说它为什么值得继续跟。",
-            "score_breakdown": {
-                "velocity": float(event.get("velocity_score", 0) or 0),
-                "coverage": float(event.get("coverage_score", 0) or 0),
-                "freshness": float(event.get("freshness_score", 0) or 0),
-            },
-            "published_at": event.get("published_at"),
-            "collected_at": event.get("latest_collected_at"),
-            "freshness_bucket": freshness_bucket(event.get("latest_collected_at")),
-            "draft_exists": False,
-            "normalized_score": float(event.get("composite_score", 0) or 0),
-            "updated_at": now_iso(),
-        }
-
-    def _upsert_event_compat_records(self, state: dict[str, Any], event: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        normalized_item = self._build_normalized_item_from_event(event)
-        normalized_id = normalized_item["id"]
-        normalized_items = state.setdefault("normalized_items", [])
-        normalized_index = next((index for index, item in enumerate(normalized_items) if item.get("id") == normalized_id), None)
-        if normalized_index is None:
-            normalized_items.insert(0, normalized_item)
-        else:
-            normalized_items[normalized_index] = {**normalized_items[normalized_index], **normalized_item}
-            normalized_item = normalized_items[normalized_index]
-
-        candidate = self._build_candidate_from_event(state, event, normalized_item)
-        candidate_id = candidate["id"]
-        candidates = state.setdefault("candidates", [])
-        candidate_index = next((index for index, item in enumerate(candidates) if item.get("id") == candidate_id), None)
-        if candidate_index is None:
-            candidates.insert(0, candidate)
-        else:
-            candidates[candidate_index] = {**candidates[candidate_index], **candidate}
-            candidate = candidates[candidate_index]
-        return candidate, normalized_item
-
-    def _find_existing_draft_for_event_window(
-        self,
-        state: dict[str, Any],
-        event_id: str,
-        draft_window_id: str,
-    ) -> dict[str, Any] | None:
-        matches = [
-            item for item in state.get("drafts", [])
-            if isinstance(item, dict)
-            and str(item.get("source_event_id") or "").strip() == event_id
-            and str(item.get("draft_window_id") or "").strip() == draft_window_id
-        ]
-        if not matches:
-            return None
-        matches.sort(
-            key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC),
-            reverse=True,
-        )
-        return matches[0]
-
-    def _compose_draft_for_event(
-        self,
-        state: dict[str, Any],
-        event: dict[str, Any],
-        publish_mode: PublishMode,
-        *,
-        generation_mode: str,
-        llm_service: LLMService | None = None,
-    ) -> tuple[dict[str, Any], bool]:
-        event_id = str(event.get("id") or "").strip()
-        if not event_id:
-            raise ValueError("Event ID is missing.")
-        candidate, normalized_item = self._upsert_event_compat_records(state, event)
-        draft_window_id = self._draft_window_id_for_event(state, event)
-        existing = self._find_existing_draft_for_event_window(state, event_id, draft_window_id)
-        if existing:
-            return existing, False
-        draft = compose_draft(
-            candidate,
-            normalized_item,
-            publish_mode,
-            state["channels"]["wechat"]["risk_keywords"],
-            llm_service=llm_service,
-        )
-        draft["source_event_id"] = event_id
-        draft["source_alert_level"] = str(event.get("alert_state") or "") or None
-        draft["generation_mode"] = generation_mode
-        draft["draft_window_id"] = draft_window_id
-        state["drafts"].insert(0, draft)
-        self._sync_draft_metadata(state)
-        return draft, True
-
-    def _sync_draft_metadata(self, state: dict[str, Any]) -> None:
-        drafts_by_event: dict[str, list[dict[str, Any]]] = {}
-        candidate_to_draft: dict[str, dict[str, Any]] = {}
-        for draft in state.get("drafts", []):
-            if not isinstance(draft, dict):
-                continue
-            candidate_id = str(draft.get("candidate_topic_id") or "").strip()
-            event_id = str(draft.get("source_event_id") or "").strip() or self._event_id_from_candidate_id(candidate_id) or ""
-            if event_id and not draft.get("source_event_id"):
-                draft["source_event_id"] = event_id
-            if event_id:
-                drafts_by_event.setdefault(event_id, []).append(draft)
-            if candidate_id:
-                candidate_to_draft[candidate_id] = draft
-        for bucket in drafts_by_event.values():
-            bucket.sort(key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
-
-        for event in state.get("intel_events", []):
-            if not isinstance(event, dict):
-                continue
-            ready, score, reason = self._draft_metrics_for_event(event)
-            event_id = str(event.get("id") or "").strip()
-            matching_drafts = drafts_by_event.get(event_id, [])
-            latest_draft = matching_drafts[0] if matching_drafts else None
-            event["draft_ready"] = ready
-            event["draft_score"] = score
-            event["draft_reason"] = reason
-            event["draft_exists"] = latest_draft is not None
-            event["draft_id"] = latest_draft.get("id") if latest_draft else None
-
-        alert_by_event: dict[str, dict[str, Any]] = {str(item.get("event_id") or ""): item for item in state.get("intel_alerts", []) if isinstance(item, dict)}
-        for event_id, alert in alert_by_event.items():
-            event = next((item for item in state.get("intel_events", []) if isinstance(item, dict) and str(item.get("id") or "") == event_id), None)
-            if not event:
-                continue
-            alert["draft_ready"] = bool(event.get("draft_ready"))
-            alert["draft_score"] = float(event.get("draft_score", 0.0) or 0.0)
-            alert["draft_reason"] = str(event.get("draft_reason") or "")
-            alert["draft_exists"] = bool(event.get("draft_exists"))
-            alert["draft_id"] = event.get("draft_id")
-
-        for candidate in state.get("candidates", []):
-            if not isinstance(candidate, dict):
-                continue
-            candidate_id = str(candidate.get("id") or "").strip()
-            draft = candidate_to_draft.get(candidate_id)
-            candidate["draft_exists"] = draft is not None
-            if draft:
-                candidate["status"] = "drafted"
-            elif candidate.get("status") == "drafted":
-                candidate["status"] = "new"
-
     def _refresh_browser_session(self, state: dict[str, Any]) -> dict[str, Any]:
         current = state["browser"]["wechat"]
         channel = state["channels"]["wechat"]
@@ -2132,8 +1935,8 @@ class StudioStore:
         runtime.setdefault("launch_mode", "interval_now")
         runtime.setdefault("current_mode", state.get("automation_mode", "radar_only"))
         runtime.setdefault("last_collect_at", None)
-        runtime.setdefault("last_candidate_at", None)
-        runtime.setdefault("last_draft_at", None)
+        runtime.setdefault("last_event_sync_at", None)
+        runtime.setdefault("last_brief_at", None)
         runtime.setdefault("next_collect_at", None)
         runtime.setdefault("current_cycle", "idle")
         runtime.setdefault("current_cycle_progress_percent", 0)
@@ -3045,74 +2848,6 @@ class StudioStore:
         normalized.sort(key=lambda item: item.get("final_score", 0), reverse=True)
         return normalized
 
-    def _project_candidates_from_events(self, state: dict[str, Any]) -> list[dict[str, Any]]:
-        normalized_by_event = {item.get("cluster_id"): item for item in state.get("normalized_items", [])}
-        drafted_event_ids = {
-            str(item.get("source_event_id") or "").strip() or self._event_id_from_candidate_id(item.get("candidate_topic_id"))
-            for item in state["drafts"]
-            if isinstance(item, dict)
-        }
-        watched_events = [
-            event for event in state.get("intel_events", [])
-            if ((event.get("watchlisted") and not event.get("ignored")) or str(event.get("id") or "") in drafted_event_ids)
-        ]
-        draft_candidate_ids = {draft["candidate_topic_id"] for draft in state["drafts"]}
-        candidates: list[dict[str, Any]] = []
-        for event in watched_events:
-            normalized = normalized_by_event.get(event["id"])
-            if not normalized:
-                continue
-            candidate_id = f"cand-{event['id']}"
-            evidence_pack = self._event_evidence_pack(state, event)
-            candidates.append(
-                {
-                    "id": candidate_id,
-                    "normalized_item_id": normalized["id"],
-                    "title": event["title"],
-                    "summary": event.get("summary", ""),
-                    "recommended_angle": "持续追踪事件变化、平台扩散和下一步影响。",
-                    "article_type": "专题" if float(event.get("composite_score", 0) or 0) >= 75 else "快讯",
-                    "rationale": event.get("alert_reason") or "已人工加入重点观察。",
-                    "evidence_links": [item["link"] for item in evidence_pack if item.get("link")],
-                    "evidence_pack": evidence_pack,
-                    "source_names": list(event.get("source_names", [])),
-                    "source_count": int(event.get("source_count", 0) or 0),
-                    "score": float(event.get("composite_score", 0) or 0),
-                    "status": "new",
-                    "recommended_mode": state["current_mode"],
-                    "facts": [
-                        f"30 分钟速度分 {event.get('velocity_score', 0)}",
-                        f"覆盖 {event.get('platform_count', 0)} 个平台 / {event.get('source_count', 0)} 个来源",
-                        str(event.get("alert_reason") or ""),
-                    ],
-                    "angles": [
-                        {
-                            "name": "热点快评",
-                            "tone": "克制",
-                            "focus": "先说事件本身，再说它为什么值得继续跟。",
-                            "why": "适合公众号运营做持续观察。",
-                        }
-                    ],
-                    "selected_angle": "先说事件本身，再说它为什么值得继续跟。",
-                    "score_breakdown": {
-                        "velocity": float(event.get("velocity_score", 0) or 0),
-                        "coverage": float(event.get("coverage_score", 0) or 0),
-                        "freshness": float(event.get("freshness_score", 0) or 0),
-                    },
-                    "published_at": event.get("published_at"),
-                    "collected_at": event.get("latest_collected_at"),
-                    "freshness_bucket": freshness_bucket(event.get("latest_collected_at")),
-                    "entity_names": list(event.get("entity_names", [])),
-                    "alert_state": event.get("alert_state"),
-                    "alert_reason": str(event.get("alert_reason") or ""),
-                    "draft_exists": candidate_id in draft_candidate_ids,
-                    "normalized_score": float(event.get("composite_score", 0) or 0),
-                    "updated_at": now_iso(),
-                }
-            )
-        candidates.sort(key=lambda item: item.get("score", 0), reverse=True)
-        return candidates
-
     def _rebuild_intel_for_state(
         self,
         state: dict[str, Any],
@@ -3135,7 +2870,6 @@ class StudioStore:
             state["intel_alerts"] = []
             state["event_snapshots"] = []
             state["normalized_items"] = []
-            state["candidates"] = []
             return
         state["event_snapshots"] = intel["event_snapshots"]
         state["intel_events"] = intel["intel_events"]
@@ -3149,18 +2883,18 @@ class StudioStore:
             state["intel_alerts"] = []
             self._refresh_intel_histories(state, update_event_history=False, update_alert_history=False)
         state["normalized_items"] = self._project_normalized_items_from_events(state)
-        state["candidates"] = self._project_candidates_from_events(state)
-        self._sync_draft_metadata(state)
         runtime = self._runtime(state)
-        runtime["last_candidate_at"] = now_iso()
+        runtime["last_event_sync_at"] = now_iso()
 
     def _rebuild_candidates_for_state(
         self,
         state: dict[str, Any],
         work_scope_override: str | None = None,
     ) -> list[dict[str, Any]]:
+        # Compatibility shim for old call sites that still expect a rebuilt
+        # candidate list after the system was unified onto intel events.
         self._rebuild_intel_for_state(state, work_scope_override=work_scope_override)
-        return state.get("candidates", [])
+        return list(state.get("normalized_items", []))
 
     def _sync_due_sources(self, state: dict[str, Any], triggered_by: str, minimum_interval_minutes: int | None = None) -> SourceSyncResponse:
         now = datetime.now(UTC)
@@ -3188,7 +2922,7 @@ class StudioStore:
             return SourceSyncResponse(
                 raw_count=len(state["raw_items"]),
                 normalized_count=len(state["normalized_items"]),
-                candidate_count=len(state["candidates"]),
+                event_count=len(state.get("intel_events", [])),
                 synced_at=now_iso(),
                 warnings=[],
             )
@@ -3471,7 +3205,7 @@ class StudioStore:
             runtime["last_successful_sync_at"] = stamp
         runtime["next_collect_at"] = self._calculate_next_collect_at(state, minimum_interval_minutes=self._collect_interval_for_profile(state))
         level = "success"
-        message = f"自动同步 {len(due_sources)} 个来源，新增 {len(collected)} 条素材，候选池现有 {len(candidates)} 条。"
+        message = f"自动同步 {len(due_sources)} 个来源，新增 {len(collected)} 条素材，当前聚合出 {len(state.get('intel_events', []))} 个事件。"
         if not collected and warnings:
             level = "warning"
             message = f"自动同步执行完成，但本轮未获取到任何真实素材；涉及 {len(due_sources)} 个到期来源。"
@@ -3491,7 +3225,7 @@ class StudioStore:
         return SourceSyncResponse(
             raw_count=len(state["raw_items"]),
             normalized_count=len(state["normalized_items"]),
-            candidate_count=len(state["candidates"]),
+            event_count=len(state.get("intel_events", [])),
             synced_at=stamp,
             warnings=warnings,
         )
@@ -3532,7 +3266,7 @@ class StudioStore:
             runtime["last_successful_sync_at"] = stamp
         runtime["next_collect_at"] = self._calculate_next_collect_at(state, minimum_interval_minutes=self._collect_interval_for_profile(state))
         level = "success"
-        message = f"已同步 {len(raw_items)} 条素材，形成 {len(normalized)} 个标准化事件和 {len(candidates)} 个候选选题。"
+        message = f"已同步 {len(raw_items)} 条素材，形成 {len(normalized)} 条标准化素材并聚合出 {len(state.get('intel_events', []))} 个事件。"
         if not raw_items and warnings:
             level = "warning"
             message = "已执行来源同步，但本轮没有获取到任何真实素材。"
@@ -3552,147 +3286,13 @@ class StudioStore:
         return SourceSyncResponse(
             raw_count=len(raw_items),
             normalized_count=len(state["normalized_items"]),
-            candidate_count=len(candidates),
+            event_count=len(state.get("intel_events", [])),
             synced_at=stamp,
             warnings=warnings,
         )
 
-    def _build_digest_internal(
-        self,
-        state: dict[str, Any],
-        triggered_by: str,
-        limit: int | None = 2,
-        selection_mode: str = "all_new",
-    ) -> list[dict[str, Any]]:
-        if not state["intel_events"]:
-            self._sync_sources_internal(state, triggered_by=triggered_by)
-        publish_mode = automation_to_publish_mode(state.get("automation_mode", "radar_only"))
-        llm_service = self._make_llm_service(state)
-        drafted: list[dict[str, Any]] = []
-        eligible_events = [
-            event
-            for event in state.get("intel_events", [])
-            if isinstance(event, dict)
-            and event.get("watchlisted")
-            and not event.get("ignored")
-            and bool(event.get("draft_ready"))
-            and str(event.get("alert_state") or "") in {"rising", "breakout"}
-        ]
-        eligible_events.sort(
-            key=lambda item: (
-                float(item.get("draft_score", item.get("composite_score", 0)) or 0),
-                1 if str(item.get("alert_state") or "") == "breakout" else 0,
-                parse_time(item.get("last_seen_at") or item.get("latest_collected_at")) or datetime.min.replace(tzinfo=UTC),
-            ),
-            reverse=True,
-        )
-        for event in eligible_events:
-            draft, created = self._compose_draft_for_event(
-                state,
-                event,
-                publish_mode,
-                generation_mode="automation",
-                llm_service=llm_service,
-            )
-            if not created:
-                continue
-            drafted.append(draft)
-            if limit is not None and len(drafted) >= limit:
-                break
-        self._sync_llm_usage(state, llm_service)
-        if drafted:
-            runtime = self._runtime(state)
-            runtime["last_draft_at"] = now_iso()
-            self._append_log(
-                state,
-                "success",
-                "draft",
-                f"本轮生成 {len(drafted)} 篇初稿。",
-                stream="system_runtime" if triggered_by == "scheduler" else "business_event",
-                actor=triggered_by,
-            )
-        return drafted
-
     def _publish_backends(self, state: dict[str, Any]) -> list[dict[str, Any]]:
         return collect_backend_status(state["channels"]["wechat"], state["browser"]["wechat"])
-
-    def _sync_shadow_wechat_draft(self, state: dict[str, Any], draft: dict[str, Any], triggered_by: str) -> dict[str, Any]:
-        browser = self._refresh_browser_session(state)
-        if not draft.get("wechat_draft_id"):
-            draft["wechat_draft_id"] = build_wechat_draft_id(draft["id"])
-        draft["pipeline_stage"] = "draft_synced"
-        draft["updated_at"] = now_iso()
-        detail = "已写入本地微信草稿队列，完成浏览器配置后即可继续推进。"
-        if browser.get("logged_in"):
-            detail = "已写入微信草稿队列，可继续通过浏览器链路打开和校验。"
-        state["publish_tasks"].insert(
-            0,
-            create_publish_task(
-                draft["id"],
-                "wechat_draft",
-                "completed",
-                detail,
-                triggered_by,
-                str(state["channels"]["wechat"]["selectors_version"]),
-                step_logs=[detail],
-            ),
-        )
-        self._append_log(state, "success", "wechat", f"已排入微信草稿：{draft['title']}")
-        state["publish_tasks"] = state["publish_tasks"][:80]
-        return draft
-
-    def _sync_wechat_draft_internal(self, state: dict[str, Any], draft: dict[str, Any], triggered_by: str) -> dict[str, Any]:
-        self._sync_shadow_wechat_draft(state, draft, triggered_by)
-        browser = self._refresh_browser_session(state)
-        if browser.get("logged_in"):
-            browser, artifacts, step_logs = run_browser_action("sync_wechat_draft", draft, state["channels"]["wechat"], browser)
-            state["browser"]["wechat"] = browser
-            status = "completed" if not browser.get("last_error") else "blocked"
-            message = "已写入公众号草稿编辑器并尝试保存。"
-            state["publish_tasks"].insert(
-                0,
-                create_publish_task(
-                    draft["id"],
-                    "sync_wechat_draft",
-                    status,
-                    message,
-                    triggered_by,
-                    str(state["channels"]["wechat"]["selectors_version"]),
-                    artifacts=artifacts,
-                    step_logs=step_logs,
-                ),
-            )
-            if browser.get("last_error"):
-                draft["last_error"] = browser.get("last_error")
-            else:
-                draft["last_error"] = None
-                draft["pipeline_stage"] = "draft_synced"
-                draft["wechat_editor_url"] = browser.get("last_opened_url")
-                draft["wechat_remote_appmsg_id"] = extract_wechat_appmsg_id(str(browser.get("last_opened_url") or ""))
-                draft["updated_at"] = now_iso()
-        return draft
-
-    def list_modes(self) -> list[ModeDefinition]:
-        state = self._read()
-        return [ModeDefinition(**mode) for mode in state["mode_definitions"]]
-
-    def get_current_mode(self) -> ModeDefinition:
-        state = self._read()
-        return ModeDefinition(**self._current_mode_def(state))
-
-    def set_current_mode(self, mode: PublishMode) -> ModeDefinition:
-        state = self._read()
-        modes = self._mode_map(state)
-        if mode not in modes:
-            raise ValueError(f"Unknown mode: {mode}")
-        state["current_mode"] = mode
-        for draft in state["drafts"]:
-            if draft["pipeline_stage"] != "published":
-                draft["publish_mode"] = mode
-                draft["updated_at"] = now_iso()
-        self._append_log(state, "info", "mode", f"切换发布模式为 {modes[mode]['label']}")
-        self._write(state)
-        return ModeDefinition(**modes[mode])
 
     def list_automation_modes(self) -> list[AutomationModeDefinition]:
         state = self._upgrade_state(self._read())
@@ -3822,8 +3422,8 @@ class StudioStore:
             current_mode=state["automation_mode"],
             work_scope=str(runtime.get("work_scope") or self._runtime_plan(state).get("work_scope") or "collect_events_alerts"),
             last_collect_at=runtime.get("last_collect_at"),
-            last_candidate_at=runtime.get("last_candidate_at"),
-            last_draft_at=runtime.get("last_draft_at"),
+            last_event_sync_at=runtime.get("last_event_sync_at"),
+            last_brief_at=runtime.get("last_brief_at"),
             next_collect_at=runtime.get("next_collect_at"),
             delivery_mode=str(self._runtime_plan(state).get("delivery_mode") or "immediate"),
             delivery_schedule_time=self._runtime_plan(state).get("delivery_schedule_time"),
@@ -4253,6 +3853,8 @@ class StudioStore:
             )
             self._write_runtime_checkpoint(state)
             self._run_delivery_pipeline(state, runtime, triggered_by=triggered_by)
+            state = self._upgrade_state(self._read())
+            runtime = self._runtime(state)
 
             finish = datetime.now(UTC)
             duration = round((finish - start).total_seconds(), 1)
@@ -4291,7 +3893,7 @@ class StudioStore:
                 state,
                 "collect_news",
                 (
-                    f"自动轮次完成：素材 {sync_response.raw_count}，事件 {sync_response.candidate_count}，"
+                    f"自动轮次完成：素材 {sync_response.raw_count}，事件 {sync_response.event_count}，"
                     f"入选 {int(runtime.get('current_cycle_metrics', {}).get('selected_event_count', 0) or 0)}，"
                     f"深挖 {int(runtime.get('current_cycle_metrics', {}).get('deep_dive_count', 0) or 0)}，"
                     f"简报 {int(runtime.get('current_cycle_metrics', {}).get('brief_count', 0) or 0)}，"
@@ -4304,7 +3906,7 @@ class StudioStore:
                 self._write(state)
             return {
                 "raw_count": sync_response.raw_count,
-                "candidate_count": sync_response.candidate_count,
+                "event_count": sync_response.event_count,
                 "selected_event_count": int(runtime.get("current_cycle_metrics", {}).get("selected_event_count", 0) or 0),
                 "deep_dive_count": int(runtime.get("current_cycle_metrics", {}).get("deep_dive_count", 0) or 0),
                 "brief_count": int(runtime.get("current_cycle_metrics", {}).get("brief_count", 0) or 0),
@@ -4503,7 +4105,7 @@ class StudioStore:
     def sync_sources(self) -> SourceSyncResponse:
         state = self._upgrade_state(self._read())
         response = self._sync_sources_internal(state, triggered_by="dashboard")
-        self._append_job(state, "collect_news", f"已采集 {response.raw_count} 条素材并刷新候选池。")
+        self._append_job(state, "collect_news", f"已采集 {response.raw_count} 条素材并刷新事件聚合。")
         self._write(state)
         return response
 
@@ -4545,7 +4147,7 @@ class StudioStore:
         if items:
             runtime["last_successful_sync_at"] = stamp
         runtime["next_collect_at"] = self._calculate_next_collect_at(state, minimum_interval_minutes=self._collect_interval_for_profile(state))
-        message = f"已重抓来源 {source['name']}，新增 {len(items)} 条素材，候选池现有 {len(candidates)} 条。"
+        message = f"已重抓来源 {source['name']}，新增 {len(items)} 条素材，当前聚合出 {len(state.get('intel_events', []))} 个事件。"
         level = "success" if not warning_text else "warning"
         if not items and warning_text:
             message = f"已执行来源重抓，但 {source['name']} 本轮没有返回任何真实素材。"
@@ -4567,7 +4169,7 @@ class StudioStore:
         return SourceSyncResponse(
             raw_count=len(state["raw_items"]),
             normalized_count=len(state["normalized_items"]),
-            candidate_count=len(state["candidates"]),
+            event_count=len(state.get("intel_events", [])),
             synced_at=stamp,
             warnings=warnings,
         )
@@ -4589,10 +4191,6 @@ class StudioStore:
         self._append_log(state, "success", "settings", f"已更新设置: {list(updates.keys())}")
         self._write(state)
         return settings
-
-    def list_candidates(self) -> list[CandidateTopic]:
-        state = self._upgrade_state(self._read())
-        return [CandidateTopic(**item) for item in state["candidates"]]
 
     def _make_llm_service(self, state: dict[str, Any]) -> LLMService | None:
         llm_config = state.get("llm", {})
@@ -4673,81 +4271,82 @@ class StudioStore:
         )
 
     def create_event_deep_dive(self, event_id: str, *, force: bool = False) -> EventDeepDive:
-        state = self._upgrade_state(self._read())
-        event = self._find_event(state, event_id)
-        event["watchlisted"] = True
-        event["ignored"] = False
-        existing = self._find_deep_dive_for_event(state, event_id)
-        if existing and not force and str(existing.get("status") or "") in {"ready", "partial"}:
-            return EventDeepDive(**existing)
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            event = self._find_event(state, event_id)
+            event["watchlisted"] = True
+            event["ignored"] = False
+            existing = self._find_deep_dive_for_event(state, event_id)
+            if existing and not force and str(existing.get("status") or "") in {"ready", "partial"}:
+                return EventDeepDive(**existing)
 
-        resolved_evidence_pack = self._event_deep_dive_inputs(state, event)
-        max_links = 12
-        timeout_seconds = 12.0
-        started_at = now_iso()
-        sources: list[dict[str, Any]] = []
-        for item in resolved_evidence_pack[:max_links]:
-            sources.append(fetch_and_extract_link(item, timeout_seconds=timeout_seconds))
+            resolved_evidence_pack = self._event_deep_dive_inputs(state, event)
+            max_links = 12
+            timeout_seconds = 12.0
+            started_at = now_iso()
+            sources: list[dict[str, Any]] = []
+            for item in resolved_evidence_pack[:max_links]:
+                sources.append(fetch_and_extract_link(item, timeout_seconds=timeout_seconds))
 
-        success_sources = [item for item in sources if str(item.get("extract_status") or "") == "extracted"]
-        failed_count = len([item for item in sources if str(item.get("extract_status") or "") != "extracted"])
-        status = "ready" if success_sources and not failed_count else "partial" if success_sources else "failed"
-        facts = self._generate_deep_dive_facts(event, success_sources)
-        quotes: list[str] = []
-        seen_quotes: set[str] = set()
-        for item in success_sources:
-            for quote in item.get("quotes", [])[:2]:
-                compact = str(quote).strip()
-                if not compact or compact in seen_quotes:
-                    continue
-                seen_quotes.add(compact)
-                quotes.append(compact)
+            success_sources = [item for item in sources if str(item.get("extract_status") or "") == "extracted"]
+            failed_count = len([item for item in sources if str(item.get("extract_status") or "") != "extracted"])
+            status = "ready" if success_sources and not failed_count else "partial" if success_sources else "failed"
+            facts = self._generate_deep_dive_facts(event, success_sources)
+            quotes: list[str] = []
+            seen_quotes: set[str] = set()
+            for item in success_sources:
+                for quote in item.get("quotes", [])[:2]:
+                    compact = str(quote).strip()
+                    if not compact or compact in seen_quotes:
+                        continue
+                    seen_quotes.add(compact)
+                    quotes.append(compact)
+                    if len(quotes) >= 6:
+                        break
                 if len(quotes) >= 6:
                     break
-            if len(quotes) >= 6:
-                break
-        timeline = self._generate_deep_dive_timeline(event, resolved_evidence_pack)
-        worth_to_brief, worth_reason = self._evaluate_worthiness(
-            event,
-            {"success_count": len(success_sources), "facts": facts, "quotes": quotes},
-        )
-        record = {
-            "id": existing.get("id") if existing else f"dd-{uuid4().hex[:12]}",
-            "event_id": event_id,
-            "status": status,
-            "started_at": started_at,
-            "finished_at": now_iso(),
-            "updated_at": now_iso(),
-            "attempted_count": len(sources),
-            "success_count": len(success_sources),
-            "failed_count": failed_count,
-            "resolved_evidence_pack": resolved_evidence_pack,
-            "full_text_sources": success_sources,
-            "sources": sources,
-            "facts": facts,
-            "quotes": quotes,
-            "timeline": timeline,
-            "worthiness": {"worth_to_brief": worth_to_brief, "reason": worth_reason},
-            "last_error": None if success_sources else "没有拿到可用正文来源",
-        }
-        if existing:
-            index = next(
-                idx for idx, item in enumerate(state.get("event_deep_dives", []))
-                if isinstance(item, dict) and str(item.get("id") or "") == str(existing.get("id") or "")
+            timeline = self._generate_deep_dive_timeline(event, resolved_evidence_pack)
+            worth_to_brief, worth_reason = self._evaluate_worthiness(
+                event,
+                {"success_count": len(success_sources), "facts": facts, "quotes": quotes},
             )
-            state["event_deep_dives"][index] = record
-        else:
-            state.setdefault("event_deep_dives", []).insert(0, record)
-        event["deep_dive_id"] = record["id"]
-        self._append_log(
-            state,
-            "success" if success_sources else "warning",
-            "deep_dive",
-            f"已完成正文深挖：{event.get('title', '未命名事件')}",
-            detail=self._summarize_deep_dive(record),
-        )
-        self._write(state)
-        return EventDeepDive(**record)
+            record = {
+                "id": existing.get("id") if existing else f"dd-{uuid4().hex[:12]}",
+                "event_id": event_id,
+                "status": status,
+                "started_at": started_at,
+                "finished_at": now_iso(),
+                "updated_at": now_iso(),
+                "attempted_count": len(sources),
+                "success_count": len(success_sources),
+                "failed_count": failed_count,
+                "resolved_evidence_pack": resolved_evidence_pack,
+                "full_text_sources": success_sources,
+                "sources": sources,
+                "facts": facts,
+                "quotes": quotes,
+                "timeline": timeline,
+                "worthiness": {"worth_to_brief": worth_to_brief, "reason": worth_reason},
+                "last_error": None if success_sources else "没有拿到可用正文来源",
+            }
+            if existing:
+                index = next(
+                    idx for idx, item in enumerate(state.get("event_deep_dives", []))
+                    if isinstance(item, dict) and str(item.get("id") or "") == str(existing.get("id") or "")
+                )
+                state["event_deep_dives"][index] = record
+            else:
+                state.setdefault("event_deep_dives", []).insert(0, record)
+            event["deep_dive_id"] = record["id"]
+            self._append_log(
+                state,
+                "success" if success_sources else "warning",
+                "deep_dive",
+                f"已完成正文深挖：{event.get('title', '未命名事件')}",
+                detail=self._summarize_deep_dive(record),
+            )
+            self._write(state)
+            return EventDeepDive(**record)
 
     def list_event_deep_dives(self) -> list[EventDeepDive]:
         state = self._upgrade_state(self._read())
@@ -4763,82 +4362,97 @@ class StudioStore:
         return EventDeepDive(**record)
 
     def create_brief_from_event(self, event_id: str) -> BriefItem:
-        state = self._upgrade_state(self._read())
-        event = self._find_event(state, event_id)
-        deep_dive = self._find_deep_dive_for_event(state, event_id)
-        if not deep_dive or str(deep_dive.get("status") or "") not in {"ready", "partial"}:
-            deep_dive = self.create_event_deep_dive(event_id).model_dump()
+        with self._lock:
             state = self._upgrade_state(self._read())
             event = self._find_event(state, event_id)
-        base_payload = build_rule_brief_payload(event, deep_dive)
-        llm_service = self._make_llm_service(state)
-        one_line, why_it_matters, risk_notes, brief_level = self._maybe_enhance_brief(llm_service, event, deep_dive, base_payload)
-        full_text_sources = self._build_full_text_sources_for_ai(deep_dive)
-        source_quotes: list[dict[str, str]] = []
-        for item in deep_dive.get("sources", []):
-            source_name = str(item.get("source_name") or "未知来源")
-            for quote in item.get("quotes", [])[:1]:
-                compact = str(quote).strip()
-                if compact:
-                    source_quotes.append({"source_name": source_name, "quote": compact})
-        prompt_package_markdown = build_prompt_package_markdown(
-            title=str(base_payload.get("title") or ""),
-            one_line=one_line,
-            why_it_matters=why_it_matters,
-            facts=list(base_payload.get("facts", [])),
-            full_text_sources=[
-                {
-                    "source_name": str(item.get("source_name") or "未知来源"),
-                    "title": str(item.get("title") or ""),
-                    "full_text": str(item.get("cleaned_full_text") or ""),
-                }
-                for item in full_text_sources
-            ],
-            source_quotes=source_quotes[:4],
-            timeline=list(base_payload.get("timeline", [])),
-            risk_notes=risk_notes,
-            source_links=list(base_payload.get("source_links", [])),
-        )
-        wechat_markdown = str(base_payload.get("wechat_markdown") or "")
-        existing = self._find_brief_for_event(state, event_id)
-        brief = {
-            "id": existing.get("id") if existing else f"brief-{uuid4().hex[:12]}",
-            "event_id": event_id,
-            "deep_dive_id": str(deep_dive.get("id") or ""),
-            "brief_level": brief_level,
-            "stage": existing.get("stage") if existing else "prepared",
-            "title": str(base_payload.get("title") or event.get("title") or ""),
-            "one_line": one_line,
-            "why_it_matters": why_it_matters,
-            "facts": list(base_payload.get("facts", [])),
-            "quotes": list(base_payload.get("quotes", [])),
-            "timeline": list(base_payload.get("timeline", [])),
-            "entity_names": list(base_payload.get("entity_names", [])),
-            "source_links": list(base_payload.get("source_links", [])),
-            "risk_notes": risk_notes,
-            "prompt_package_markdown": prompt_package_markdown,
-            "wechat_markdown": wechat_markdown,
-            "wechat_html": _wechat_html(wechat_markdown),
-            "wechat_draft_id": existing.get("wechat_draft_id") if existing else None,
-            "wechat_editor_url": existing.get("wechat_editor_url") if existing else None,
-            "wechat_remote_appmsg_id": existing.get("wechat_remote_appmsg_id") if existing else None,
-            "preview_url": existing.get("preview_url") if existing else None,
-            "last_error": None,
-            "updated_at": now_iso(),
-        }
-        if existing:
-            index = next(
-                idx for idx, item in enumerate(state.get("briefs", []))
-                if isinstance(item, dict) and str(item.get("id") or "") == str(existing.get("id") or "")
+            deep_dive = self._find_deep_dive_for_event(state, event_id)
+            if not deep_dive or str(deep_dive.get("status") or "") not in {"ready", "partial"}:
+                deep_dive_result = self.create_event_deep_dive(event_id)
+                deep_dive = deep_dive_result.model_dump()
+                state = self._upgrade_state(self._read())
+                event = self._find_event(state, event_id)
+                deep_dive = self._find_deep_dive_for_event(state, event_id) or deep_dive
+            deep_dive_status = str((deep_dive or {}).get("status") or "")
+            if deep_dive_status not in {"ready", "partial"}:
+                reason = str((deep_dive or {}).get("last_error") or "正文深挖尚未完成，暂时无法生成简报。")
+                raise ValueError(reason)
+            base_payload = build_rule_brief_payload(event, deep_dive)
+            llm_service = self._make_llm_service(state)
+            one_line, why_it_matters, risk_notes, brief_level = self._maybe_enhance_brief(llm_service, event, deep_dive, base_payload)
+            full_text_sources = self._build_full_text_sources_for_ai(deep_dive)
+            source_quotes: list[dict[str, str]] = []
+            for item in deep_dive.get("sources", []):
+                source_name = str(item.get("source_name") or "未知来源")
+                for quote in item.get("quotes", [])[:1]:
+                    compact = str(quote).strip()
+                    if compact:
+                        source_quotes.append({"source_name": source_name, "quote": compact})
+            prompt_package_markdown = build_prompt_package_markdown(
+                title=str(base_payload.get("title") or ""),
+                one_line=one_line,
+                why_it_matters=why_it_matters,
+                facts=list(base_payload.get("facts", [])),
+                full_text_sources=[
+                    {
+                        "source_name": str(item.get("source_name") or "未知来源"),
+                        "title": str(item.get("title") or ""),
+                        "full_text": str(item.get("cleaned_full_text") or ""),
+                    }
+                    for item in full_text_sources
+                ],
+                source_quotes=source_quotes[:4],
+                timeline=list(base_payload.get("timeline", [])),
+                risk_notes=risk_notes,
+                source_links=list(base_payload.get("source_links", [])),
             )
-            state["briefs"][index] = brief
-        else:
-            state.setdefault("briefs", []).insert(0, brief)
-        event["brief_id"] = brief["id"]
-        self._sync_llm_usage(state, llm_service)
-        self._append_log(state, "success", "brief", f"已生成简报：{brief['title']}")
-        self._write(state)
-        return BriefItem(**brief)
+            wechat_markdown = str(base_payload.get("wechat_markdown") or "")
+            existing = self._find_brief_for_event(state, event_id)
+            brief = {
+                "id": existing.get("id") if existing else f"brief-{uuid4().hex[:12]}",
+                "event_id": event_id,
+                "deep_dive_id": str(deep_dive.get("id") or ""),
+                "brief_level": brief_level,
+                "stage": existing.get("stage") if existing else "prepared",
+                "title": str(base_payload.get("title") or event.get("title") or ""),
+                "one_line": one_line,
+                "why_it_matters": why_it_matters,
+                "facts": list(base_payload.get("facts", [])),
+                "quotes": list(base_payload.get("quotes", [])),
+                "timeline": list(base_payload.get("timeline", [])),
+                "entity_names": list(base_payload.get("entity_names", [])),
+                "source_links": list(base_payload.get("source_links", [])),
+                "risk_notes": risk_notes,
+                "prompt_package_markdown": prompt_package_markdown,
+                "wechat_markdown": wechat_markdown,
+                "wechat_html": _wechat_html(wechat_markdown),
+                "wechat_target_id": existing.get("wechat_target_id") if existing else None,
+                "wechat_editor_url": existing.get("wechat_editor_url") if existing else None,
+                "wechat_remote_appmsg_id": existing.get("wechat_remote_appmsg_id") if existing else None,
+                "preview_url": existing.get("preview_url") if existing else None,
+                "last_error": None,
+                "delivery_status": existing.get("delivery_status") if existing else "idle",
+                "delivery_attempt_count": int(existing.get("delivery_attempt_count", 0) or 0) if existing else 0,
+                "last_delivery_attempt_at": existing.get("last_delivery_attempt_at") if existing else None,
+                "last_verified_at": existing.get("last_verified_at") if existing else None,
+                "last_delivery_error_kind": existing.get("last_delivery_error_kind") if existing else None,
+                "needs_resync": bool(existing.get("needs_resync")) if existing else False,
+                "last_synced_revision": existing.get("last_synced_revision") if existing else None,
+                "last_successful_upload_at": existing.get("last_successful_upload_at") if existing else None,
+                "updated_at": now_iso(),
+            }
+            if existing:
+                index = next(
+                    idx for idx, item in enumerate(state.get("briefs", []))
+                    if isinstance(item, dict) and str(item.get("id") or "") == str(existing.get("id") or "")
+                )
+                state["briefs"][index] = brief
+            else:
+                state.setdefault("briefs", []).insert(0, brief)
+            event["brief_id"] = brief["id"]
+            self._sync_llm_usage(state, llm_service)
+            self._append_log(state, "success", "brief", f"已生成简报：{brief['title']}")
+            self._write(state)
+            return BriefItem(**brief)
 
     def list_briefs(self) -> list[BriefItem]:
         state = self._upgrade_state(self._read())
@@ -4850,36 +4464,354 @@ class StudioStore:
         state = self._upgrade_state(self._read())
         return BriefItem(**self._find_brief(state, brief_id))
 
+    def _brief_revision(self, brief: dict[str, Any]) -> str:
+        stable_payload = {
+            "title": str(brief.get("title") or "").strip(),
+            "one_line": str(brief.get("one_line") or "").strip(),
+            "why_it_matters": str(brief.get("why_it_matters") or "").strip(),
+            "facts": list(brief.get("facts", [])),
+            "quotes": list(brief.get("quotes", [])),
+            "timeline": list(brief.get("timeline", [])),
+            "risk_notes": list(brief.get("risk_notes", [])),
+            "source_links": list(brief.get("source_links", [])),
+            "wechat_markdown": str(brief.get("wechat_markdown") or ""),
+            "wechat_html": str(brief.get("wechat_html") or ""),
+        }
+        digest = hashlib.sha256(
+            json.dumps(stable_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        return f"brief:{brief.get('id') or 'unknown'}:{digest}"
+
+    def _brief_transition(
+        self,
+        current_stage: str,
+        current_delivery_status: str,
+        *,
+        upload_success: bool,
+        is_session_level_error: bool,
+        verify_status: str,
+    ) -> dict[str, Any]:
+        result = {
+            "new_stage": current_stage or "prepared",
+            "new_delivery_status": current_delivery_status or "idle",
+            "last_delivery_error_kind": None,
+            "should_set_needs_resync": False,
+            "should_clear_last_synced_revision": False,
+        }
+        if not upload_success:
+            result["new_stage"] = "failed"
+            result["new_delivery_status"] = "check_failed" if is_session_level_error else "idle"
+            result["last_delivery_error_kind"] = "session" if is_session_level_error else "upload"
+            result["should_set_needs_resync"] = False
+            result["should_clear_last_synced_revision"] = True
+            return result
+
+        result["new_stage"] = "synced"
+        if verify_status == "verified":
+            result["new_delivery_status"] = "verified"
+            result["last_delivery_error_kind"] = None
+        elif verify_status == "target_missing":
+            result["new_delivery_status"] = "target_missing"
+            result["last_delivery_error_kind"] = "target_missing"
+        elif verify_status == "scrape_failed":
+            result["new_delivery_status"] = "check_failed"
+            result["last_delivery_error_kind"] = "scrape_failed"
+        elif verify_status == "check_failed":
+            result["new_delivery_status"] = "check_failed"
+            result["last_delivery_error_kind"] = "check_failed"
+        else:
+            result["new_delivery_status"] = "uploaded_unverified"
+            result["last_delivery_error_kind"] = None
+        return result
+
     def sync_brief_wechat_draft(self, brief_id: str, triggered_by: str = "dashboard") -> BriefItem:
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            brief = self._find_brief(state, brief_id)
+            if not brief.get("wechat_target_id"):
+                brief["wechat_target_id"] = build_wechat_target_id(str(brief["id"]))
+            brief["preview_url"] = build_preview_url(str(brief["id"]))
+            brief["last_delivery_attempt_at"] = now_iso()
+            brief["delivery_attempt_count"] = int(brief.get("delivery_attempt_count", 0) or 0) + 1
+            brief["needs_resync"] = False
+            browser = self._refresh_browser_session(state)
+            browser_payload = {
+                **brief,
+                "summary": str(brief.get("one_line") or ""),
+                "markdown": str(brief.get("wechat_markdown") or ""),
+            }
+            browser, artifacts, step_logs = run_browser_action("sync_wechat_draft", browser_payload, state["channels"]["wechat"], browser)
+            state["browser"]["wechat"] = browser
+            verification_status = str(browser.get("verification_status") or "").strip()
+            verification_message = str(browser.get("verification_message") or "").strip()
+            transition = self._brief_transition(
+                str(brief.get("stage") or "prepared"),
+                str(brief.get("delivery_status") or "idle"),
+                upload_success=not bool(browser.get("last_error")),
+                is_session_level_error=bool(browser.get("is_session_level_error")),
+                verify_status=verification_status,
+            )
+            brief["stage"] = transition["new_stage"]
+            brief["delivery_status"] = transition["new_delivery_status"]
+            brief["last_delivery_error_kind"] = transition["last_delivery_error_kind"]
+            brief["needs_resync"] = bool(transition["should_set_needs_resync"])
+            if transition["should_clear_last_synced_revision"]:
+                brief["last_synced_revision"] = None
+                brief["last_successful_upload_at"] = None
+
+            if browser.get("last_error"):
+                brief["last_error"] = str(browser.get("last_error"))
+            else:
+                existing_editor_url = str(brief.get("wechat_editor_url") or "").strip()
+                existing_remote_appmsg_id = str(brief.get("wechat_remote_appmsg_id") or "").strip()
+                resolved_editor_url = (
+                    browser.get("last_verified_remote_url")
+                    or browser.get("last_synced_editor_url")
+                    or existing_editor_url
+                )
+                resolved_remote_appmsg_id = (
+                    browser.get("last_verified_remote_appmsg_id")
+                    or extract_wechat_appmsg_id(str(browser.get("last_synced_editor_url") or ""))
+                    or existing_remote_appmsg_id
+                )
+                if resolved_editor_url:
+                    brief["wechat_editor_url"] = str(resolved_editor_url)
+                if resolved_remote_appmsg_id:
+                    brief["wechat_remote_appmsg_id"] = str(resolved_remote_appmsg_id)
+                if verification_status in {"verification_failed", "target_missing", "check_failed", "scrape_failed"}:
+                    brief["last_error"] = verification_message or "已上传，但草稿箱确认未完成。"
+                else:
+                    brief["last_error"] = None
+                brief["last_synced_revision"] = self._brief_revision(brief)
+                brief["last_successful_upload_at"] = now_iso()
+                if verification_status == "verified":
+                    brief["last_verified_at"] = now_iso()
+            brief["updated_at"] = now_iso()
+            task_status = "completed" if brief["stage"] == "synced" else "failed"
+            if brief["stage"] == "synced":
+                if verification_status == "verified":
+                    task_message = "已同步简报到微信草稿箱，并确认目标稿件存在。"
+                elif verification_status == "target_missing":
+                    task_message = "已同步简报到微信草稿箱，但正式草稿箱暂未确认到目标稿件。"
+                elif verification_status in {"verification_failed", "check_failed", "scrape_failed"}:
+                    task_message = "已同步简报到微信草稿箱，但草稿箱检查失败，当前保留已上传状态。"
+                else:
+                    task_message = "已同步简报到微信草稿箱。"
+            else:
+                task_message = "简报同步微信草稿箱失败。"
+            state["publish_tasks"].insert(
+                0,
+                create_publish_task(
+                    brief_id,
+                    "sync_wechat_draft",
+                    task_status,
+                    task_message,
+                    triggered_by,
+                    str(state["channels"]["wechat"]["selectors_version"]),
+                    artifacts=artifacts,
+                    step_logs=step_logs,
+                ),
+            )
+            self._append_log(
+                state,
+                "success" if brief["stage"] == "synced" else "warning",
+                "wechat",
+                f"{task_message.rstrip('。')}：{brief['title']}",
+                detail=brief.get("last_error"),
+            )
+            self._write(state)
+            return BriefItem(**brief)
+
+    def build_brief_copy_package(self, brief_id: str) -> str:
         state = self._upgrade_state(self._read())
         brief = self._find_brief(state, brief_id)
-        if not brief.get("wechat_draft_id"):
-            brief["wechat_draft_id"] = build_wechat_draft_id(str(brief["id"]))
-        brief["preview_url"] = build_preview_url(str(brief["id"]))
+        return str(brief.get("prompt_package_markdown") or "")
+
+    def list_publish_tasks(self) -> list[PublishTask]:
+        state = self._upgrade_state(self._read())
+        visible_actions = {"sync_wechat_draft", "delete_wechat_draft", "delete_brief"}
+        items = [
+            item for item in state["publish_tasks"]
+            if isinstance(item, dict) and str(item.get("action") or "") in visible_actions
+        ]
+        return [PublishTask(**item) for item in items]
+
+    def _build_wechat_mapping_snapshot(self, state: dict[str, Any]) -> WeChatMappingSnapshot:
+        browser = state.get("browser", {}).get("wechat", {})
+        last_check = browser.get("last_draft_check") if isinstance(browser, dict) and isinstance(browser.get("last_draft_check"), dict) else {}
+        remote_items = last_check.get("items", [])
+        if not isinstance(remote_items, list):
+            remote_items = []
+
+        def normalize_title(value: Any) -> str:
+            return re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip().lower()
+
+        def title_matches(left: str, right: str) -> bool:
+            if not left or not right:
+                return False
+            if left == right:
+                return True
+            shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+            if len(shorter) >= 18 and longer.startswith(shorter):
+                return True
+            if len(shorter) >= 18 and shorter in longer:
+                return True
+            return False
+
+        mapping_rows: list[WeChatMappingRow] = []
+        matched_brief_ids: set[str] = set()
+        remote_index: dict[str, dict[str, Any]] = {}
+        for item in remote_items:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            appmsg_id = str(item.get("appmsg_id") or "").strip() or None
+            url = str(item.get("url") or "").strip()
+            remote_index[f"title:{normalize_title(title)}"] = item
+            if appmsg_id:
+                remote_index[f"appmsg:{appmsg_id}"] = item
+            if url:
+                remote_index[f"url:{url}"] = item
+
+        for item in remote_items:
+            if not isinstance(item, dict):
+                continue
+            remote_title = str(item.get("title") or "").strip()
+            remote_appmsg_id = str(item.get("appmsg_id") or "").strip() or None
+            remote_url = str(item.get("url") or "").strip()
+            remote_updated_at = str(item.get("updated_at") or "").strip() or None
+            matched_brief: dict[str, Any] | None = None
+            for brief in state.get("briefs", []):
+                if not isinstance(brief, dict):
+                    continue
+                brief_id = str(brief.get("id") or "")
+                if brief_id in matched_brief_ids:
+                    continue
+                brief_remote_id = str(brief.get("wechat_remote_appmsg_id") or "").strip()
+                brief_remote_url = str(brief.get("wechat_editor_url") or "").strip()
+                brief_title = normalize_title(brief.get("title"))
+                if remote_appmsg_id and brief_remote_id == remote_appmsg_id:
+                    matched_brief = brief
+                    break
+                if remote_url and brief_remote_url == remote_url:
+                    matched_brief = brief
+                    break
+                if remote_title and brief_title and title_matches(brief_title, normalize_title(remote_title)):
+                    matched_brief = brief
+                    break
+            if matched_brief:
+                matched_brief_ids.add(str(matched_brief.get("id") or ""))
+                mapping_rows.append(
+                    WeChatMappingRow(
+                        remote_title=remote_title,
+                        remote_appmsg_id=remote_appmsg_id,
+                        remote_url=remote_url,
+                        remote_updated_at=remote_updated_at,
+                        local_brief_id=str(matched_brief.get("id") or "") or None,
+                        local_brief_title=str(matched_brief.get("title") or "") or None,
+                        local_stage=str(matched_brief.get("stage") or "") or None,
+                        mapping_status="matched",
+                    )
+                )
+            else:
+                mapping_rows.append(
+                    WeChatMappingRow(
+                        remote_title=remote_title,
+                        remote_appmsg_id=remote_appmsg_id,
+                        remote_url=remote_url,
+                        remote_updated_at=remote_updated_at,
+                        mapping_status="remote_only",
+                    )
+                )
+
+        for brief in state.get("briefs", []):
+            if not isinstance(brief, dict):
+                continue
+            brief_id = str(brief.get("id") or "")
+            if brief_id in matched_brief_ids:
+                continue
+            if str(brief.get("stage") or "") == "synced":
+                mapping_rows.append(
+                    WeChatMappingRow(
+                        remote_title=str(brief.get("title") or ""),
+                        remote_appmsg_id=str(brief.get("wechat_remote_appmsg_id") or "") or None,
+                        remote_url=str(brief.get("wechat_editor_url") or ""),
+                        local_brief_id=brief_id,
+                        local_brief_title=str(brief.get("title") or "") or None,
+                        local_stage=str(brief.get("stage") or "") or None,
+                        mapping_status="local_only",
+                    )
+                )
+
+        matched_count = len([row for row in mapping_rows if row.mapping_status == "matched"])
+        missing_count = len([row for row in mapping_rows if row.mapping_status == "local_only"])
+        return WeChatMappingSnapshot(
+            checked_at=last_check.get("checked_at"),
+            remote_count=int(last_check.get("remote_count", len(remote_items)) or 0),
+            matched_count=matched_count,
+            missing_count=missing_count,
+            message=str(last_check.get("message") or ""),
+            items=[WeChatRemoteDraftItem(**item) for item in remote_items if isinstance(item, dict)],
+            mapping_rows=mapping_rows,
+        )
+
+    def get_wechat_mapping(self) -> WeChatMappingSnapshot:
+        state = self._upgrade_state(self._read())
+        return self._build_wechat_mapping_snapshot(state)
+
+    def refresh_wechat_mapping(self) -> WeChatMappingSnapshot:
+        self.check_wechat_draft_box()
+        latest_state = self._upgrade_state(self._read())
+        return self._build_wechat_mapping_snapshot(latest_state)
+
+    def delete_wechat_remote_draft(self, remote_id: str, triggered_by: str = "mapping") -> DictOkResponse:
+        state = self._upgrade_state(self._read())
+        mapping = self._build_wechat_mapping_snapshot(state)
+        remote_key = str(remote_id or "").strip()
+        target_row = next(
+            (
+                row for row in mapping.mapping_rows
+                if str(row.remote_appmsg_id or "") == remote_key
+                or str(row.remote_url or "") == remote_key
+            ),
+            None,
+        )
+        if not target_row:
+            for row in mapping.mapping_rows:
+                if not row.local_brief_id:
+                    continue
+                try:
+                    brief = self._find_brief(state, str(row.local_brief_id))
+                except ValueError:
+                    continue
+                brief_remote_id = str(brief.get("wechat_remote_appmsg_id") or "").strip()
+                brief_remote_url = str(brief.get("wechat_editor_url") or "").strip()
+                if brief_remote_id == remote_key or brief_remote_url == remote_key:
+                    target_row = row
+                    break
+        if not target_row:
+            raise ValueError("未找到对应的远端草稿映射。")
+
         browser = self._refresh_browser_session(state)
-        browser_payload = {
-            **brief,
-            "summary": str(brief.get("one_line") or ""),
-            "markdown": str(brief.get("wechat_markdown") or ""),
-        }
-        browser, artifacts, step_logs = run_browser_action("sync_wechat_draft", browser_payload, state["channels"]["wechat"], browser)
+        browser, artifacts, step_logs = delete_wechat_remote_draft(
+            {
+                "appmsg_id": target_row.remote_appmsg_id,
+                "url": target_row.remote_url,
+                "title": target_row.remote_title,
+            },
+            state["channels"]["wechat"],
+            browser,
+        )
         state["browser"]["wechat"] = browser
-        if browser.get("last_error"):
-            brief["stage"] = "failed"
-            brief["last_error"] = str(browser.get("last_error"))
-        else:
-            brief["stage"] = "synced"
-            brief["wechat_editor_url"] = browser.get("last_opened_url")
-            brief["wechat_remote_appmsg_id"] = extract_wechat_appmsg_id(str(browser.get("last_opened_url") or ""))
-            brief["last_error"] = None
-        brief["updated_at"] = now_iso()
+        status = "completed" if not browser.get("last_error") else "failed"
+        message = "已删除微信草稿箱远端草稿。" if status == "completed" else "删除微信草稿箱远端草稿失败。"
         state["publish_tasks"].insert(
             0,
             create_publish_task(
-                brief_id,
-                "sync_wechat_draft",
-                "completed" if brief["stage"] == "synced" else "failed",
-                "已同步简报到微信草稿箱。" if brief["stage"] == "synced" else "简报同步微信草稿箱失败。",
+                str(target_row.local_brief_id or remote_id),
+                "delete_wechat_draft",
+                status,
+                message,
                 triggered_by,
                 str(state["channels"]["wechat"]["selectors_version"]),
                 artifacts=artifacts,
@@ -4888,339 +4820,54 @@ class StudioStore:
         )
         self._append_log(
             state,
-            "success" if brief["stage"] == "synced" else "warning",
+            "success" if status == "completed" else "warning",
             "wechat",
-            f"{'已同步简报到微信草稿箱' if brief['stage'] == 'synced' else '简报同步微信草稿箱失败'}：{brief['title']}",
-            detail=brief.get("last_error"),
+            f"{message}{target_row.remote_title}",
+            detail=str(browser.get("last_error") or ""),
         )
         self._write(state)
-        if brief["stage"] == "synced":
-            # 上传成功后立刻按正式草稿箱做一次真检查，避免前端只看到“已上传”而不知道远端是否真的存在。
+        if status == "completed":
             self.check_wechat_draft_box()
-            latest_state = self._upgrade_state(self._read())
-            return BriefItem(**self._find_brief(latest_state, brief_id))
-        return BriefItem(**brief)
+            return DictOkResponse(ok=True, message="已删除远端草稿并刷新映射。")
+        raise ValueError(str(browser.get("last_error") or "远端草稿删除失败。"))
 
-    def build_brief_copy_package(self, brief_id: str) -> str:
+    def delete_brief(self, brief_id: str, remote: str = "auto", triggered_by: str = "briefs") -> DictOkResponse:
         state = self._upgrade_state(self._read())
         brief = self._find_brief(state, brief_id)
-        return str(brief.get("prompt_package_markdown") or "")
-
-    def create_draft_from_candidate(self, candidate_id: str, publish_mode: PublishMode | None = None) -> DraftItem:
-        state = self._upgrade_state(self._read())
-        candidate = self._find_candidate(state, candidate_id)
-        mode = publish_mode or state["current_mode"]
-        llm_service = self._make_llm_service(state)
-        event_id = self._event_id_from_candidate_id(candidate_id)
-        draft: dict[str, Any]
-        created = True
-        if event_id:
-            try:
-                event = self._find_event(state, event_id)
-                draft, created = self._compose_draft_for_event(
-                    state,
-                    event,
-                    mode,
-                    generation_mode="manual",
-                    llm_service=llm_service,
-                )
-            except ValueError:
-                draft = {}
-        else:
-            draft = {}
-        if not draft:
-            normalized_map = {item["id"]: item for item in state["normalized_items"]}
-            normalized_item = normalized_map.get(candidate["normalized_item_id"])
-            if not normalized_item:
-                raise ValueError("Candidate evidence is missing.")
-            draft = compose_draft(candidate, normalized_item, mode, state["channels"]["wechat"]["risk_keywords"], llm_service=llm_service)
-            event_id = self._event_id_from_candidate_id(candidate_id)
-            if event_id:
-                draft["source_event_id"] = event_id
-                draft["draft_window_id"] = self._draft_window_id_for_event(state, self._find_event(state, event_id))
-            draft["source_alert_level"] = None
-            draft["generation_mode"] = "manual"
-            state["drafts"].insert(0, draft)
-            self._sync_draft_metadata(state)
-        self._sync_llm_usage(state, llm_service)
-        self._append_log(state, "success", "draft", f"{'已从候选池生成初稿' if created else '已复用现有稿件'}：{draft['title']}")
-        runtime = self._runtime(state)
-        runtime["last_draft_at"] = now_iso()
-        self._write(state)
-        return DraftItem(**draft)
-
-    def create_draft_from_event(self, event_id: str, publish_mode: PublishMode | None = None) -> DraftItem:
-        state = self._upgrade_state(self._read())
-        event = self._find_event(state, event_id)
-        mode = publish_mode or state["current_mode"]
-        llm_service = self._make_llm_service(state)
-        draft, created = self._compose_draft_for_event(
-            state,
-            event,
-            mode,
-            generation_mode="manual",
-            llm_service=llm_service,
-        )
-        self._sync_llm_usage(state, llm_service)
-        runtime = self._runtime(state)
-        runtime["last_draft_at"] = now_iso()
-        action = "已从热点事件生成初稿" if created else "已复用同窗口稿件"
-        self._append_log(state, "success", "draft", f"{action}：{draft['title']}")
-        self._write(state)
-        return DraftItem(**draft)
-
-    def batch_create_drafts(self) -> BatchDraftResponse:
-        state = self._upgrade_state(self._read())
-        if not state["candidates"]:
-            self._sync_sources_internal(state, triggered_by="dashboard")
-        publish_mode = automation_to_publish_mode(state.get("automation_mode", "radar_only"))
-        risk_keywords = state["channels"]["wechat"]["risk_keywords"]
-        llm_service = self._make_llm_service(state)
-        normalized_map = {item["id"]: item for item in state["normalized_items"]}
-        existing_candidate_ids = {draft["candidate_topic_id"] for draft in state["drafts"]}
-        pending_candidates = [item for item in state["candidates"] if item["id"] not in existing_candidate_ids]
-        created: list[dict[str, Any]] = []
-        failed_count = 0
-
-        for candidate in pending_candidates:
-            normalized_item = normalized_map.get(candidate["normalized_item_id"])
-            if not normalized_item:
-                failed_count += 1
-                continue
-            try:
-                draft = compose_draft(candidate, normalized_item, publish_mode, risk_keywords, llm_service=llm_service)
-            except Exception:  # pragma: no cover - defensive
-                failed_count += 1
-                continue
-            event_id = self._event_id_from_candidate_id(str(candidate.get("id") or ""))
-            if event_id:
-                draft["source_event_id"] = event_id
-                try:
-                    draft["draft_window_id"] = self._draft_window_id_for_event(state, self._find_event(state, event_id))
-                    draft["source_alert_level"] = str(self._find_event(state, event_id).get("alert_state") or "") or None
-                except ValueError:
-                    draft["draft_window_id"] = None
-            draft["generation_mode"] = "manual"
-            state["drafts"].insert(0, draft)
-            candidate["status"] = "drafted"
-            candidate["draft_exists"] = True
-            candidate["updated_at"] = now_iso()
-            created.append(draft)
-        self._sync_draft_metadata(state)
-        self._sync_llm_usage(state, llm_service)
-
-        if created:
-            runtime = self._runtime(state)
-            runtime["last_draft_at"] = now_iso()
-        message = f"已批量生成 {len(created)} 篇初稿，跳过 {len(state['candidates']) - len(pending_candidates)} 条，失败 {failed_count} 条。"
-        self._append_log(state, "success" if created else "warning", "draft", message, stream="business_event", actor="dashboard")
-        self._append_job(state, "build_digest", message, triggered_by="dashboard")
-        self._write(state)
-        return BatchDraftResponse(
-            processed_count=len(pending_candidates),
-            created_count=len(created),
-            skipped_count=len(state["candidates"]) - len(pending_candidates),
-            failed_count=failed_count,
-            draft_ids=[item["id"] for item in created],
-            message=message,
-        )
-
-    def list_drafts(self) -> list[DraftItem]:
-        state = self._upgrade_state(self._read())
-        return [DraftItem(**item) for item in state["drafts"]]
-
-    def delete_draft(self, draft_id: str) -> None:
-        with self._lock:
+        should_delete_remote = False
+        if remote == "true":
+            should_delete_remote = True
+        elif remote == "auto":
+            should_delete_remote = str(brief.get("stage") or "") == "synced"
+        if should_delete_remote:
+            remote_id = str(brief.get("wechat_remote_appmsg_id") or brief.get("wechat_editor_url") or "").strip()
+            if not remote_id:
+                raise ValueError("该简报缺少远端草稿标识，无法删除微信草稿。")
+            self.delete_wechat_remote_draft(remote_id, triggered_by=triggered_by)
             state = self._upgrade_state(self._read())
-            draft = self._find_draft(state, draft_id)
-            state["drafts"] = [item for item in state["drafts"] if item.get("id") != draft_id]
-            self._sync_draft_metadata(state)
-            self._append_log(state, "warning", "draft", f"已删除本地稿件记录：{draft['title']}")
-            self._write(state)
+            brief = self._find_brief(state, brief_id)
+            if str(brief.get("stage") or "") == "synced":
+                raise ValueError("远端草稿删除后，本地状态尚未完成回写，请稍后重试。")
 
-    def regenerate_draft(self, draft_id: str) -> DraftItem:
-        state = self._upgrade_state(self._read())
-        draft = self._find_draft(state, draft_id)
-        candidate = self._find_candidate(state, draft["candidate_topic_id"])
-        normalized_map = {item["id"]: item for item in state["normalized_items"]}
-        normalized_item = normalized_map.get(candidate["normalized_item_id"])
-        if not normalized_item:
-            raise ValueError("Candidate evidence is missing.")
-        llm_service = self._make_llm_service(state)
-        regenerated = compose_draft(candidate, normalized_item, draft["publish_mode"], state["channels"]["wechat"]["risk_keywords"], llm_service=llm_service)
-        self._sync_llm_usage(state, llm_service)
-        regenerated["id"] = draft["id"]
-        regenerated["candidate_topic_id"] = draft["candidate_topic_id"]
-        regenerated["source_event_id"] = draft.get("source_event_id")
-        regenerated["source_alert_level"] = draft.get("source_alert_level")
-        regenerated["generation_mode"] = draft.get("generation_mode", "manual")
-        regenerated["draft_window_id"] = draft.get("draft_window_id")
-        regenerated["wechat_draft_id"] = None
-        regenerated["wechat_editor_url"] = None
-        regenerated["wechat_remote_appmsg_id"] = None
-        regenerated["preview_url"] = None
-        regenerated["last_error"] = None
-        index = next(index for index, item in enumerate(state["drafts"]) if item["id"] == draft_id)
-        state["drafts"][index] = regenerated
-        self._sync_draft_metadata(state)
-        self._append_log(state, "success", "draft", f"已重新生成稿件：{draft['title']}")
-        self._write(state)
-        return DraftItem(**regenerated)
-
-    def approve_draft(self, draft_id: str, approved: bool) -> DraftItem:
-        state = self._upgrade_state(self._read())
-        draft = self._find_draft(state, draft_id)
-        draft["audit_status"] = "approved" if approved else "rejected"
-        draft["pipeline_stage"] = "approved" if approved else "drafted"
-        draft["updated_at"] = now_iso()
-        message = "已通过审核" if approved else "已驳回稿件"
-        self._append_log(state, "success" if approved else "warning", "audit", f"{message}：{draft['title']}")
-        self._write(state)
-        return DraftItem(**draft)
-
-    def update_draft_content(self, draft_id: str, markdown: str, title: str) -> DraftItem:
-        state = self._upgrade_state(self._read())
-        draft = self._find_draft(state, draft_id)
-        draft["markdown"] = markdown
-        draft["title"] = title
-        draft["html"] = _markdown_to_html(markdown)
-        draft["wechat_html"] = _wechat_html(markdown)
-        draft["word_count"] = len(re.sub(r"\s+", "", markdown))
-        draft["updated_at"] = now_iso()
-        self._append_log(state, "info", "draft", f"已更新稿件内容：{title}")
-        self._write(state)
-        return DraftItem(**draft)
-
-    def sync_wechat_draft(self, draft_id: str, triggered_by: str = "dashboard") -> DraftItem:
-        state = self._upgrade_state(self._read())
-        draft = self._find_draft(state, draft_id)
-        self._sync_wechat_draft_internal(state, draft, triggered_by)
-        self._write(state)
-        return DraftItem(**draft)
-
-    def open_preview(self, draft_id: str) -> DraftItem:
-        state = self._upgrade_state(self._read())
-        draft = self._find_draft(state, draft_id)
-        image_blockers = self._draft_image_blockers(draft)
-        if image_blockers:
-            draft["blocked_reasons"] = sorted(set(list(draft.get("blocked_reasons", [])) + image_blockers))
-            draft["last_error"] = image_blockers[-1]
-            draft["updated_at"] = now_iso()
-            state["publish_tasks"].insert(
-                0,
-                create_publish_task(
-                    draft_id,
-                    "open_preview",
-                    "blocked",
-                    "稿件待补图，已阻止进入微信预览。",
-                    "dashboard",
-                    str(state["channels"]["wechat"]["selectors_version"]),
-                    step_logs=image_blockers,
-                ),
-            )
-            self._append_log(state, "warning", "preview", f"预览被阻止：{draft['title']}", detail=image_blockers[-1])
-            self._write(state)
-            return DraftItem(**draft)
-        if not draft.get("wechat_draft_id"):
-            self._sync_shadow_wechat_draft(state, draft, "dashboard")
-        draft["preview_url"] = build_preview_url(draft_id)
-        draft["pipeline_stage"] = "preview_ready"
-        draft["last_error"] = None
-        draft["updated_at"] = now_iso()
-        browser = self._refresh_browser_session(state)
-        browser, artifacts, step_logs = run_browser_action("open_preview", draft, state["channels"]["wechat"], browser)
-        state["browser"]["wechat"] = browser
-        if browser.get("last_error"):
-            draft["last_error"] = str(browser.get("last_error"))
-        else:
-            draft["wechat_editor_url"] = browser.get("last_opened_url") or draft.get("wechat_editor_url")
-            draft["wechat_remote_appmsg_id"] = extract_wechat_appmsg_id(str(draft.get("wechat_editor_url") or ""))
-            draft["last_error"] = None
+        briefs = [item for item in state.get("briefs", []) if not (isinstance(item, dict) and str(item.get("id") or "") == brief_id)]
+        state["briefs"] = briefs
+        for event in state.get("intel_events", []):
+            if isinstance(event, dict) and str(event.get("brief_id") or "") == brief_id:
+                event["brief_id"] = None
         state["publish_tasks"].insert(
             0,
             create_publish_task(
-                draft_id,
-                "open_preview",
-                "completed" if not browser.get("last_error") else "blocked",
-                "已准备浏览器预览链路。",
-                "dashboard",
+                brief_id,
+                "delete_brief",
+                "completed",
+                "已删除本地简报。",
+                triggered_by,
                 str(state["channels"]["wechat"]["selectors_version"]),
-                artifacts=artifacts,
-                step_logs=step_logs,
             ),
         )
-        self._append_log(state, "info", "preview", f"已生成预览链路：{draft['title']}")
+        self._append_log(state, "success", "brief", f"已删除本地简报：{brief.get('title') or brief_id}")
         self._write(state)
-        return DraftItem(**draft)
-
-    def publish_draft(self, draft_id: str) -> DraftItem:
-        state = self._upgrade_state(self._read())
-        draft = self._find_draft(state, draft_id)
-        mode = self._current_mode_def(state)
-        browser = self._refresh_browser_session(state)
-
-        if not draft.get("wechat_draft_id"):
-            self._sync_shadow_wechat_draft(state, draft, "dashboard")
-        if not draft.get("preview_url"):
-            draft["preview_url"] = build_preview_url(draft_id)
-
-        blocked_reasons = list(draft.get("blocked_reasons", []))
-        blocked_reasons.extend(self._draft_image_blockers(draft))
-        if draft.get("risk_flags"):
-            blocked_reasons.append("命中风险词，禁止自动发送。")
-        if mode["requires_human_review"] and draft["audit_status"] != "approved":
-            blocked_reasons.append("当前模式要求先通过人工审核。")
-        if not mode["allow_auto_send"]:
-            blocked_reasons.append("当前模式不允许自动发送。")
-        if not browser.get("logged_in"):
-            blocked_reasons.append("浏览器登录态不可用。")
-
-        if blocked_reasons:
-            draft["pipeline_stage"] = "preview_ready"
-            draft["last_error"] = blocked_reasons[-1]
-            draft["blocked_reasons"] = sorted(set(blocked_reasons))
-            draft["updated_at"] = now_iso()
-            state["publish_tasks"].insert(
-                0,
-                create_publish_task(
-                    draft_id,
-                    "publish",
-                    "blocked",
-                    "发布守卫阻止了本次自动发送。",
-                    "dashboard",
-                    str(state["channels"]["wechat"]["selectors_version"]),
-                    step_logs=draft["blocked_reasons"],
-                ),
-            )
-            self._append_log(state, "warning", "publish", f"稿件被守卫阻止：{draft['title']}")
-            self._write(state)
-            return DraftItem(**draft)
-
-        browser, artifacts, step_logs = run_browser_action("publish", draft, state["channels"]["wechat"], browser)
-        state["browser"]["wechat"] = browser
-        draft["pipeline_stage"] = "preview_ready"
-        draft["last_error"] = browser.get("last_error") or "已完成浏览器发布尝试，等待页面校准后启用最终点击。"
-        draft["updated_at"] = now_iso()
-        state["publish_tasks"].insert(
-            0,
-            create_publish_task(
-                draft_id,
-                "publish",
-                "blocked" if draft["last_error"] else "completed",
-                "已执行浏览器发布尝试。",
-                "dashboard",
-                str(state["channels"]["wechat"]["selectors_version"]),
-                artifacts=artifacts,
-                step_logs=step_logs,
-            ),
-        )
-        self._append_log(state, "info", "publish", f"已执行浏览器发布尝试：{draft['title']}")
-        self._write(state)
-        return DraftItem(**draft)
-
-    def list_publish_tasks(self) -> list[PublishTask]:
-        state = self._upgrade_state(self._read())
-        return [PublishTask(**item) for item in state["publish_tasks"]]
+        return DictOkResponse(ok=True, message="已删除本地简报。")
 
     def get_wechat_config(self) -> WeChatChannelConfig:
         state = self._upgrade_state(self._read())
@@ -5230,6 +4877,7 @@ class StudioStore:
         state = self._upgrade_state(self._read())
         state["channels"]["wechat"].update(payload.model_dump())
         state["channels"]["wechat"] = ensure_channel_defaults(state["channels"]["wechat"])
+        WECHAT_BROWSER_MANAGER.reset("wechat_config_updated")
         self._refresh_browser_session(state)
         self._append_log(state, "success", "channel", "已更新微信公众号配置。")
         self._write(state)
@@ -5246,6 +4894,7 @@ class StudioStore:
         state["channels"]["wechat"]["browser_name"] = payload.browser_name
         state["channels"]["wechat"]["browser_profile_path"] = payload.user_data_dir
         state["channels"]["wechat"] = ensure_channel_defaults(state["channels"]["wechat"])
+        WECHAT_BROWSER_MANAGER.reset("browser_session_updated")
         browser = self._refresh_browser_session(state)
         self._append_log(state, "info", "browser", "已刷新浏览器会话配置。")
         self._write(state)
@@ -5312,129 +4961,204 @@ class StudioStore:
         return BrowserSessionState(**browser)
 
     def check_wechat_draft_box(self) -> WeChatDraftSyncCheckResult:
-        state = self._upgrade_state(self._read())
-        browser = self._refresh_browser_session(state)
-        browser, artifacts, step_logs, remote_items = inspect_wechat_draft_box(state["channels"]["wechat"], browser)
-        state["browser"]["wechat"] = browser
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            browser = self._refresh_browser_session(state)
+            previous_check = browser.get("last_draft_check") if isinstance(browser.get("last_draft_check"), dict) else {}
+            browser, artifacts, step_logs, remote_items = inspect_wechat_draft_box(state["channels"]["wechat"], browser)
+            state["browser"]["wechat"] = browser
 
-        matched_count = 0
-        missing_count = 0
-        if not browser.get("last_error"):
-            def normalize_title(value: Any) -> str:
-                return re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip().lower()
+            matched_count = 0
+            missing_count = 0
+            diff_logs: list[str] = []
+            last_check = previous_check
+            empty_confirmations = int(last_check.get("empty_confirmations", 0) or 0)
+            empty_confirmed = False
+            if not browser.get("last_error"):
+                def normalize_title(value: Any) -> str:
+                    return re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip().lower()
 
-            def title_matches(left: str, right: str) -> bool:
-                if not left or not right:
+                def title_matches(left: str, right: str) -> bool:
+                    if not left or not right:
+                        return False
+                    if left == right:
+                        return True
+                    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+                    if len(shorter) >= 18 and longer.startswith(shorter):
+                        return True
+                    if len(shorter) >= 18 and shorter in longer:
+                        return True
                     return False
-                if left == right:
-                    return True
-                shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
-                if len(shorter) >= 18 and longer.startswith(shorter):
-                    return True
-                if len(shorter) >= 18 and shorter in longer:
-                    return True
-                return False
 
-            remote_index: dict[str, dict[str, str | None]] = {}
-            remote_titles: list[tuple[str, dict[str, str | None]]] = []
-            for item in remote_items:
-                url = str(item.get("url") or "").strip()
-                appmsg_id = str(item.get("appmsg_id") or "").strip()
-                title = normalize_title(item.get("title"))
-                if url:
-                    remote_index[url] = item
-                if appmsg_id:
-                    remote_index[f"appmsg:{appmsg_id}"] = item
-                if title:
-                    remote_titles.append((title, item))
+                remote_index: dict[str, dict[str, str | None]] = {}
+                remote_titles: list[tuple[str, dict[str, str | None]]] = []
+                matched_remote_titles: set[str] = set()
+                for item in remote_items:
+                    url = str(item.get("url") or "").strip()
+                    appmsg_id = str(item.get("appmsg_id") or "").strip()
+                    title = normalize_title(item.get("title"))
+                    if url:
+                        remote_index[url] = item
+                    if appmsg_id:
+                        remote_index[f"appmsg:{appmsg_id}"] = item
+                    if title:
+                        remote_titles.append((title, item))
 
-            for brief in state.get("briefs", []):
-                if not isinstance(brief, dict):
-                    continue
-                previous_synced = str(brief.get("stage") or "") == "synced"
-                remote_match = None
-                remote_appmsg_id = str(brief.get("wechat_remote_appmsg_id") or "").strip()
-                remote_url = str(brief.get("wechat_editor_url") or "").strip()
-                brief_title = normalize_title(brief.get("title"))
-                if remote_appmsg_id:
-                    remote_match = remote_index.get(f"appmsg:{remote_appmsg_id}")
-                if not remote_match and remote_url:
-                    remote_match = remote_index.get(remote_url)
-                if not remote_match and brief_title:
-                    for candidate_title, candidate_item in remote_titles:
-                        if title_matches(candidate_title, brief_title):
-                            remote_match = candidate_item
-                            break
+                if remote_items:
+                    empty_confirmations = 0
+                else:
+                    empty_confirmations += 1
+                    empty_confirmed = empty_confirmations >= 3
+                    step_logs.append(f"远端草稿箱为空候选，第 {empty_confirmations}/3 次。")
 
-                if remote_match:
-                    matched_count += 1
-                    brief["stage"] = "synced"
-                    brief["wechat_editor_url"] = str(remote_match.get("url") or brief.get("wechat_editor_url") or "")
-                    brief["wechat_remote_appmsg_id"] = str(remote_match.get("appmsg_id") or brief.get("wechat_remote_appmsg_id") or "") or None
-                    brief["last_error"] = None
-                    brief["updated_at"] = now_iso()
-                    continue
+                for brief in state.get("briefs", []):
+                    if not isinstance(brief, dict):
+                        continue
+                    previous_synced = str(brief.get("stage") or "") == "synced"
+                    remote_match = None
+                    remote_appmsg_id = str(brief.get("wechat_remote_appmsg_id") or "").strip()
+                    remote_url = str(brief.get("wechat_editor_url") or "").strip()
+                    brief_title = normalize_title(brief.get("title"))
+                    if remote_appmsg_id:
+                        remote_match = remote_index.get(f"appmsg:{remote_appmsg_id}")
+                    if not remote_match and remote_url:
+                        remote_match = remote_index.get(remote_url)
+                    if not remote_match and brief_title:
+                        for candidate_title, candidate_item in remote_titles:
+                            if title_matches(candidate_title, brief_title):
+                                remote_match = candidate_item
+                                break
 
-                if previous_synced:
-                    missing_count += 1
-                    brief["stage"] = "prepared"
-                    brief["wechat_editor_url"] = None
-                    brief["wechat_remote_appmsg_id"] = None
-                    brief["preview_url"] = None
-                    brief["last_error"] = "微信草稿箱中未找到对应草稿，可能已被删除。"
-                    brief["updated_at"] = now_iso()
+                    if remote_match:
+                        matched_count += 1
+                        brief["stage"] = "synced"
+                        brief["delivery_status"] = "verified"
+                        matched_title = normalize_title(remote_match.get("title"))
+                        if matched_title:
+                            matched_remote_titles.add(matched_title)
+                        remote_match_url = str(remote_match.get("url") or "").strip()
+                        remote_match_appmsg_id = str(remote_match.get("appmsg_id") or "").strip()
+                        if remote_match_url:
+                            brief["wechat_editor_url"] = remote_match_url
+                        if remote_match_appmsg_id:
+                            brief["wechat_remote_appmsg_id"] = remote_match_appmsg_id
+                        brief["last_error"] = None
+                        brief["last_delivery_error_kind"] = None
+                        brief["last_verified_at"] = now_iso()
+                        brief["updated_at"] = now_iso()
+                        diff_logs.append(f"=远端草稿 \"{brief.get('title') or '未命名简报'}\" 状态无变化")
+                        continue
 
-        if remote_items:
-            message = (
-                f"已检查微信草稿箱，共读取 {len(remote_items)} 条远端草稿；"
-                f"匹配本地简报 {matched_count} 条，发现缺失 {missing_count} 条。"
+                    entered_formal_draft_box = any("已进入草稿箱页面" in log for log in step_logs)
+                    scraped_formal_draft_box = any("共读取到" in log for log in step_logs)
+                    if previous_synced and entered_formal_draft_box and scraped_formal_draft_box and (remote_items or empty_confirmed):
+                        missing_count += 1
+                        brief["stage"] = "prepared"
+                        brief["delivery_status"] = "target_missing"
+                        brief["wechat_editor_url"] = None
+                        brief["wechat_remote_appmsg_id"] = None
+                        brief["preview_url"] = None
+                        brief["last_error"] = "微信草稿箱中未找到对应草稿，可能已被删除。"
+                        brief["last_delivery_error_kind"] = "target_missing"
+                        brief["last_synced_revision"] = None
+                        brief["last_successful_upload_at"] = None
+                        brief["updated_at"] = now_iso()
+                        diff_logs.append(f"-远端草稿 \"{brief.get('title') or '未命名简报'}\" 已消失，本地 {brief.get('id') or 'brief'} 回退为 prepared")
+
+                local_titles = {
+                    normalize_title(brief.get("title"))
+                    for brief in state.get("briefs", [])
+                    if isinstance(brief, dict) and normalize_title(brief.get("title"))
+                }
+                for candidate_title, _candidate_item in remote_titles:
+                    if candidate_title in matched_remote_titles:
+                        continue
+                    if candidate_title not in local_titles:
+                        diff_logs.append(f"+新增远端草稿 \"{candidate_title}\"（未匹配本地简报）")
+
+            if remote_items:
+                message = (
+                    f"已检查微信草稿箱，共读取 {len(remote_items)} 条远端草稿；"
+                    f"匹配本地简报 {matched_count} 条，发现缺失 {missing_count} 条。"
+                )
+            else:
+                if empty_confirmed:
+                    message = (
+                        "已检查微信草稿箱，当前远端草稿为 0 条；"
+                        f"匹配本地简报 {matched_count} 条，发现缺失 {missing_count} 条。"
+                    )
+                else:
+                    message = (
+                        f"已检查微信草稿箱，本次读取到 0 条远端草稿，正在做空列表确认（{empty_confirmations}/3）；"
+                        f"当前先保留本地已同步状态。"
+                    )
+            if browser.get("last_error"):
+                previous_items = previous_check.get("items", []) if isinstance(previous_check.get("items"), list) else []
+                preserved_remote_count = int(previous_check.get("remote_count", len(previous_items)) or 0)
+                preserved_matched = int(previous_check.get("matched_count", 0) or 0)
+                preserved_missing = int(previous_check.get("missing_count", 0) or 0)
+                fallback_message = (
+                    f"本次检查失败，当前展示最近一次成功读取结果：远端 {preserved_remote_count} 条，"
+                    f"已匹配 {preserved_matched} 条，待核对 {preserved_missing} 条。"
+                )
+                result_payload = {
+                    "checked_at": now_iso(),
+                    "remote_count": preserved_remote_count,
+                    "matched_count": preserved_matched,
+                    "missing_count": preserved_missing,
+                    "items": previous_items[:30],
+                    "message": fallback_message if previous_items else str(browser.get("last_error") or "微信草稿箱检查失败。"),
+                    "empty_confirmations": int(previous_check.get("empty_confirmations", 0) or 0),
+                }
+                for brief in state.get("briefs", []):
+                    if not isinstance(brief, dict):
+                        continue
+                    if str(brief.get("stage") or "") == "synced":
+                        brief["delivery_status"] = "check_failed"
+                        brief["last_delivery_error_kind"] = "check_failed"
+            else:
+                result_payload = {
+                    "checked_at": now_iso(),
+                    "remote_count": len(remote_items),
+                    "matched_count": matched_count,
+                    "missing_count": missing_count,
+                    "items": remote_items[:30],
+                    "message": message,
+                    "empty_confirmations": empty_confirmations,
+                }
+            state["browser"]["wechat"]["last_draft_check"] = result_payload
+            self._append_log(
+                state,
+                "success" if not browser.get("last_error") else "warning",
+                "browser",
+                str(result_payload["message"]),
+                stream="business_event",
+                actor="dashboard",
+                detail=" | ".join(step_logs[-3:]),
             )
-        else:
-            message = (
-                "已检查微信草稿箱，当前远端草稿为 0 条；"
-                f"匹配本地简报 {matched_count} 条，发现缺失 {missing_count} 条。"
+            state["publish_tasks"].insert(
+                0,
+                create_publish_task(
+                    "session-wechat",
+                    "check_wechat_drafts",
+                    "blocked" if browser.get("last_error") else "completed",
+                    str(result_payload["message"]),
+                    "dashboard",
+                    str(state["channels"]["wechat"]["selectors_version"]),
+                    artifacts=artifacts,
+                    step_logs=step_logs + diff_logs[:8],
+                ),
             )
-        result_payload = {
-            "checked_at": now_iso(),
-            "remote_count": len(remote_items),
-            "matched_count": matched_count,
-            "missing_count": missing_count,
-            "items": remote_items[:30],
-            "message": str(browser.get("last_error") or message),
-        }
-        state["browser"]["wechat"]["last_draft_check"] = result_payload
-        self._append_log(
-            state,
-            "success" if not browser.get("last_error") else "warning",
-            "browser",
-            message if not browser.get("last_error") else "微信草稿箱检查未完全成功。",
-            stream="business_event",
-            actor="dashboard",
-            detail=" | ".join(step_logs[-3:]),
-        )
-        state["publish_tasks"].insert(
-            0,
-            create_publish_task(
-                "session-wechat",
-                "check_wechat_drafts",
-                "blocked" if browser.get("last_error") else "completed",
-                message,
-                "dashboard",
-                str(state["channels"]["wechat"]["selectors_version"]),
-                artifacts=artifacts,
-                step_logs=step_logs,
-            ),
-        )
-        state["publish_tasks"] = state["publish_tasks"][:80]
-        self._write(state)
-        return WeChatDraftSyncCheckResult(
-            checked_at=str(result_payload["checked_at"]),
-            remote_count=int(result_payload["remote_count"]),
-            matched_count=int(result_payload["matched_count"]),
-            missing_count=int(result_payload["missing_count"]),
-            items=[WeChatRemoteDraftItem(**item) for item in remote_items[:30]],
-            message=str(result_payload["message"]),
-        )
+            state["publish_tasks"] = state["publish_tasks"][:80]
+            self._write(state)
+            return WeChatDraftSyncCheckResult(
+                checked_at=str(result_payload["checked_at"]),
+                remote_count=int(result_payload["remote_count"]),
+                matched_count=int(result_payload["matched_count"]),
+                missing_count=int(result_payload["missing_count"]),
+                items=[WeChatRemoteDraftItem(**item) for item in result_payload["items"]],
+                message=str(result_payload["message"]),
+            )
 
     def get_publish_backends(self) -> list[PublishBackendStatus]:
         state = self._upgrade_state(self._read())
@@ -5454,18 +5178,6 @@ class StudioStore:
         state = self._upgrade_state(self._read())
         self._write(state)
         return [LogItem(**item) for item in state["logs"]]
-
-    def _candidate_by_normalized(self, state: dict[str, Any]) -> dict[str, dict[str, Any]]:
-        mapping: dict[str, dict[str, Any]] = {}
-        for candidate in state["candidates"]:
-            mapping.setdefault(candidate["normalized_item_id"], candidate)
-        return mapping
-
-    def _draft_by_candidate(self, state: dict[str, Any]) -> dict[str, dict[str, Any]]:
-        mapping: dict[str, dict[str, Any]] = {}
-        for draft in state["drafts"]:
-            mapping.setdefault(draft["candidate_topic_id"], draft)
-        return mapping
 
     def _latest_collected_at(self, raw_lookup: dict[str, dict[str, Any]], raw_ids: list[str]) -> str | None:
         times = [raw_lookup[item_id].get("collected_at") for item_id in raw_ids if item_id in raw_lookup]
@@ -5523,7 +5235,7 @@ class StudioStore:
             if str(item.get("stage") or "") == "failed" or str(item.get("last_error") or "").strip()
         }
         blocked_publish_ids.update(
-            str(item.get("draft_id") or "")
+            str(item.get("target_id") or "")
             for item in state.get("publish_tasks", [])
             if item.get("status") in {"blocked", "failed"}
         )
@@ -5533,19 +5245,15 @@ class StudioStore:
             total_sources=len(state["sources"]),
             latest_collected_at=freshness.latest_collected_at,
             latest_published_at=freshness.latest_published_at,
-            waiting_review=len([item for item in state.get("briefs", []) if str(item.get("stage") or "") == "prepared"]),
+            pending_briefs=len([item for item in state.get("briefs", []) if str(item.get("stage") or "") == "prepared"]),
             blocked_publish_count=len([item for item in blocked_publish_ids if item]),
         )
 
     def _intel_stream(self, state: dict[str, Any]) -> list[IntelStreamItem]:
         raw_lookup = {item["id"]: item for item in state["raw_items"]}
-        candidate_by_normalized = self._candidate_by_normalized(state)
-        draft_by_candidate = self._draft_by_candidate(state)
         stream: list[IntelStreamItem] = []
 
         for normalized in state["normalized_items"]:
-            candidate = candidate_by_normalized.get(normalized["id"])
-            draft = draft_by_candidate.get(candidate["id"]) if candidate else None
             collected_at = self._latest_collected_at(raw_lookup, normalized.get("raw_item_ids", []))
             stream.append(
                 IntelStreamItem(
@@ -5559,10 +5267,6 @@ class StudioStore:
                     published_at=normalized.get("published_at"),
                     collected_at=collected_at,
                     time_lag_minutes=minutes_between(normalized.get("published_at"), collected_at),
-                    candidate_status=candidate.get("status") if candidate else None,
-                    draft_stage=draft.get("pipeline_stage") if draft else None,
-                    candidate_id=candidate.get("id") if candidate else None,
-                    draft_id=draft.get("id") if draft else None,
                 )
             )
 
@@ -5603,18 +5307,12 @@ class StudioStore:
 
     def _github_watch(self, state: dict[str, Any]) -> list[GithubSignalItem]:
         sources_by_key = self._sources_by_key(state)
-        normalized_by_link = {item["link"]: item for item in state["normalized_items"]}
-        candidate_by_normalized = self._candidate_by_normalized(state)
-        draft_by_candidate = self._draft_by_candidate(state)
         github_items: list[GithubSignalItem] = []
 
         for raw_item in state["raw_items"]:
             source = sources_by_key.get(raw_item["source_key"])
             if not self._is_github_signal(raw_item, source):
                 continue
-            normalized = normalized_by_link.get(raw_item.get("link"))
-            candidate = candidate_by_normalized.get(normalized["id"]) if normalized else None
-            draft = draft_by_candidate.get(candidate["id"]) if candidate else None
             github_items.append(
                 GithubSignalItem(
                     id=raw_item["id"],
@@ -5625,10 +5323,6 @@ class StudioStore:
                     source_name=raw_item.get("source_name", ""),
                     published_at=raw_item.get("published_at"),
                     collected_at=raw_item.get("collected_at"),
-                    candidate_status=candidate.get("status") if candidate else None,
-                    draft_stage=draft.get("pipeline_stage") if draft else None,
-                    candidate_id=candidate.get("id") if candidate else None,
-                    draft_id=draft.get("id") if draft else None,
                 )
             )
 
@@ -5658,22 +5352,22 @@ class StudioStore:
             collect_status = "idle"
 
         if str(runtime.get("current_cycle") or "") == "deep_dive":
-            candidate_status = "running"
+            admission_status = "running"
         elif state.get("intel_events"):
-            candidate_status = "healthy"
+            admission_status = "healthy"
         elif state["raw_items"]:
-            candidate_status = "warning"
+            admission_status = "warning"
         else:
-            candidate_status = "idle"
+            admission_status = "idle"
 
         if str(runtime.get("current_cycle") or "") in {"deep_dive", "briefing"}:
-            draft_status = "running"
+            briefing_status = "running"
         elif deep_dive_errors or brief_errors:
-            draft_status = "warning"
+            briefing_status = "warning"
         elif state.get("event_deep_dives") or state.get("briefs"):
-            draft_status = "healthy"
+            briefing_status = "healthy"
         else:
-            draft_status = "idle"
+            briefing_status = "idle"
 
         if pending_briefs:
             review_status = "warning"
@@ -5737,8 +5431,8 @@ class StudioStore:
 
         stages = [
             ChainStateCard(key="collect", label="采集", status=collect_status, detail=f"健康 {len([item for item in state['sources'] if item['health_status'] == 'healthy'])}/{len(state['sources'])}"),
-            ChainStateCard(key="candidate", label="准入", status=candidate_status, detail=f"{len(state.get('intel_events', []))} 个事件"),
-            ChainStateCard(key="draft", label="深挖/简报", status=draft_status, detail=f"{len(state.get('event_deep_dives', []))} 次深挖 / {len(state.get('briefs', []))} 条简报"),
+            ChainStateCard(key="admission", label="准入", status=admission_status, detail=f"{len(state.get('intel_events', []))} 个事件"),
+            ChainStateCard(key="briefing", label="深挖/简报", status=briefing_status, detail=f"{len(state.get('event_deep_dives', []))} 次深挖 / {len(state.get('briefs', []))} 条简报"),
             ChainStateCard(key="review", label="待交付", status=review_status, detail=f"{len(pending_briefs)} 条待上传简报"),
             ChainStateCard(key="wechat", label="微信会话", status=wechat_status, detail="已登录" if browser.get("logged_in") else "未登录"),
             ChainStateCard(key="publish", label="发布", status=publish_status, detail=f"{len(blocked_tasks)} 条阻断记录"),
@@ -5754,8 +5448,8 @@ class StudioStore:
 
         return ExecutionChainSnapshot(
             collect_status=collect_status,
-            candidate_status=candidate_status,
-            draft_status=draft_status,
+            admission_status=admission_status,
+            briefing_status=briefing_status,
             review_status=review_status,
             wechat_status=wechat_status,
             publish_status=publish_status,
@@ -6006,7 +5700,6 @@ class StudioStore:
             event["watchlisted"] = True
             event["ignored"] = False
             state["normalized_items"] = self._project_normalized_items_from_events(state)
-            state["candidates"] = self._project_candidates_from_events(state)
             self._append_log(state, "success", "intel", f"已加入重点观察：{event['title']}", actor="dashboard")
             self._write(state)
             return IntelEvent(**event)
@@ -6019,7 +5712,6 @@ class StudioStore:
             event["watchlisted"] = False
             state["intel_alerts"] = [item for item in state.get("intel_alerts", []) if item.get("event_id") != event_id]
             state["normalized_items"] = self._project_normalized_items_from_events(state)
-            state["candidates"] = self._project_candidates_from_events(state)
             self._append_log(state, "warning", "intel", f"已忽略事件：{event['title']}", actor="dashboard")
             self._write(state)
             return IntelEvent(**event)
@@ -6215,16 +5907,10 @@ class StudioStore:
         execution_chain = self._execution_chain(snapshot, browser)
         entity_watchlist_summary = self._build_entity_watchlist_summary(snapshot)
         stats = {
-            "current_mode": snapshot["current_mode"],
-            "mode_label": self._current_automation_mode_def(snapshot)["label"],
             "total_sources": top_bar.total_sources,
             "healthy_sources": top_bar.healthy_sources,
             "collected_today": freshness.items_24h,
-            "candidate_count": len(snapshot["intel_events"]),
-            "total_drafts": len(snapshot["drafts"]),
-            "waiting_review": top_bar.waiting_review,
-            "preview_ready": len([item for item in snapshot["drafts"] if item["pipeline_stage"] == "preview_ready"]),
-            "published_today": len([item for item in snapshot["drafts"] if item["pipeline_stage"] == "published"]),
+            "event_count": len(snapshot["intel_events"]),
             "deep_dive_ready": len([item for item in snapshot.get("event_deep_dives", []) if str(item.get("status") or "") in {"ready", "partial"}]),
             "brief_total": len(snapshot.get("briefs", [])),
             "brief_prepared": len([item for item in snapshot.get("briefs", []) if str(item.get("stage") or "") == "prepared"]),
@@ -6249,10 +5935,7 @@ class StudioStore:
             recent_alerts_24h=recent_alerts_24h,
             recent_events_24h=recent_events_24h,
             entity_watchlist_summary=[EntityWatchlistSummaryItem(**item) for item in entity_watchlist_summary],
-            current_mode=ModeDefinition(**self._current_mode_def(snapshot)),
-            drafts=[DraftItem(**item) for item in snapshot["drafts"][:6]],
             recent_logs=[LogItem(**item) for item in snapshot["logs"][:8]],
-            recent_candidates=[CandidateTopic(**item) for item in snapshot["candidates"][:6]],
             briefs=[BriefItem(**item) for item in snapshot.get("briefs", [])[:8]],
             deep_dives=[EventDeepDive(**item) for item in snapshot.get("event_deep_dives", [])[:8]],
             sources=[SourceConnector(**item) for item in snapshot["sources"]],

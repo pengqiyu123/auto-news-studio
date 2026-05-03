@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
+import os
 from typing import Any
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException, UploadFile, File
@@ -15,23 +16,17 @@ from .models import (
     AutomationModesResponse,
     AutomationProfilesResponse,
     AutomationModeSelectionPayload,
-    BatchDraftResponse,
     BriefCopyPackageResponse,
     BriefResponse,
     BriefsResponse,
     BrowserSessionPayload,
     BrowserSessionResponse,
-    CandidateDraftPayload,
-    CandidatesResponse,
     ChannelConfigPayload,
     CreateSourcePayload,
     DiscoveryItemsResponse,
     DictEnvelope,
     EntityWatchlistPayload,
     EntityWatchlistResponse,
-    DraftApprovalPayload,
-    DraftContentPayload,
-    DraftsResponse,
     EventDeepDivePayload,
     EventDeepDiveResponse,
     EventDeepDivesResponse,
@@ -46,7 +41,6 @@ from .models import (
     LLMTestResult,
     LLMUsageResponse,
     LogsResponse,
-    ModeSelectionPayload,
     PublishTasksResponse,
     PublishBackendStatusResponse,
     ReferenceProjectsResponse,
@@ -59,19 +53,95 @@ from .models import (
     SourcesResponse,
     WeChatChannelResponse,
     WeChatDraftSyncCheckResponse,
+    WeChatMappingResponse,
+    DictOkResponse,
 )
+from .publishers import WECHAT_BROWSER_MANAGER
 from .store import StudioStore
 
 
 store = StudioStore()
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+RUNTIME_DIR = Path(__file__).resolve().parents[2] / "runtime"
+BACKEND_PID_FILE = RUNTIME_DIR / "backend.pid"
 scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 SCHEDULER_TICK_SECONDS = 10
+WECHAT_DRAFT_POLL_SECONDS = 30
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _acquire_backend_pid_lock() -> None:
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    if BACKEND_PID_FILE.exists():
+        try:
+            existing_pid = int(BACKEND_PID_FILE.read_text(encoding="utf-8").strip() or "0")
+        except Exception:
+            existing_pid = 0
+        if existing_pid and existing_pid != os.getpid() and _pid_is_alive(existing_pid):
+            raise RuntimeError(f"后端已在运行 (PID={existing_pid})，请先停止旧进程再启动。")
+    BACKEND_PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+
+
+def _release_backend_pid_lock() -> None:
+    try:
+        if BACKEND_PID_FILE.exists():
+            recorded_pid = int(BACKEND_PID_FILE.read_text(encoding="utf-8").strip() or "0")
+            if recorded_pid == os.getpid():
+                BACKEND_PID_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    _acquire_backend_pid_lock()
+    WECHAT_BROWSER_MANAGER.startup()
+    if not scheduler.running:
+        scheduler.add_job(
+            store.run_automation_cycle,
+            "interval",
+            seconds=SCHEDULER_TICK_SECONDS,
+            id="automation-cycle",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            store.run_background_wechat_draft_check,
+            "interval",
+            seconds=WECHAT_DRAFT_POLL_SECONDS,
+            id="wechat-draft-poll",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+        scheduler.start()
+        store.reset_runtime_on_boot(message="服务启动后自动运行保持关闭，需要在驾驶舱手动启动。")
+    try:
+        yield
+    finally:
+        if scheduler.running:
+            with suppress(Exception):
+                scheduler.shutdown(wait=False)
+        store.reset_runtime_on_boot(message="服务关闭时已清空自动运行状态。")
+        WECHAT_BROWSER_MANAGER.shutdown()
+        _release_backend_pid_lock()
+
 
 app = FastAPI(
     title="Auto News Studio API",
     version="0.2.0",
     description="自动化新闻助手运营后台 API，覆盖信息采集、候选选题、公众号草稿和浏览器会话。",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -84,6 +154,12 @@ app.add_middleware(
 
 if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="frontend-assets")
+
+
+def _http_from_value_error(exc: ValueError) -> HTTPException:
+    message = str(exc)
+    status_code = 404 if message.startswith("未找到") else 400
+    return HTTPException(status_code=status_code, detail=message)
 
 
 @app.get("/api/health")
@@ -171,50 +247,6 @@ def ignore_event(event_id: str):
         return IntelEventResponse(item=store.ignore_event(event_id))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.on_event("startup")
-async def startup_scheduler() -> None:
-    if scheduler.running:
-        return
-    scheduler.add_job(
-        store.run_automation_cycle,
-        "interval",
-        # Keep the polling cadence short so scheduled starts and loop reruns
-        # transition promptly after their due time instead of feeling "stuck".
-        seconds=SCHEDULER_TICK_SECONDS,
-        id="automation-cycle",
-        max_instances=1,
-        coalesce=True,
-        replace_existing=True,
-    )
-    scheduler.start()
-    store.reset_runtime_on_boot(message="服务启动后自动运行保持关闭，需要在驾驶舱手动启动。")
-
-
-@app.on_event("shutdown")
-async def shutdown_scheduler() -> None:
-    if scheduler.running:
-        with suppress(Exception):
-            scheduler.shutdown(wait=False)
-    store.reset_runtime_on_boot(message="服务关闭时已清空自动运行状态。")
-
-
-@app.get("/api/admin/modes")
-def list_modes():
-    return {
-        "current": store.get_current_mode(),
-        "items": store.list_modes(),
-    }
-
-
-@app.put("/api/admin/modes/current")
-def set_current_mode(payload: ModeSelectionPayload):
-    try:
-        mode = store.set_current_mode(payload.mode)
-        return {"current": mode}
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/admin/automation/modes", response_model=AutomationModesResponse)
@@ -349,35 +381,12 @@ def sync_source(source_key: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.get("/api/admin/candidates", response_model=CandidatesResponse)
-def list_candidates():
-    return CandidatesResponse(items=store.list_candidates())
-
-
-@app.post("/api/admin/candidates/{candidate_id}/draft")
-def create_draft_from_candidate(candidate_id: str, payload: CandidateDraftPayload | None = None):
-    try:
-        mode = payload.publish_mode if payload else None
-        return {"item": store.create_draft_from_candidate(candidate_id, publish_mode=mode)}
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/api/admin/intel/events/{event_id}/draft")
-def create_draft_from_event(event_id: str, payload: CandidateDraftPayload | None = None):
-    try:
-        mode = payload.publish_mode if payload else None
-        return {"item": store.create_draft_from_event(event_id, publish_mode=mode)}
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
 @app.post("/api/admin/intel/events/{event_id}/deep-dive", response_model=EventDeepDiveResponse)
 def create_event_deep_dive(event_id: str, payload: EventDeepDivePayload | None = None):
     try:
         return EventDeepDiveResponse(item=store.create_event_deep_dive(event_id, force=bool(payload.force) if payload else False))
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise _http_from_value_error(exc) from exc
 
 
 @app.get("/api/admin/intel/deep-dives", response_model=EventDeepDivesResponse)
@@ -390,7 +399,7 @@ def get_event_deep_dive(event_id: str):
     try:
         return EventDeepDiveResponse(item=store.get_event_deep_dive(event_id))
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise _http_from_value_error(exc) from exc
 
 
 @app.post("/api/admin/intel/events/{event_id}/brief", response_model=BriefResponse)
@@ -398,7 +407,7 @@ def create_brief_from_event(event_id: str):
     try:
         return BriefResponse(item=store.create_brief_from_event(event_id))
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise _http_from_value_error(exc) from exc
 
 
 @app.get("/api/admin/briefs", response_model=BriefsResponse)
@@ -411,7 +420,7 @@ def get_brief(brief_id: str):
     try:
         return BriefResponse(item=store.get_brief(brief_id))
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise _http_from_value_error(exc) from exc
 
 
 @app.post("/api/admin/briefs/{brief_id}/wechat-draft", response_model=BriefResponse)
@@ -419,7 +428,7 @@ def sync_brief_wechat_draft(brief_id: str):
     try:
         return BriefResponse(item=store.sync_brief_wechat_draft(brief_id))
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise _http_from_value_error(exc) from exc
 
 
 @app.post("/api/admin/briefs/{brief_id}/copy-package", response_model=BriefCopyPackageResponse)
@@ -427,74 +436,15 @@ def copy_brief_package(brief_id: str):
     try:
         return BriefCopyPackageResponse(markdown=store.build_brief_copy_package(brief_id))
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise _http_from_value_error(exc) from exc
 
 
-@app.post("/api/admin/candidates/drafts/batch", response_model=BatchDraftResponse)
-def batch_create_drafts():
-    return store.batch_create_drafts()
-
-
-@app.get("/api/admin/drafts", response_model=DraftsResponse)
-def list_drafts():
-    return DraftsResponse(items=store.list_drafts())
-
-
-@app.delete("/api/admin/drafts/{draft_id}")
-def delete_draft(draft_id: str):
+@app.delete("/api/admin/briefs/{brief_id}", response_model=DictOkResponse)
+def delete_brief(brief_id: str, remote: str = "auto"):
     try:
-        store.delete_draft(draft_id)
-        return {"ok": True}
+        return store.delete_brief(brief_id, remote=remote)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/api/admin/drafts/{draft_id}/regenerate")
-def regenerate_draft(draft_id: str):
-    try:
-        return {"item": store.regenerate_draft(draft_id)}
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/api/admin/drafts/{draft_id}/approve")
-def approve_draft(draft_id: str, payload: DraftApprovalPayload):
-    try:
-        return {"item": store.approve_draft(draft_id, payload.approved)}
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/api/admin/drafts/{draft_id}/wechat-draft")
-def sync_wechat_draft(draft_id: str):
-    try:
-        return {"item": store.sync_wechat_draft(draft_id)}
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/api/admin/drafts/{draft_id}/open-preview")
-def open_preview(draft_id: str):
-    try:
-        return {"item": store.open_preview(draft_id)}
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/api/admin/drafts/{draft_id}/publish")
-def publish_draft(draft_id: str):
-    try:
-        return {"item": store.publish_draft(draft_id)}
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.put("/api/admin/drafts/{draft_id}/content")
-def update_draft_content(draft_id: str, payload: DraftContentPayload):
-    try:
-        return {"item": store.update_draft_content(draft_id, payload.markdown, payload.title)}
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise _http_from_value_error(exc) from exc
 
 
 IMAGES_DIR = Path(__file__).resolve().parents[1] / "data" / "images"
@@ -561,7 +511,33 @@ def check_browser_session():
 
 @app.post("/api/admin/browser/wechat/check-drafts", response_model=WeChatDraftSyncCheckResponse)
 def check_wechat_draft_box():
-    return WeChatDraftSyncCheckResponse(item=store.check_wechat_draft_box())
+    try:
+        return WeChatDraftSyncCheckResponse(item=store.check_wechat_draft_box())
+    except ValueError as exc:
+        raise _http_from_value_error(exc) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"微信草稿箱检查失败：{exc}") from exc
+
+
+@app.get("/api/admin/wechat/mapping", response_model=WeChatMappingResponse)
+def get_wechat_mapping():
+    return WeChatMappingResponse(item=store.get_wechat_mapping())
+
+
+@app.post("/api/admin/wechat/mapping/refresh", response_model=WeChatMappingResponse)
+def refresh_wechat_mapping():
+    try:
+        return WeChatMappingResponse(item=store.refresh_wechat_mapping())
+    except ValueError as exc:
+        raise _http_from_value_error(exc) from exc
+
+
+@app.delete("/api/admin/wechat/remote-drafts/{remote_id}", response_model=DictOkResponse)
+def delete_wechat_remote_draft(remote_id: str):
+    try:
+        return store.delete_wechat_remote_draft(remote_id)
+    except ValueError as exc:
+        raise _http_from_value_error(exc) from exc
 
 
 @app.get("/api/admin/publish/backends", response_model=PublishBackendStatusResponse)

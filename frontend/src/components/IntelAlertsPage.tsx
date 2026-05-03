@@ -2,7 +2,8 @@ import { useMemo, useState } from "react";
 
 import { explainAlertsEmptyState } from "../lib/runtimeIntent";
 import { formatDateTime, formatRelativeTime } from "../lib/time";
-import type { HistoryRecordStatus, IntelAlert, IntelAlertHistoryItem, SchedulerStatus } from "../types";
+import { historyStatusLabel, historyStatusTone } from "../lib/eventUtils";
+import type { IntelAlert, IntelAlertHistoryItem, SchedulerStatus } from "../types";
 
 const PAGE_SIZE = 20;
 
@@ -26,18 +27,6 @@ interface IntelAlertsPageProps {
   onSelectedEntityChange: (entityId: string) => void;
   onDeepDive: (eventId: string) => Promise<void>;
   busyEventId?: string | null;
-}
-
-function historyStatusLabel(status: HistoryRecordStatus) {
-  if (status === "active") return "仍活跃";
-  if (status === "source_uncertain") return "待确认";
-  return "已回落";
-}
-
-function historyStatusTone(status: HistoryRecordStatus) {
-  if (status === "active") return "success";
-  if (status === "source_uncertain") return "warning";
-  return "neutral";
 }
 
 export function IntelAlertsPage({
@@ -134,12 +123,13 @@ export function IntelAlertsPage({
           </select>
         </div>
       </div>
+      <p style={{ marginBottom: "0.5rem", opacity: 0.7 }}>活跃预警 {items.length} 条，其中爆发 {items.filter((i) => i.level === "breakout").length} 条</p>
       <div className="intel-list">
         {visible.length ? visible.map((alert) => {
           const visibleTags = alert.entity_names.slice(0, 3);
           const hiddenTagCount = Math.max(alert.entity_names.length - visibleTags.length, 0);
           return (
-          <article key={alert.id} className="intel-row-card">
+          <article key={alert.id} className="intel-row-card" style={alert.level === "breakout" ? { borderLeft: "3px solid var(--color-danger, #ef4444)", background: "rgba(239,68,68,0.04)" } : undefined}>
             <div className="intel-card-topline">
               <span className={`status-badge status-${alert.level === "breakout" ? "danger" : alert.level === "rising" ? "warning" : alert.level === "watch" ? "success" : "neutral"}`}>
                 {alert.level}

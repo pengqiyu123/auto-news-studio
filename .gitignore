@@ -54,3 +54,35 @@ frontend/=1.0.0
 
 # Local test utilities
 llm_live_test.py
+
+# Codex / agent temp files
+frontend/src/_*.py
+frontend/src/_*.js
+frontend/src/_*.cjs
+frontend/src/_*.txt
+backend/app/_*.py
+backend/app/_*.js
+backend/app/_*.cjs
+backend/app/_*.txt
+
+# Plan / backlog documents (internal only)
+PLAN*.md
+BACKLOG*.md
+
+# CLAUDE.md (personal AI instructions, not for distribution)
+CLAUDE.md
+
+# Root-level research files (not part of studio)
+projects/
+docs/
+*.txt
+
+# Internal reference documents
+REFERENCE_MAP.md
+references/
+
+# Dev utilities
+backend/bench_*.py
+
+# Sidecar services (separate repo)
+services/

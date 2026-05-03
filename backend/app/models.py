@@ -17,34 +17,15 @@ from .models_llm import (
 )
 
 
-PublishMode = Literal[
-    "draft_only",
-    "draft_and_preview",
-    "draft_preview_browser",
-    "auto_send_guarded",
-    "full_auto",
-]
-
 AutomationMode = Literal[
     "radar_only",
     "radar_and_draft",
     "full_pipeline",
 ]
-AutomationDraftTrigger = Literal["manual", "after_sync", "scheduled"]
-AutomationDraftDelivery = Literal["local_only", "wechat_draft"]
+AutomationBriefTrigger = Literal["manual", "after_sync", "scheduled"]
+AutomationDeliveryTarget = Literal["local_only", "wechat_draft"]
 AutomationSelectionMode = Literal["all_new", "top_scored"]
 AutomationPublishStrategy = Literal["disabled", "wechat_draft_only", "guarded_send"]
-
-PipelineStage = Literal[
-    "collected",
-    "curated",
-    "drafted",
-    "draft_synced",
-    "preview_ready",
-    "approved",
-    "published",
-    "failed",
-]
 
 AuditStatus = Literal["pending", "approved", "rejected", "not_required"]
 JobStatus = Literal["queued", "running", "completed", "failed"]
@@ -66,14 +47,12 @@ SourceKind = Literal[
 ]
 SourceHealth = Literal["idle", "healthy", "warning", "error"]
 AutomationRunStatus = Literal["idle", "running", "completed", "failed", "abandoned"]
-CandidateStatus = Literal["new", "drafted", "parked"]
 PublishTaskStatus = Literal["pending", "running", "completed", "failed", "blocked"]
 RefreshStatus = Literal["ready", "updated", "pending_retry", "missing"]
 BorrowMode = Literal["direct_copy", "ported", "reference_only"]
 BackendHealth = Literal["healthy", "warning", "offline"]
 ChainStatus = Literal["idle", "running", "healthy", "warning", "blocked"]
 LogStream = Literal["system_runtime", "business_event"]
-ArticleVariant = Literal["flash_explainer"]
 RuntimeControlState = Literal["stopped", "armed", "running", "waiting"]
 RuntimeLaunchMode = Literal["once_now", "once_at", "interval_now", "interval_at"]
 IntelWorkScope = Literal["collect_only", "collect_events", "collect_events_alerts"]
@@ -93,26 +72,13 @@ DeliveryMode = Literal["immediate", "scheduled_batch"]
 AdmissionStrategy = Literal["conservative", "balanced", "aggressive"]
 
 
-class ModeDefinition(BaseModel):
-    key: PublishMode
-    label: str
-    description: str
-    auto_collect: bool
-    auto_draft: bool
-    sync_to_wechat_draft: bool
-    auto_open_preview: bool
-    requires_human_review: bool
-    allow_auto_send: bool
-    allow_auto_retry: bool
-
-
 class AutomationModeDefinition(BaseModel):
     key: AutomationMode
     label: str
     description: str
     auto_collect: bool
-    auto_generate_candidates: bool
-    auto_generate_drafts: bool
+    auto_build_events: bool
+    auto_build_briefs: bool
     auto_publish_enabled: bool
     available: bool = True
 
@@ -120,11 +86,11 @@ class AutomationModeDefinition(BaseModel):
 class AutomationModeProfile(BaseModel):
     mode: AutomationMode
     collect_interval_minutes: int = Field(default=30, ge=5, le=360)
-    draft_trigger: AutomationDraftTrigger = "manual"
-    draft_schedule_time: Optional[str] = None
-    draft_delivery: AutomationDraftDelivery = "local_only"
-    draft_selection: AutomationSelectionMode = "all_new"
-    draft_limit: int = Field(default=10, ge=1, le=100)
+    brief_trigger: AutomationBriefTrigger = "manual"
+    brief_schedule_time: Optional[str] = None
+    delivery_target: AutomationDeliveryTarget = "local_only"
+    selection_mode: AutomationSelectionMode = "all_new"
+    brief_limit: int = Field(default=10, ge=1, le=100)
     publish_strategy: AutomationPublishStrategy = "disabled"
     publish_schedule_time: Optional[str] = None
     require_approval: bool = True
@@ -236,99 +202,9 @@ class NormalizedItem(BaseModel):
     score_breakdown: dict[str, float] = Field(default_factory=dict)
 
 
-class CandidateTopic(BaseModel):
-    id: str
-    normalized_item_id: str
-    title: str
-    summary: str
-    recommended_angle: str
-    article_type: str
-    rationale: str
-    evidence_links: list[str] = Field(default_factory=list)
-    source_names: list[str] = Field(default_factory=list)
-    source_count: int = Field(ge=0)
-    score: float
-    status: CandidateStatus = "new"
-    recommended_mode: PublishMode = "draft_only"
-    facts: list[str] = Field(default_factory=list)
-    angles: list[dict[str, str]] = Field(default_factory=list)
-    selected_angle: Optional[str] = None
-    score_breakdown: dict[str, float] = Field(default_factory=dict)
-    published_at: Optional[str] = None
-    collected_at: Optional[str] = None
-    freshness_bucket: str = "unknown"
-    draft_exists: bool = False
-    normalized_score: float = 0.0
-    evidence_pack: list[dict[str, Any]] = Field(default_factory=list)
-    entity_names: list[str] = Field(default_factory=list)
-    alert_state: Optional[IntelEventState] = None
-    alert_reason: str = ""
-    updated_at: str
-
-
-class BodyBlock(BaseModel):
-    kind: str
-    heading: Optional[str] = None
-    content: str
-    evidence_links: list[str] = Field(default_factory=list)
-    required_image: bool = False
-
-
-class ImageSlot(BaseModel):
-    slot_id: str
-    label: str
-    position: str
-    suggestion: str
-    required_image: bool = False
-    fulfilled: bool = False
-    keywords: list[str] = Field(default_factory=list)
-
-
-class DraftItem(BaseModel):
-    id: str
-    candidate_topic_id: str
-    source_event_id: Optional[str] = None
-    source_alert_level: Optional[str] = None
-    generation_mode: Literal["manual", "automation"] = "manual"
-    draft_window_id: Optional[str] = None
-    title: str
-    section: str
-    source_count: int = Field(ge=0)
-    word_count: int = Field(ge=0)
-    publish_mode: PublishMode
-    pipeline_stage: PipelineStage
-    audit_status: AuditStatus
-    summary: str
-    brief: dict[str, Any] = Field(default_factory=dict)
-    outline: dict[str, Any] = Field(default_factory=dict)
-    article_variant: ArticleVariant = "flash_explainer"
-    reader_summary: str = ""
-    body_blocks: list[BodyBlock] = Field(default_factory=list)
-    image_slots: list[ImageSlot] = Field(default_factory=list)
-    editor_notes: list[str] = Field(default_factory=list)
-    markdown: str
-    html: str
-    wechat_html: str
-    updated_at: str
-    cover_strategy: str
-    cover_suggestion: str
-    risk_flags: list[str] = Field(default_factory=list)
-    blocked_reasons: list[str] = Field(default_factory=list)
-    evidence_links: list[str] = Field(default_factory=list)
-    title_options: list[str] = Field(default_factory=list)
-    composition_trace: dict[str, Any] = Field(default_factory=dict)
-    render_backend: str = "python-template"
-    approval_required: bool = True
-    wechat_draft_id: Optional[str] = None
-    wechat_editor_url: Optional[str] = None
-    wechat_remote_appmsg_id: Optional[str] = None
-    preview_url: Optional[str] = None
-    last_error: Optional[str] = None
-
-
 class PublishTask(BaseModel):
     id: str
-    draft_id: str
+    target_id: str
     action: str
     status: PublishTaskStatus
     stage: str
@@ -353,6 +229,15 @@ class BrowserSessionState(BaseModel):
     last_selector_check: Optional[str] = None
     current_page: Optional[str] = None
     sidecar_health: BackendHealth = "offline"
+    manager_alive: bool = False
+    window_state: Optional[Literal["restored", "minimized", "unknown"]] = "unknown"
+    resident_page: Optional[str] = None
+    busy: bool = False
+    last_reset_reason: Optional[str] = None
+    session_generation: int = 0
+    last_action: Optional[str] = None
+    last_action_phase: Optional[str] = None
+    is_session_level_error: bool = False
     last_draft_check: Optional["WeChatDraftSyncCheckResult"] = None
 
 
@@ -379,6 +264,35 @@ class WeChatDraftSyncCheckResult(BaseModel):
 
 class WeChatDraftSyncCheckResponse(BaseModel):
     item: WeChatDraftSyncCheckResult
+
+
+class WeChatMappingStatus(str):
+    pass
+
+
+class WeChatMappingRow(BaseModel):
+    remote_title: str = ""
+    remote_appmsg_id: Optional[str] = None
+    remote_url: str = ""
+    remote_updated_at: Optional[str] = None
+    local_brief_id: Optional[str] = None
+    local_brief_title: Optional[str] = None
+    local_stage: Optional[BriefStage] = None
+    mapping_status: str = "unresolved"
+
+
+class WeChatMappingSnapshot(BaseModel):
+    checked_at: Optional[str] = None
+    remote_count: int = 0
+    matched_count: int = 0
+    missing_count: int = 0
+    message: str = ""
+    items: list[WeChatRemoteDraftItem] = Field(default_factory=list)
+    mapping_rows: list[WeChatMappingRow] = Field(default_factory=list)
+
+
+class WeChatMappingResponse(BaseModel):
+    item: WeChatMappingSnapshot
 
 
 class PublishBackendStatus(BaseModel):
@@ -432,7 +346,7 @@ class DashboardTopBar(BaseModel):
     total_sources: int
     latest_collected_at: Optional[str] = None
     latest_published_at: Optional[str] = None
-    waiting_review: int
+    pending_briefs: int
     blocked_publish_count: int
 
 
@@ -459,10 +373,6 @@ class IntelStreamItem(BaseModel):
     published_at: Optional[str] = None
     collected_at: Optional[str] = None
     time_lag_minutes: Optional[float] = None
-    candidate_status: Optional[CandidateStatus] = None
-    draft_stage: Optional[PipelineStage] = None
-    candidate_id: Optional[str] = None
-    draft_id: Optional[str] = None
 
 
 class DiscoveryItem(BaseModel):
@@ -526,11 +436,6 @@ class IntelEvent(BaseModel):
     entity_names: list[str] = Field(default_factory=list)
     watchlisted: bool = False
     ignored: bool = False
-    draft_ready: bool = False
-    draft_score: float = 0.0
-    draft_reason: str = ""
-    draft_exists: bool = False
-    draft_id: Optional[str] = None
     deep_dive_id: Optional[str] = None
     brief_id: Optional[str] = None
     deep_dive_status: Optional[DeepDiveStatus] = None
@@ -570,11 +475,6 @@ class IntelAlert(BaseModel):
     triggered_at: str
     entity_ids: list[str] = Field(default_factory=list)
     entity_names: list[str] = Field(default_factory=list)
-    draft_ready: bool = False
-    draft_score: float = 0.0
-    draft_reason: str = ""
-    draft_exists: bool = False
-    draft_id: Optional[str] = None
     deep_dive_id: Optional[str] = None
     brief_id: Optional[str] = None
     deep_dive_status: Optional[DeepDiveStatus] = None
@@ -638,10 +538,18 @@ class BriefItem(BaseModel):
     prompt_package_markdown: str = ""
     wechat_markdown: str = ""
     wechat_html: str = ""
-    wechat_draft_id: Optional[str] = None
+    wechat_target_id: Optional[str] = None
     wechat_editor_url: Optional[str] = None
     wechat_remote_appmsg_id: Optional[str] = None
     preview_url: Optional[str] = None
+    delivery_status: Optional[str] = None
+    delivery_attempt_count: int = 0
+    last_delivery_attempt_at: Optional[str] = None
+    last_verified_at: Optional[str] = None
+    last_delivery_error_kind: Optional[str] = None
+    needs_resync: bool = False
+    last_synced_revision: Optional[str] = None
+    last_successful_upload_at: Optional[str] = None
     last_error: Optional[str] = None
     updated_at: str
 
@@ -815,6 +723,11 @@ class BriefsResponse(BaseModel):
     items: list[BriefItem] = Field(default_factory=list)
 
 
+class DictOkResponse(BaseModel):
+    ok: bool = True
+    message: str = ""
+
+
 class HotClusterCard(BaseModel):
     cluster_id: str
     title: str
@@ -835,10 +748,6 @@ class GithubSignalItem(BaseModel):
     source_name: str
     published_at: Optional[str] = None
     collected_at: Optional[str] = None
-    candidate_status: Optional[CandidateStatus] = None
-    draft_stage: Optional[PipelineStage] = None
-    candidate_id: Optional[str] = None
-    draft_id: Optional[str] = None
 
 
 class IntelSnapshot(BaseModel):
@@ -857,8 +766,8 @@ class ChainStateCard(BaseModel):
 
 class ExecutionChainSnapshot(BaseModel):
     collect_status: ChainStatus
-    candidate_status: ChainStatus
-    draft_status: ChainStatus
+    admission_status: ChainStatus
+    briefing_status: ChainStatus
     review_status: ChainStatus
     wechat_status: ChainStatus
     publish_status: ChainStatus
@@ -879,8 +788,8 @@ class SchedulerStatus(BaseModel):
     current_mode: AutomationMode = "radar_only"
     work_scope: IntelWorkScope = "collect_events_alerts"
     last_collect_at: Optional[str] = None
-    last_candidate_at: Optional[str] = None
-    last_draft_at: Optional[str] = None
+    last_event_sync_at: Optional[str] = None
+    last_brief_at: Optional[str] = None
     next_collect_at: Optional[str] = None
     delivery_mode: DeliveryMode = "immediate"
     delivery_schedule_time: Optional[str] = None
@@ -928,16 +837,10 @@ class RuntimeIntentPayload(BaseModel):
 
 
 class DashboardStats(BaseModel):
-    current_mode: PublishMode
-    mode_label: str
     total_sources: int
     healthy_sources: int
     collected_today: int
-    candidate_count: int
-    total_drafts: int
-    waiting_review: int
-    preview_ready: int
-    published_today: int
+    event_count: int
     deep_dive_ready: int = 0
     brief_total: int = 0
     brief_prepared: int = 0
@@ -973,10 +876,7 @@ class DashboardResponse(BaseModel):
     recent_alerts_24h: list[IntelAlertHistoryItem] = Field(default_factory=list)
     recent_events_24h: list[IntelEventHistoryItem] = Field(default_factory=list)
     entity_watchlist_summary: list[EntityWatchlistSummaryItem] = Field(default_factory=list)
-    current_mode: ModeDefinition
-    drafts: list[DraftItem]
     recent_logs: list[LogItem]
-    recent_candidates: list[CandidateTopic]
     briefs: list[BriefItem] = Field(default_factory=list)
     deep_dives: list[EventDeepDive] = Field(default_factory=list)
     sources: list[SourceConnector]
@@ -986,10 +886,6 @@ class DashboardResponse(BaseModel):
 
 class IntelSnapshotResponse(BaseModel):
     item: IntelSnapshot
-
-
-class ModeSelectionPayload(BaseModel):
-    mode: PublishMode
 
 
 class AutomationModeSelectionPayload(BaseModel):
@@ -1017,22 +913,8 @@ class EntityWatchlistResponse(BaseModel):
     items: list[EntityWatchlistItem] = Field(default_factory=list)
 
 
-class CandidateDraftPayload(BaseModel):
-    publish_mode: Optional[PublishMode] = None
-
-
 class BriefCopyPackageResponse(BaseModel):
     markdown: str = ""
-
-
-class DraftContentPayload(BaseModel):
-    markdown: str
-    title: str
-
-
-class DraftApprovalPayload(BaseModel):
-    approved: bool = True
-
 
 class ChannelConfigPayload(BaseModel):
     app_id: str
@@ -1054,18 +936,9 @@ class ChannelConfigPayload(BaseModel):
 class SourceSyncResponse(BaseModel):
     raw_count: int
     normalized_count: int
-    candidate_count: int
+    event_count: int
     synced_at: str
     warnings: list[str] = Field(default_factory=list)
-
-
-class BatchDraftResponse(BaseModel):
-    processed_count: int
-    created_count: int
-    skipped_count: int
-    failed_count: int
-    draft_ids: list[str] = Field(default_factory=list)
-    message: str = ""
 
 
 class ReferenceProjectsResponse(BaseModel):
@@ -1074,14 +947,6 @@ class ReferenceProjectsResponse(BaseModel):
 
 class SourcesResponse(BaseModel):
     items: list[SourceConnector]
-
-
-class CandidatesResponse(BaseModel):
-    items: list[CandidateTopic]
-
-
-class DraftsResponse(BaseModel):
-    items: list[DraftItem]
 
 
 class EventDeepDivePayload(BaseModel):

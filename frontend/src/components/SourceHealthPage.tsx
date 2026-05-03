@@ -1,4 +1,6 @@
-import { formatDateTime, formatRelativeTime } from "../lib/time";
+import { useMemo, useState } from "react";
+
+import { formatDateTime, formatRelativeTime, formatDurationMs } from "../lib/time";
 import type { SourceConnector } from "../types";
 
 interface SourceHealthPageProps {
@@ -20,6 +22,26 @@ export function SourceHealthPage({
   onSyncSource,
   onSaveSource,
 }: SourceHealthPageProps) {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [expandedSources, setExpandedSources] = useState<Set<string>>(() => {
+    // Warning/error sources are expanded by default
+    const initial = new Set<string>();
+    for (const s of sources) {
+      if (s.health_status === "warning" || s.health_status === "error") {
+        initial.add(s.key);
+      }
+    }
+    return initial;
+  });
+
+  const toggleExpanded = (key: string) => {
+    setExpandedSources((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
   function healthLabel(source: SourceConnector) {
     if (!source.enabled || source.health_status === "idle") return "停用";
     if (source.health_status === "healthy") return "正常";
@@ -27,11 +49,13 @@ export function SourceHealthPage({
     return "异常";
   }
 
-  function formatDurationMs(value?: number | null) {
-    if (value == null) return "暂无";
-    if (value < 1000) return `${value}ms`;
-    return `${(value / 1000).toFixed(1)}s`;
-  }
+  const filteredSources = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    if (!keyword) return sources;
+    return sources.filter((s) =>
+      s.name.toLowerCase().includes(keyword) || s.platform.toLowerCase().includes(keyword)
+    );
+  }, [sources, searchTerm]);
 
   return (
     <section className="panel">
@@ -44,8 +68,17 @@ export function SourceHealthPage({
           {syncing ? "补抓中..." : "全部补抓一次"}
         </button>
       </div>
+      <div className="draft-toolbar">
+        <label className="draft-search">
+          <input
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="搜索来源名称或平台"
+          />
+        </label>
+      </div>
       <div className="intel-list">
-        {sources.length ? sources.map((source) => (
+        {filteredSources.length ? filteredSources.map((source) => (
           <article key={source.key} className="intel-row-card">
             <div className="intel-card-topline">
               <span className={`status-badge status-${source.health_status === "healthy" ? "success" : source.health_status === "warning" ? "warning" : source.health_status === "error" ? "danger" : "neutral"}`}>
@@ -55,6 +88,11 @@ export function SourceHealthPage({
             </div>
             <strong>{source.name}</strong>
             <p>{source.health_detail || "尚未同步"}</p>
+            <button type="button" className="ghost-button compact" onClick={() => toggleExpanded(source.key)} style={{ marginTop: 4 }}>
+              {expandedSources.has(source.key) ? "收起详情" : "展开详情"}
+            </button>
+            {expandedSources.has(source.key) ? (
+              <>
             <div className="intel-score-row">
               <span>最近成功 {formatRelativeTime(source.last_success_at ?? source.last_synced_at, "从未成功")}</span>
               <span>连续失败 {source.consecutive_failures}</span>
@@ -70,6 +108,8 @@ export function SourceHealthPage({
               <span>最近失败 {formatDateTime(source.last_failure_at, { fallback: "暂无" })}</span>
               <span>最近尝试 {formatDateTime(source.last_attempt_at, { fallback: "暂无" })}</span>
             </div>
+              </>
+            ) : null}
             <div className="intel-inline-actions">
               <button
                 type="button"

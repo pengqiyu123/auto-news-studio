@@ -1,4 +1,7 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
 import { formatDateTime, formatDuration } from "../lib/time";
+import { formatRuntimeIssueLabel } from "../lib/runtimeUtils";
 import type { LogItem, SchedulerStatus } from "../types";
 
 interface LogsPanelProps {
@@ -6,16 +9,30 @@ interface LogsPanelProps {
   runtime: SchedulerStatus;
 }
 
-function formatRuntimeIssueLabel(sourceName: string | null | undefined, message: string) {
-  return `${sourceName?.trim() ? `${sourceName}: ` : "系统异常："}${message}`;
-}
-
 export function LogsPanel({ logs, runtime }: LogsPanelProps) {
-  const sortedLogs = [...logs].sort((a, b) => {
+  const [levelFilter, setLevelFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const logEndRef = useRef<HTMLDivElement>(null);
+
+  const sortedLogs = useMemo(() => {
+    const keyword = searchQuery.trim().toLowerCase();
+    return [...logs]
+      .filter((log) => {
+        const matchesLevel = levelFilter === "all" || log.level === levelFilter;
+        const matchesSearch = !keyword || log.message.toLowerCase().includes(keyword);
+        return matchesLevel && matchesSearch;
+      })
+      .sort((a, b) => {
     const ta = a.created_at ?? "";
     const tb = b.created_at ?? "";
     return tb > ta ? 1 : tb < ta ? -1 : 0;
-  });
+    });
+  }, [logs, levelFilter, searchQuery]);
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [sortedLogs.length]);
+
   const cycleSummary = runtime.last_cycle_summary ?? null;
 
   return (
@@ -25,6 +42,30 @@ export function LogsPanel({ logs, runtime }: LogsPanelProps) {
           <p className="eyebrow">日志</p>
           <h2>运行日志</h2>
         </div>
+      </div>
+
+      <div className="intel-chip-filter-bar">
+        <div className="intel-chip-row">
+          {(["all", "info", "warning", "error"] as const).map((level) => (
+            <button
+              key={level}
+              type="button"
+              className={`filter-chip ${levelFilter === level ? "filter-chip-active" : ""}`}
+              onClick={() => setLevelFilter(level)}
+            >
+              {level === "all" ? "全部" : level}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="draft-toolbar">
+        <label className="draft-search">
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="搜索日志内容"
+          />
+        </label>
       </div>
 
       <div className="runtime-card-grid">
@@ -75,11 +116,12 @@ export function LogsPanel({ logs, runtime }: LogsPanelProps) {
             <div className="log-plain-body">
               <span className="log-plain-msg">{log.message}</span>
               <span className="log-plain-meta">{log.stream} / {log.actor}</span>
-              {log.detail ? <pre className="log-plain-detail">{log.detail}</pre> : null}
+              {log.detail ? <pre className="log-plain-detail" style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{log.detail}</pre> : null}
             </div>
           </div>
         ))}
         {!sortedLogs.length ? <p className="empty-state">暂无日志。</p> : null}
+        <div ref={logEndRef} />
       </div>
     </section>
   );

@@ -12,6 +12,23 @@ function Get-ListenerPid {
     return $null
 }
 
+function Get-ProjectBackendProcesses {
+    @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -eq "python.exe" -and ([string]$_.CommandLine) -like "*backend.app.main:app*"
+    })
+}
+
+function Stop-ProjectBackendProcesses {
+    $projectBackends = @(Get-ProjectBackendProcesses)
+    foreach ($proc in $projectBackends) {
+        Write-Host "[WARN] Stopping project backend PID=$($proc.ProcessId)"
+        Stop-Process -Id ([int]$proc.ProcessId) -Force -ErrorAction SilentlyContinue
+    }
+    if ($projectBackends.Count -gt 0) {
+        Start-Sleep -Seconds 2
+    }
+}
+
 function Get-ProcessInfo([int]$ProcessId) {
     Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
 }
@@ -80,6 +97,42 @@ if (-not (Test-Path $frontendDist)) {
     }
 }
 
+$projectBackends = @(Get-ProjectBackendProcesses)
+if ($projectBackends.Count -gt 0) {
+    $staleBackends = @()
+    $healthyVenvBackend = $null
+    foreach ($proc in $projectBackends) {
+        if (Is-BackedByVenv $proc $venvPython) {
+            if (-not $healthyVenvBackend) {
+                $healthyVenvBackend = $proc
+            } else {
+                $staleBackends += $proc
+            }
+        } else {
+            $staleBackends += $proc
+        }
+    }
+
+    foreach ($proc in $staleBackends) {
+        Write-Host "[WARN] Stopping stale project backend PID=$($proc.ProcessId)"
+        Stop-Process -Id ([int]$proc.ProcessId) -Force -ErrorAction SilentlyContinue
+    }
+    if ($staleBackends.Count -gt 0) {
+        Start-Sleep -Seconds 2
+    }
+
+    if ($healthyVenvBackend) {
+        $listenerPid = Get-ListenerPid
+        if ($listenerPid -and $listenerPid -eq [int]$healthyVenvBackend.ProcessId) {
+            Set-Content -Path $pidFile -Value $listenerPid
+            Write-Host "[INFO] Auto News Studio is already running. PID=$listenerPid"
+            Write-Host "URL: $appUrl"
+            Start-Process $appUrl | Out-Null
+            exit 0
+        }
+    }
+}
+
 $listenerPid = Get-ListenerPid
 if ($listenerPid) {
     $listenerProc = Get-ProcessInfo -ProcessId $listenerPid
@@ -124,28 +177,30 @@ $process = Start-Process -FilePath $venvPython `
     -PassThru `
     -WindowStyle Hidden
 
-Set-Content -Path $pidFile -Value $process.Id
-
 $startedPid = [int]$process.Id
 $ready = $false
 
 for ($i = 0; $i -lt 45; $i++) {
     try {
         $response = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8000/api/health" -TimeoutSec 2
-        if ($response.StatusCode -eq 200) {
+        $currentListenerPid = Get-ListenerPid
+        $currentListenerProc = if ($currentListenerPid) { Get-ProcessInfo -ProcessId $currentListenerPid } else { $null }
+        if (
+            ($response.StatusCode -eq 200) -and
+            [bool]$currentListenerPid -and
+            (Is-ProjectBackend $currentListenerProc) -and
+            (Is-BackedByVenv $currentListenerProc $venvPython)
+        ) {
             $ready = $true
             break
         }
     } catch {
     }
-
-    if (-not (Get-Process -Id $startedPid -ErrorAction SilentlyContinue)) {
-        break
-    }
     Start-Sleep -Seconds 1
 }
 
 if (-not $ready) {
+    Stop-ProjectBackendProcesses
     if (Test-Path $pidFile) {
         Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
     }
@@ -160,6 +215,8 @@ if (-not $ready) {
 $listenerPid = Get-ListenerPid
 if ($listenerPid) {
     Set-Content -Path $pidFile -Value $listenerPid
+} elseif (Test-Path $pidFile) {
+    $listenerPid = (Get-Content -Path $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
 }
 
 Write-Host ""

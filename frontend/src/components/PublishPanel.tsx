@@ -6,10 +6,9 @@ import type { BrowserSessionState, PublishBackendStatus, PublishTask, WeChatChan
 import { PublishTaskBadge, SourceHealthBadge } from "./StatusBadge";
 
 const PUBLISH_ACTION_LABELS: Record<string, string> = {
-  open_dashboard: "打开公众号后台",
-  check_browser: "验证浏览器会话",
-  check_wechat_drafts: "检查微信草稿箱",
   sync_wechat_draft: "上传到微信草稿箱",
+  delete_wechat_draft: "删除微信远端草稿",
+  delete_brief: "删除本地简报",
 };
 
 interface PublishPanelProps {
@@ -20,11 +19,9 @@ interface PublishPanelProps {
   isSaving: boolean;
   isRefreshingBrowser: boolean;
   isOpeningBrowser: boolean;
-  isCheckingDraftBox: boolean;
   onSave: (payload: WeChatChannelConfig) => Promise<void>;
   onRefreshBrowser: (payload: Pick<BrowserSessionState, "browser_name" | "user_data_dir">) => Promise<void>;
   onOpenBrowserDashboard: (payload: Pick<BrowserSessionState, "browser_name" | "user_data_dir">) => Promise<void>;
-  onCheckDraftBox: () => Promise<void>;
 }
 
 export function PublishPanel({
@@ -35,11 +32,9 @@ export function PublishPanel({
   isSaving,
   isRefreshingBrowser,
   isOpeningBrowser,
-  isCheckingDraftBox,
   onSave,
   onRefreshBrowser,
   onOpenBrowserDashboard,
-  onCheckDraftBox,
 }: PublishPanelProps) {
   const [form, setForm] = useState<WeChatChannelConfig | null>(config);
 
@@ -72,7 +67,16 @@ export function PublishPanel({
   const statusDescription = isLoggedIn
     ? "当前公众号后台登录态可用，可以继续把简报推进到微信草稿箱。"
     : "先完成浏览器配置，打开公众号后台扫码登录，关闭浏览器后再回来验证。";
-  const latestDraftCheck = browserSession?.last_draft_check ?? null;
+  const browserIndicatorTone = !browserSession?.logged_in || !browserSession?.manager_alive
+    ? "danger"
+    : browserSession?.busy
+      ? "warning"
+      : "success";
+  const browserIndicatorLabel = !browserSession?.logged_in || !browserSession?.manager_alive
+    ? "未就绪"
+    : browserSession?.busy
+      ? "执行中"
+      : "空闲";
 
   return (
     <section className="page-content">
@@ -91,12 +95,20 @@ export function PublishPanel({
               <div className="row-with-badge">
                 <strong>{statusTitle}</strong>
                 <SourceHealthBadge health={sessionHealth} />
+                <span className={`browser-status-indicator browser-status-${browserIndicatorTone}`}>
+                  <span className="browser-status-dot" />
+                  {browserIndicatorLabel}
+                </span>
               </div>
               <p>{statusDescription}</p>
             </div>
             <div className="channel-quick-meta">
               <span>当前浏览器</span>
               <strong>{form.browser_name === "chrome" ? "Chrome" : "Edge"}</strong>
+              <p style={{ marginTop: 8 }}>
+                窗口：{browserSession?.window_state ?? "unknown"}<br />
+                驻留页：{browserSession?.resident_page ?? "unknown"}
+              </p>
             </div>
           </div>
 
@@ -166,15 +178,6 @@ export function PublishPanel({
                   >
                     <CheckCircle2 size={16} />
                     {isRefreshingBrowser ? "验证中..." : "验证浏览器会话"}
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    disabled={isCheckingDraftBox}
-                    onClick={() => void onCheckDraftBox()}
-                  >
-                    <ScanLine size={16} />
-                    {isCheckingDraftBox ? "检查中..." : "检查微信草稿箱"}
                   </button>
                 </div>
               </div>
@@ -272,33 +275,9 @@ export function PublishPanel({
         <div className="panel-header">
           <div>
             <p className="eyebrow">发布记录</p>
-            <h2>浏览器链路与草稿箱写入结果</h2>
+            <h2>上传与删除记录</h2>
           </div>
         </div>
-        {latestDraftCheck ? (
-          <article className="mini-row stacked" style={{ marginBottom: 16 }}>
-            <div className="row-with-badge">
-              <strong>最近一次草稿箱检查</strong>
-              <PublishTaskBadge status={latestDraftCheck.message.includes("失败") || latestDraftCheck.message.includes("不可用") ? "blocked" : "completed"} />
-            </div>
-            <p>{latestDraftCheck.message}</p>
-            <p>
-              远端 {latestDraftCheck.remote_count} 条 | 匹配 {latestDraftCheck.matched_count} 条 | 缺失 {latestDraftCheck.missing_count} 条
-            </p>
-            <span className="tiny-meta">{formatDateTime(latestDraftCheck.checked_at, { fallback: "暂无" })}</span>
-            {latestDraftCheck.items.length ? (
-              <div className="task-list" style={{ marginTop: 10 }}>
-                {latestDraftCheck.items.slice(0, 5).map((item, index) => (
-                  <article key={`${item.title}-${index}`} className="mini-row stacked">
-                    <strong>{item.title || "未命名草稿"}</strong>
-                    <p>{item.updated_at || "时间未知"}</p>
-                    {item.url ? <span className="tiny-meta">{item.url}</span> : null}
-                  </article>
-                ))}
-              </div>
-            ) : null}
-          </article>
-        ) : null}
         <div className="task-list">
           {publishTasks.length ? publishTasks.map((task) => (
             <article key={task.id} className="mini-row stacked">
@@ -307,8 +286,8 @@ export function PublishPanel({
                 <PublishTaskBadge status={task.status} />
               </div>
               <p>{task.message}</p>
-              {task.step_logs.length ? <p>步骤：{task.step_logs.slice(0, 2).join(" | ")}</p> : null}
-              {task.artifacts.length ? <p>产物：{task.artifacts[0]}</p> : null}
+              {task.step_logs.length ? <details><summary>查看调试步骤</summary><p>{task.step_logs.slice(0, 6).join(" | ")}</p></details> : null}
+              {task.artifacts.length ? <details><summary>查看产物</summary><p>{task.artifacts[0]}</p></details> : null}
               <span className="tiny-meta">{formatDateTime(task.created_at, { fallback: "暂无" })}</span>
             </article>
           )) : <p className="empty-state">暂时还没有发布记录。</p>}

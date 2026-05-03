@@ -1,3 +1,5 @@
+import { useMemo, useState } from "react";
+
 import { formatDateTime, formatRelativeTime } from "../lib/time";
 import type { EventDeepDive, IntelEvent } from "../types";
 
@@ -17,6 +19,15 @@ function statusTone(status?: string | null) {
   return "neutral";
 }
 
+type DeepDiveFilterStatus = "all" | "ready" | "partial" | "failed";
+
+const STATUS_FILTER_OPTIONS: Array<{ key: DeepDiveFilterStatus; label: string }> = [
+  { key: "all", label: "全部" },
+  { key: "ready", label: "ready" },
+  { key: "partial", label: "partial" },
+  { key: "failed", label: "failed" },
+];
+
 export function DeepDivePoolPanel({
   items,
   selectedDeepDive,
@@ -25,9 +36,20 @@ export function DeepDivePoolPanel({
   onCreateBrief,
   onOpenDeepDive,
 }: DeepDivePoolPanelProps) {
-  const readyItems = items.filter((item) => item.deep_dive_status === "ready").length;
-  const partialItems = items.filter((item) => item.deep_dive_status === "partial").length;
-  const briefItems = items.filter((item) => item.brief_id).length;
+  const [filterStatus, setFilterStatus] = useState<DeepDiveFilterStatus>("all");
+
+  const { readyCount: readyItems, partialCount: partialItems, briefCount: briefItems, filtered } = useMemo(() => {
+    let ready = 0;
+    let partial = 0;
+    let brief = 0;
+    for (const item of items) {
+      if (item.deep_dive_status === "ready") ready++;
+      if (item.deep_dive_status === "partial") partial++;
+      if (item.brief_id) brief++;
+    }
+    const filtered = filterStatus === "all" ? items : items.filter((item) => item.deep_dive_status === filterStatus);
+    return { readyCount: ready, partialCount: partial, briefCount: brief, filtered };
+  }, [items, filterStatus]);
 
   return (
     <section className="panel">
@@ -39,6 +61,20 @@ export function DeepDivePoolPanel({
         <span className="subtle">{items.length} 个已观察事件</span>
       </div>
 
+      <div className="intel-chip-filter-bar" style={{ marginBottom: 12 }}>
+        <div className="intel-chip-row">
+          {STATUS_FILTER_OPTIONS.map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              className={`filter-chip ${filterStatus === opt.key ? "filter-chip-active" : ""}`}
+              onClick={() => setFilterStatus(opt.key)}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="intel-score-row" style={{ marginBottom: 12 }}>
         <span>深挖完成 {readyItems}</span>
         <span>部分完成 {partialItems}</span>
@@ -46,7 +82,7 @@ export function DeepDivePoolPanel({
       </div>
 
       <div className="intel-list">
-        {items.length ? items.map((event) => {
+        {filtered.length ? filtered.map((event) => {
           const visibleTags = event.entity_names.slice(0, 3);
           const hiddenTagCount = Math.max(event.entity_names.length - visibleTags.length, 0);
           const expanded = selectedDeepDive?.event_id === event.id;
@@ -96,7 +132,10 @@ export function DeepDivePoolPanel({
                   type="button"
                   className="primary-button compact"
                   disabled={busyEventId === event.id}
-                  onClick={() => void onCreateBrief(event.id)}
+                  onClick={() => {
+                    if (!window.confirm("确认生成简报？将消耗 LLM token。")) return;
+                    void onCreateBrief(event.id);
+                  }}
                 >
                   {event.brief_id ? "更新简报" : "生成简报"}
                 </button>
@@ -163,7 +202,7 @@ export function DeepDivePoolPanel({
               ) : null}
             </article>
           );
-        }) : <p className="empty-state">还没有加入深挖池的事件，先去热点簇或预警台把值得跟进的事件加入观察。</p>}
+        }) : <p className="empty-state">当前筛选条件下没有事件，先去热点簇或预警台把值得跟进的事件加入观察。</p>}
       </div>
     </section>
   );

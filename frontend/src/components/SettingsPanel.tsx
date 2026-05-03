@@ -1,14 +1,19 @@
 import { Save } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { formatDateTime, formatRelativeTime } from "../lib/time";
 import type {
+  BrowserSessionState,
   LLMConfig,
   ReferenceProject,
   SettingsSectionKey,
   SourceConnector,
+  WeChatChannelConfig,
 } from "../types";
 import { LLMSettingsPanel } from "./LLMSettingsPanel";
 import { ReferenceProjectsPanel } from "./ReferenceProjectsPanel";
+import { SourceHealthBadge } from "./StatusBadge";
+import { BrowserWizardSection } from "./BrowserWizardSection";
 import { SourcesPanel } from "./SourcesPanel";
 
 interface SettingsPanelProps {
@@ -20,6 +25,14 @@ interface SettingsPanelProps {
   syncingSourceKey?: string | null;
   isSavingLLM: boolean;
   settings: Record<string, unknown>;
+  wechatConfig: WeChatChannelConfig | null;
+  browserSession: BrowserSessionState | null;
+  isSavingChannel: boolean;
+  isRefreshingBrowser: boolean;
+  isOpeningBrowser: boolean;
+  onSaveChannel: (payload: WeChatChannelConfig) => Promise<void>;
+  onRefreshBrowser: (payload: Pick<BrowserSessionState, "browser_name" | "user_data_dir">) => Promise<void>;
+  onOpenBrowserDashboard: (payload: Pick<BrowserSessionState, "browser_name" | "user_data_dir">) => Promise<void>;
   onSaveLLMConfig: (config: LLMConfig, tavilyApiKey: string) => Promise<void>;
   onSyncSources: () => Promise<void>;
   onSyncSource: (sourceKey: string) => Promise<void>;
@@ -48,6 +61,15 @@ export function SettingsPanel({
   savingSourceKey,
   syncingSourceKey,
   isSavingLLM,
+  settings,
+  wechatConfig,
+  browserSession,
+  isSavingChannel,
+  isRefreshingBrowser,
+  isOpeningBrowser,
+  onSaveChannel,
+  onRefreshBrowser,
+  onOpenBrowserDashboard,
   onSaveLLMConfig,
   onSyncSources,
   onSyncSource,
@@ -55,7 +77,6 @@ export function SettingsPanel({
   onCreateSource,
   onDeleteSource,
   onSaveSettings,
-  settings,
 }: SettingsPanelProps) {
   const [maxWorkers, setMaxWorkers] = useState(Number(settings?.max_workers ?? 8));
   const [savingSettings, setSavingSettings] = useState(false);
@@ -78,12 +99,15 @@ export function SettingsPanel({
           </div>
         </div>
 
-        <div className="segmented-control settings-sections" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
+        <div className="segmented-control settings-sections" style={{ gridTemplateColumns: "repeat(5, minmax(0, 1fr))" }}>
           <button type="button" className={section === "ai" ? "segment-active" : ""} onClick={() => setSection("ai")}>
             AI 模型
           </button>
           <button type="button" className={section === "sources" ? "segment-active" : ""} onClick={() => setSection("sources")}>
             信息源
+          </button>
+          <button type="button" className={section === "browser" ? "segment-active" : ""} onClick={() => setSection("browser")}>
+            微信浏览器
           </button>
           <button type="button" className={section === "references" ? "segment-active" : ""} onClick={() => setSection("references")}>
             参考映射
@@ -116,6 +140,17 @@ export function SettingsPanel({
           onDelete={onDeleteSource}
         />
       ) : null}
+
+      {section === "browser" ? <BrowserWizardSection
+        config={wechatConfig}
+        browserSession={browserSession}
+        isSaving={isSavingChannel}
+        isRefreshingBrowser={isRefreshingBrowser}
+        isOpeningBrowser={isOpeningBrowser}
+        onSave={onSaveChannel}
+        onRefreshBrowser={onRefreshBrowser}
+        onOpenBrowserDashboard={onOpenBrowserDashboard}
+      /> : null}
 
       {section === "references" ? <ReferenceProjectsPanel items={referenceProjects} /> : null}
 
@@ -174,3 +209,4 @@ export function SettingsPanel({
     </section>
   );
 }
+

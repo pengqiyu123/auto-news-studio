@@ -1,16 +1,9 @@
-export type PublishMode =
-  | "draft_only"
-  | "draft_and_preview"
-  | "draft_preview_browser"
-  | "auto_send_guarded"
-  | "full_auto";
-
 export type AutomationMode =
   | "radar_only"
   | "radar_and_draft"
   | "full_pipeline";
-export type AutomationDraftTrigger = "manual" | "after_sync" | "scheduled";
-export type AutomationDraftDelivery = "local_only" | "wechat_draft";
+export type AutomationBriefTrigger = "manual" | "after_sync" | "scheduled";
+export type AutomationDeliveryTarget = "local_only" | "wechat_draft";
 export type AutomationSelectionMode = "all_new" | "top_scored";
 export type AutomationPublishStrategy = "disabled" | "wechat_draft_only" | "guarded_send";
 
@@ -57,26 +50,13 @@ export type DeepDiveExtractStatus = "pending" | "extracted" | "extract_failed" |
 export type BriefLevel = "rule" | "enhanced";
 export type BriefStage = "prepared" | "synced" | "failed";
 
-export interface ModeDefinition {
-  key: PublishMode;
-  label: string;
-  description: string;
-  auto_collect: boolean;
-  auto_draft: boolean;
-  sync_to_wechat_draft: boolean;
-  auto_open_preview: boolean;
-  requires_human_review: boolean;
-  allow_auto_send: boolean;
-  allow_auto_retry: boolean;
-}
-
 export interface AutomationModeDefinition {
   key: AutomationMode;
   label: string;
   description: string;
   auto_collect: boolean;
-  auto_generate_candidates: boolean;
-  auto_generate_drafts: boolean;
+  auto_build_events: boolean;
+  auto_build_briefs: boolean;
   auto_publish_enabled: boolean;
   available: boolean;
 }
@@ -84,11 +64,11 @@ export interface AutomationModeDefinition {
 export interface AutomationModeProfile {
   mode: AutomationMode;
   collect_interval_minutes: number;
-  draft_trigger: AutomationDraftTrigger;
-  draft_schedule_time?: string | null;
-  draft_delivery: AutomationDraftDelivery;
-  draft_selection: AutomationSelectionMode;
-  draft_limit: number;
+  brief_trigger: AutomationBriefTrigger;
+  brief_schedule_time?: string | null;
+  delivery_target: AutomationDeliveryTarget;
+  selection_mode: AutomationSelectionMode;
+  brief_limit: number;
   publish_strategy: AutomationPublishStrategy;
   publish_schedule_time?: string | null;
   require_approval: boolean;
@@ -162,7 +142,7 @@ export interface LogItem {
 
 export interface PublishTask {
   id: string;
-  draft_id: string;
+  target_id: string;
   action: string;
   status: PublishTaskStatus;
   stage: string;
@@ -187,6 +167,15 @@ export interface BrowserSessionState {
   last_selector_check?: string | null;
   current_page?: string | null;
   sidecar_health: BackendHealth;
+  manager_alive?: boolean;
+  window_state?: "restored" | "minimized" | "unknown";
+  resident_page?: string | null;
+  busy?: boolean;
+  last_reset_reason?: string | null;
+  session_generation?: number;
+  last_action?: string | null;
+  last_action_phase?: string | null;
+  is_session_level_error?: boolean;
   last_draft_check?: WeChatDraftSyncCheckResult | null;
 }
 
@@ -204,6 +193,29 @@ export interface WeChatDraftSyncCheckResult {
   missing_count: number;
   items: WeChatRemoteDraftItem[];
   message: string;
+}
+
+export type WeChatMappingStatus = "matched" | "remote_only" | "local_only" | "unresolved";
+
+export interface WeChatMappingRow {
+  remote_title: string;
+  remote_appmsg_id?: string | null;
+  remote_url: string;
+  remote_updated_at?: string | null;
+  local_brief_id?: string | null;
+  local_brief_title?: string | null;
+  local_stage?: BriefStage | null;
+  mapping_status: WeChatMappingStatus;
+}
+
+export interface WeChatMappingSnapshot {
+  checked_at?: string | null;
+  remote_count: number;
+  matched_count: number;
+  missing_count: number;
+  message: string;
+  items: WeChatRemoteDraftItem[];
+  mapping_rows: WeChatMappingRow[];
 }
 
 export interface PublishBackendStatus {
@@ -253,7 +265,7 @@ export interface DashboardTopBar {
   total_sources: number;
   latest_collected_at?: string | null;
   latest_published_at?: string | null;
-  waiting_review: number;
+  pending_briefs: number;
   blocked_publish_count: number;
 }
 
@@ -343,11 +355,6 @@ export interface IntelEvent {
   entity_names: string[];
   watchlisted: boolean;
   ignored: boolean;
-  draft_ready: boolean;
-  draft_score: number;
-  draft_reason: string;
-  draft_exists: boolean;
-  draft_id?: string | null;
   deep_dive_id?: string | null;
   brief_id?: string | null;
   deep_dive_status?: DeepDiveStatus | null;
@@ -373,11 +380,6 @@ export interface IntelAlert {
   triggered_at: string;
   entity_ids: string[];
   entity_names: string[];
-  draft_ready: boolean;
-  draft_score: number;
-  draft_reason: string;
-  draft_exists: boolean;
-  draft_id?: string | null;
   deep_dive_id?: string | null;
   brief_id?: string | null;
   deep_dive_status?: DeepDiveStatus | null;
@@ -455,10 +457,18 @@ export interface BriefItem {
   prompt_package_markdown: string;
   wechat_markdown: string;
   wechat_html: string;
-  wechat_draft_id?: string | null;
+  wechat_target_id?: string | null;
   wechat_editor_url?: string | null;
   wechat_remote_appmsg_id?: string | null;
   preview_url?: string | null;
+  delivery_status?: string | null;
+  delivery_attempt_count?: number;
+  last_delivery_attempt_at?: string | null;
+  last_verified_at?: string | null;
+  last_delivery_error_kind?: string | null;
+  needs_resync?: boolean;
+  last_synced_revision?: string | null;
+  last_successful_upload_at?: string | null;
   last_error?: string | null;
   updated_at: string;
 }
@@ -643,8 +653,8 @@ export interface ChainStateCard {
 
 export interface ExecutionChainSnapshot {
   collect_status: ChainStatus;
-  candidate_status: ChainStatus;
-  draft_status: ChainStatus;
+  admission_status: ChainStatus;
+  briefing_status: ChainStatus;
   review_status: ChainStatus;
   wechat_status: ChainStatus;
   publish_status: ChainStatus;
@@ -665,8 +675,8 @@ export interface SchedulerStatus {
   current_mode: AutomationMode;
   work_scope: IntelWorkScope;
   last_collect_at?: string | null;
-  last_candidate_at?: string | null;
-  last_draft_at?: string | null;
+  last_event_sync_at?: string | null;
+  last_brief_at?: string | null;
   next_collect_at?: string | null;
   delivery_mode: DeliveryMode;
   delivery_schedule_time?: string | null;
@@ -709,7 +719,7 @@ export interface SchedulerStatus {
   last_cycle_summary?: RuntimeCycleSummary | null;
 }
 
-export type SettingsSectionKey = "ai" | "sources" | "references" | "system";
+export type SettingsSectionKey = "ai" | "sources" | "browser" | "references" | "system";
 
 export interface LLMProviderConfig {
   key: string;
@@ -790,16 +800,10 @@ export interface LLMTestResult {
 
 export interface DashboardResponse {
   stats: {
-    current_mode: PublishMode;
-    mode_label: string;
     total_sources: number;
     healthy_sources: number;
     collected_today: number;
-    candidate_count: number;
-    total_drafts: number;
-    waiting_review: number;
-    preview_ready: number;
-    published_today: number;
+    event_count: number;
     deep_dive_ready: number;
     brief_total: number;
     brief_prepared: number;
@@ -821,7 +825,6 @@ export interface DashboardResponse {
   recent_alerts_24h: IntelAlertHistoryItem[];
   recent_events_24h: IntelEventHistoryItem[];
   entity_watchlist_summary: EntityWatchlistSummaryItem[];
-  current_mode: ModeDefinition;
   recent_logs: LogItem[];
   briefs: BriefItem[];
   deep_dives: EventDeepDive[];

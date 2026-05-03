@@ -1,4 +1,4 @@
-import { Copy, FileSearch, RefreshCcw } from "lucide-react";
+import { Copy, FileSearch, RefreshCcw, RadioTower, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { formatDateTime, formatRelativeTime } from "../lib/time";
@@ -10,6 +10,8 @@ interface BriefTableProps {
   onRefreshBrief: (eventId: string) => Promise<void>;
   onCopyBrief: (brief: BriefItem) => Promise<void>;
   onCopyPackage: (briefId: string) => Promise<void>;
+  onSyncBrief: (brief: BriefItem) => Promise<void>;
+  onDeleteBrief: (brief: BriefItem) => Promise<void>;
 }
 
 type BriefWorkbenchView = "all" | "prepared" | "synced" | "failed";
@@ -32,19 +34,23 @@ export function BriefTable({
   onRefreshBrief,
   onCopyBrief,
   onCopyPackage,
+  onSyncBrief,
+  onDeleteBrief,
 }: BriefTableProps) {
   const [view, setView] = useState<BriefWorkbenchView>("all");
   const [searchTerm, setSearchTerm] = useState("");
 
-  const viewCounts = useMemo(
-    () => ({
-      all: briefs.length,
-      prepared: briefs.filter((item) => matchesView(item, "prepared")).length,
-      synced: briefs.filter((item) => matchesView(item, "synced")).length,
-      failed: briefs.filter((item) => matchesView(item, "failed")).length,
-    }),
-    [briefs],
-  );
+  const viewCounts = useMemo(() => {
+    let prepared = 0;
+    let synced = 0;
+    let failed = 0;
+    for (const item of briefs) {
+      if (matchesView(item, "prepared")) prepared++;
+      else if (matchesView(item, "synced")) synced++;
+      else if (matchesView(item, "failed")) failed++;
+    }
+    return { all: briefs.length, prepared, synced, failed };
+  }, [briefs]);
 
   const filtered = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();
@@ -144,9 +150,16 @@ export function BriefTable({
               {brief.last_error ? <span className="error-note">{brief.last_error}</span> : null}
               <div className="intel-inline-actions">
                 <span>{formatDateTime(brief.updated_at, { fallback: "暂无" })}</span>
-                <button type="button" className="ghost-button compact" disabled={busy} onClick={() => void onRefreshBrief(brief.event_id)}>
+                <button type="button" className="ghost-button compact" disabled={busy} onClick={() => {
+                  if (!window.confirm("确认重新生成简报？将消耗 LLM token。")) return;
+                  void onRefreshBrief(brief.event_id);
+                }}>
                   <RefreshCcw size={14} />
                   重新生成
+                </button>
+                <button type="button" className="ghost-button compact" disabled={busy} onClick={() => void onSyncBrief(brief)}>
+                  <RadioTower size={14} />
+                  同步到微信草稿箱
                 </button>
                 <button type="button" className="ghost-button compact" disabled={busy} onClick={() => void onCopyBrief(brief)}>
                   <Copy size={14} />
@@ -155,6 +168,10 @@ export function BriefTable({
                 <button type="button" className="ghost-button compact" disabled={busy} onClick={() => void onCopyPackage(brief.id)}>
                   <Copy size={14} />
                   复制来源包
+                </button>
+                <button type="button" className="ghost-button compact danger" disabled={busy} onClick={() => void onDeleteBrief(brief)}>
+                  <Trash2 size={14} />
+                  删除简报
                 </button>
               </div>
             </article>
