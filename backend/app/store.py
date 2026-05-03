@@ -590,7 +590,7 @@ class StudioStore:
     def get_app_version_info(self) -> AppVersionInfo:
         manifest = self.version_manifest
         return AppVersionInfo(
-            version=str(manifest.get("version") or "0.2.0"),
+            version=str(manifest.get("version") or "0.2.1"),
             release_channel=str(manifest.get("release_channel") or "stable"),
             release_repo=str(manifest.get("release_repo") or DEFAULT_RELEASE_REPO),
             release_notes_url=str(manifest.get("release_notes_url") or DEFAULT_RELEASE_NOTES_URL),
