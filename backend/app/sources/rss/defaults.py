@@ -39,6 +39,42 @@ def _rss(
     }
 
 
+def _wp(
+    key: str,
+    name: str,
+    site_url: str,
+    *,
+    priority: int,
+    schedule: str = "*/60 * * * *",
+    tags: list[str] | None = None,
+    weight: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "name": name,
+        "platform": "wordpress",
+        "kind": "rss",
+        "driver": "wordpress_rest",
+        "enabled": True,
+        "schedule": schedule,
+        "interval_minutes": 60,
+        "priority": priority,
+        "weight": weight if weight is not None else 0.75,
+        "auth": {},
+        "url": site_url,
+        "tags": tags or [],
+        "capabilities": ["pull", "dedupe", "score"],
+        "origin_repo": "auto-news-studio",
+        "origin_license": "MIT",
+        "health_status": "idle",
+        "health_detail": "",
+        "item_count": 0,
+        "last_synced_at": None,
+        "last_error": None,
+        "updated_at": None,
+    }
+
+
 def register() -> list[dict[str, Any]]:
     return [
         _rss("rss-openai", "OpenAI Blog", "https://openai.com/blog/rss.xml", priority=9, tags=["ai", "official"], weight=0.9),
@@ -72,4 +108,8 @@ def register() -> list[dict[str, Any]]:
         _rss("rsshub-juejin-trend", "掘金前端趋势 (RSSHub)", "https://rsshub.app/juejin/trending/frontend/monthly", priority=6, schedule="0 */4 * * *", tags=["cn", "dev"], weight=0.7),
         _rss("rsshub-github-trending", "GitHub Trending (RSSHub)", "https://rsshub.app/github/trending/daily", priority=7, tags=["github", "oss"], weight=0.8),
         _rss("rsshub-producthunt", "Product Hunt (RSSHub)", "https://rsshub.app/producthunt/daily", priority=6, tags=["startup", "product"], weight=0.7),
+        _wp("wp-techcrunch", "TechCrunch (WP)", "https://techcrunch.com", priority=7, tags=["media", "tech"], weight=0.8),
+        _wp("wp-verge", "The Verge (WP)", "https://www.theverge.com", priority=7, tags=["media", "tech"], weight=0.8),
+        _wp("wp-wired", "Wired (WP)", "https://www.wired.com", priority=6, tags=["media", "tech"], weight=0.75),
+        _wp("wp-arstechnica", "Ars Technica (WP)", "https://arstechnica.com", priority=7, tags=["media", "tech"], weight=0.8),
     ]

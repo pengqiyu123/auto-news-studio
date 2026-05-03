@@ -359,6 +359,111 @@ def _collect_vvhan_hotlist(source: dict[str, Any]) -> tuple[list[dict[str, Any]]
         return _warning_only(f"VVhan 热榜抓取失败，未写入素材: {exc}")
 
 
+def _collect_youtube_channel(source: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    api_key = os.getenv("YOUTUBE_API_KEY", "")
+    if not api_key:
+        return _warning_only("YouTube: 未配置 YOUTUBE_API_KEY，跳过。")
+    channel_id = str(source.get("auth", {}).get("channel_id", "") or "").strip()
+    if not channel_id:
+        return _warning_only(f"YouTube: {source['name']} 未配置 channel_id，跳过。")
+    try:
+        url = (
+            f"https://www.googleapis.com/youtube/v3/search"
+            f"?part=snippet&channelId={channel_id}&maxResults=5&order=date&type=video&key={api_key}"
+        )
+        payload = _fetch_json(url, timeout=15)
+        items_data = payload.get("items", [])
+        if not items_data:
+            return _warning_only(f"YouTube: {source['name']} 频道无最新视频。")
+        items: list[dict[str, Any]] = []
+        for entry in items_data[:5]:
+            snippet = entry.get("snippet", {}) or {}
+            video_id = (entry.get("id", {}) or {}).get("videoId", "")
+            title = str(snippet.get("title", "") or "").strip()
+            if not title or not video_id:
+                continue
+            desc = _clean_html(snippet.get("description", "") or "")
+            published = snippet.get("publishedAt", "")
+            thumbnail = (snippet.get("thumbnails", {}) or {}).get("high", {}) or {}
+            thumb_url = str(thumbnail.get("url", "") or "").strip()
+            items.append(
+                {
+                    "id": f"raw-{uuid4().hex[:10]}",
+                    "source_key": source["key"],
+                    "source_name": source["name"],
+                    "source_kind": source["kind"],
+                    "title": title,
+                    "link": f"https://www.youtube.com/watch?v={video_id}",
+                    "published_at": published,
+                    "collected_at": now_iso(),
+                    "summary": desc[:320] or title,
+                    "content": desc[:1800] or title,
+                    "author": str(snippet.get("channelTitle", "") or source["name"]),
+                    "tags": source.get("tags", []),
+                    "engagement": {"youtube_video_id": video_id},
+                    "metadata": {
+                        "collector": "youtube_channel",
+                        "channel_id": channel_id,
+                        "source_native_id": video_id,
+                        "thumbnail_url": thumb_url,
+                    },
+                }
+            )
+        if not items:
+            return _warning_only(f"YouTube: {source['name']} 返回数据但无可用视频。")
+        return items, None
+    except Exception as exc:
+        return _warning_only(f"YouTube 抓取失败，未写入素材: {exc}")
+
+
+def _collect_wordpress(source: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    site_url = str(source.get("url", "") or "").strip().rstrip("/")
+    if not site_url or not _is_http_url(site_url):
+        return _warning_only(f"WordPress: {source['name']} URL 无效，跳过。")
+    try:
+        api_url = f"{site_url}/wp-json/wp/v2/posts?per_page=8&orderby=date"
+        payload = _fetch_json(api_url, timeout=12)
+        if not isinstance(payload, list) or not payload:
+            return _warning_only(f"WordPress: {source['name']} 无文章返回，可能不是 WordPress 站点。")
+        items: list[dict[str, Any]] = []
+        for post in payload[:8]:
+            title = _clean_html(str(post.get("title", {}) or {}).get("rendered", "") or "")
+            link = str(post.get("link", "") or "").strip()
+            if not title or not _is_http_url(link):
+                continue
+            content_raw = str(post.get("content", {}) or {}).get("rendered", "") or ""
+            excerpt_raw = str(post.get("excerpt", {}) or {}).get("rendered", "") or ""
+            published = post.get("date", "")
+            author_info = post.get("author", 0)
+            items.append(
+                {
+                    "id": f"raw-{uuid4().hex[:10]}",
+                    "source_key": source["key"],
+                    "source_name": source["name"],
+                    "source_kind": source["kind"],
+                    "title": title,
+                    "link": link,
+                    "published_at": published,
+                    "collected_at": now_iso(),
+                    "summary": _clean_html(excerpt_raw)[:320] or title,
+                    "content": _clean_html(content_raw)[:1800] or title,
+                    "author": str(author_info) if author_info else "",
+                    "tags": source.get("tags", []),
+                    "engagement": {"comment_count": int(post.get("comment_count", 0) or 0)},
+                    "metadata": {
+                        "collector": "wordpress_rest",
+                        "site_url": site_url,
+                        "source_native_id": str(post.get("id", "") or ""),
+                    },
+                }
+            )
+        if not items:
+            return _warning_only(f"WordPress: {source['name']} 返回数据但无可用文章。")
+        return items, None
+    except Exception as exc:
+        return _warning_only(f"WordPress 抓取失败，未写入素材: {exc}")
+
+
 def _unsupported_connector(source: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
     label = source.get("driver", source["kind"])
     return _warning_only(f"{source['name']} 当前连接器 {label} 尚未适配，未写入素材。")
@@ -369,6 +474,8 @@ COLLECTORS: dict[str, Callable[[dict[str, Any]], tuple[list[dict[str, Any]], str
     "hackernews_frontpage": _collect_hackernews,
     "github_trending": _collect_github_trending,
     "vvhan_hotlist": _collect_vvhan_hotlist,
+    "youtube_channel": _collect_youtube_channel,
+    "wordpress_rest": _collect_wordpress,
 }
 
 
