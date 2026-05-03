@@ -364,12 +364,17 @@ def _collect_youtube_channel(source: dict[str, Any]) -> tuple[list[dict[str, Any
     if not api_key:
         return _warning_only("YouTube: 未配置 YOUTUBE_API_KEY，跳过。")
     channel_id = str(source.get("auth", {}).get("channel_id", "") or "").strip()
-    if not channel_id:
-        return _warning_only(f"YouTube: {source['name']} 未配置 channel_id，跳过。")
+    handle = str(source.get("auth", {}).get("handle", "") or "").strip()
+    if not channel_id and not handle:
+        return _warning_only(f"YouTube: {source['name']} 未配置 channel_id 或 handle，跳过。")
     try:
+        if handle:
+            search_param = f"forHandle={handle}"
+        else:
+            search_param = f"channelId={channel_id}"
         url = (
             f"https://www.googleapis.com/youtube/v3/search"
-            f"?part=snippet&channelId={channel_id}&maxResults=5&order=date&type=video&key={api_key}"
+            f"?part=snippet&{search_param}&maxResults=5&order=date&type=video&key={api_key}"
         )
         payload = _fetch_json(url, timeout=15)
         items_data = payload.get("items", [])
