@@ -266,6 +266,25 @@ export default function App() {
     void refreshAll();
   }, [refreshAll]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void api.getSystemUpdate(true)
+        .then((response) => {
+          if (!cancelled) {
+            setUpdateInfo(response.item);
+          }
+        })
+        .catch(() => {
+          // Keep startup quiet when update check is temporarily unavailable.
+        });
+    }, 1200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
+
   const handleCheckUpdate = useCallback(async () => {
     const response = await api.getSystemUpdate(true);
     setUpdateInfo(response.item);
