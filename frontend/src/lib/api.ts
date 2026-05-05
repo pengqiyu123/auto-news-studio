@@ -212,7 +212,8 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     release_notes_url: appVersion.release_notes_url,
     published_at: null,
     error: null,
-    dismissed_version: null
+    dismissed_version: null,
+    dismissed: false
   };
 
   return {

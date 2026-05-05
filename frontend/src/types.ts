@@ -293,6 +293,7 @@ export interface AppUpdateInfo {
   published_at?: string | null;
   error?: string | null;
   dismissed_version?: string | null;
+  dismissed?: boolean;
 }
 
 export interface ReferenceProject {

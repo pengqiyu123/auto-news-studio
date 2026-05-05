@@ -234,6 +234,7 @@ export function SettingsPanel({
                     ? `检查结果：${updateInfo.error}`
                     : `最近检查：${updateInfo ? formatRelativeTime(updateInfo.checked_at) : "未检查"}`}
                 </p>
+                {updateInfo?.update_available && !updateInfo.dismissed ? <p className="update-dot-note">有可用新版本</p> : null}
               </article>
             </div>
             <div className="intel-plan-actions" style={{ marginTop: 12, justifyContent: "flex-start" }}>

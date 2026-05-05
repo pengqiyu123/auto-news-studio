@@ -677,6 +677,12 @@ class StudioStore:
                 if checked_dt and (datetime.now(UTC) - checked_dt).total_seconds() < 1800:
                     payload = deepcopy_json(cached)
                     payload["dismissed_version"] = app_meta.get("dismissed_update_version")
+                    payload["dismissed"] = bool(
+                        payload.get("latest_version")
+                        and app_meta.get("dismissed_update_version")
+                        and self._normalize_version_text(str(payload.get("latest_version") or ""))
+                        == self._normalize_version_text(str(app_meta.get("dismissed_update_version") or ""))
+                    )
                     return AppUpdateInfo(**payload)
 
         latest_payload, error = self._fetch_latest_release(current.release_repo)
@@ -697,6 +703,12 @@ class StudioStore:
             app_meta["last_update_check"] = deepcopy_json(update_payload)
             self._write(state)
             update_payload["dismissed_version"] = app_meta.get("dismissed_update_version")
+            update_payload["dismissed"] = bool(
+                update_payload.get("latest_version")
+                and app_meta.get("dismissed_update_version")
+                and self._normalize_version_text(str(update_payload.get("latest_version") or ""))
+                == self._normalize_version_text(str(app_meta.get("dismissed_update_version") or ""))
+            )
         return AppUpdateInfo(**update_payload)
 
     def dismiss_app_update(self, version: str) -> AppUpdateInfo:

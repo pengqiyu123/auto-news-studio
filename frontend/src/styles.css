@@ -118,6 +118,21 @@ a {
   text-align: left;
 }
 
+.nav-button span:last-child {
+  display: inline-flex;
+  align-items: center;
+}
+
+.nav-update-dot {
+  margin-left: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #ef4444;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.18);
+  flex: 0 0 auto;
+}
+
 .nav-button:hover,
 .nav-button-active {
   background: rgba(255, 255, 255, 0.08);
@@ -194,6 +209,13 @@ a {
 .subtle {
   margin-top: 8px;
   color: #4b5563;
+}
+
+.update-dot-note {
+  margin: 8px 0 0;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .eyebrow {

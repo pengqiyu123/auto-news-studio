@@ -147,6 +147,11 @@ export default function App() {
   const [pendingDeepDiveTitle, setPendingDeepDiveTitle] = useState<string | null>(null);
   const [pendingBriefTitle, setPendingBriefTitle] = useState<string | null>(null);
 
+  const visibleUpdateInfo =
+    updateInfo?.update_available && updateInfo.latest_version && !updateInfo.dismissed
+      ? updateInfo
+      : null;
+
   const refreshIntelCore = useCallback(async () => {
     const [dashboardData, summaryData, streamData, eventData, alertData, sourceData, logData, publishTaskData, mappingData] = await Promise.all([
       api.getDashboard(),
@@ -275,6 +280,24 @@ export default function App() {
   useEffect(() => {
     void refreshAll();
   }, [refreshAll]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await api.getSystemUpdate(true);
+        if (!cancelled) {
+          setUpdateInfo(result.item);
+        }
+      } catch {
+        // Keep startup quiet when release check is temporarily unavailable.
+      }
+    }, 1200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -894,6 +917,7 @@ export default function App() {
   function renderNavGroup(items: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }>) {
     return items.map((tab) => {
       const Icon = tab.icon;
+      const showUpdateDot = tab.key === "settings" && Boolean(visibleUpdateInfo);
       return (
         <button
           key={tab.key}
@@ -903,6 +927,7 @@ export default function App() {
         >
           <Icon size={16} />
           <span>{tab.label}</span>
+          {showUpdateDot ? <span className="nav-update-dot" aria-label="发现新版本" /> : null}
         </button>
       );
     });
@@ -979,27 +1004,25 @@ export default function App() {
           </div>
         ) : null}
 
-        {updateInfo?.update_available &&
-        updateInfo.latest_version &&
-        updateInfo.latest_version !== updateInfo.dismissed_version ? (
+        {visibleUpdateInfo ? (
           <div className="update-banner">
             <div>
-              <strong>发现新版本 {updateInfo.latest_version}</strong>
+              <strong>发现新版本 {visibleUpdateInfo.latest_version}</strong>
               <p>
-                当前 {updateInfo.current_version}
-                {updateInfo.published_at ? `，发布于 ${updateInfo.published_at}` : ""}
+                当前 {visibleUpdateInfo.current_version}
+                {visibleUpdateInfo.published_at ? `，发布于 ${visibleUpdateInfo.published_at}` : ""}
               </p>
             </div>
             <div className="update-banner-actions">
               <button
                 type="button"
                 className="ghost-button compact"
-                onClick={() => window.open(updateInfo.release_url ?? updateInfo.release_notes_url ?? "", "_blank", "noopener,noreferrer")}
+                onClick={() => window.open(visibleUpdateInfo.release_url ?? visibleUpdateInfo.release_notes_url ?? "", "_blank", "noopener,noreferrer")}
               >
                 <ArrowUpRight size={14} />
                 查看更新
               </button>
-              <button type="button" className="ghost-button compact" onClick={() => void handleDismissUpdate(updateInfo.latest_version ?? "")}>
+              <button type="button" className="ghost-button compact" onClick={() => void handleDismissUpdate(visibleUpdateInfo.latest_version ?? "")}>
                 忽略此版本
               </button>
             </div>

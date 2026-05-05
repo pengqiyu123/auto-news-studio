@@ -219,6 +219,18 @@ auto-news-studio/
 - 备份恢复：见 [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)
 - 更新提示：项目发布新 GitHub Release 后，应用首页与设置页会提示新版本；若匿名请求遇到限流，可在 `.env` 中配置 `GITHUB_TOKEN`
 
+## 发布流程
+
+每次发版请按固定流程走，避免“版本号已更新，但旧版看不到更新”：
+
+1. 更新版本号与更新说明
+2. `python -m compileall backend/app`
+3. `cd frontend && npm run build`
+4. `git push origin master`
+5. 发布对应的 GitHub Release
+
+详细步骤见 [docs/RELEASE_WORKFLOW.md](docs/RELEASE_WORKFLOW.md)。
+
 ## 注意事项
 
 - **单用户设计**：当前无认证机制，默认仅适用于单用户本地部署

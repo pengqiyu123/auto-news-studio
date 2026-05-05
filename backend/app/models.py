@@ -1049,6 +1049,7 @@ class AppUpdateInfo(BaseModel):
     published_at: Optional[str] = None
     error: Optional[str] = None
     dismissed_version: Optional[str] = None
+    dismissed: bool = False
 
 
 class AppUpdateResponse(BaseModel):
