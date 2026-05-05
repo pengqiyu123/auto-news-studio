@@ -24,8 +24,9 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { SourceHealthPage } from "./components/SourceHealthPage";
 import { WeChatDraftBoxPanel } from "./components/WeChatDraftBoxPanel";
 import { WeChatPublishHistoryPanel } from "./components/WeChatPublishHistoryPanel";
+import { useAdaptivePolling } from "./hooks/useAdaptivePolling";
 import { api } from "./lib/api";
-import { deriveRuntimeDisplayStatus, isRuntimeActivelyProcessing, pickNewerRuntimeStatus, RUNTIME_INTENT_LABELS } from "./lib/runtimeIntent";
+import { deriveRuntimeDisplayStatus, pickNewerRuntimeStatus, RUNTIME_INTENT_LABELS } from "./lib/runtimeIntent";
 import type {
   AppUpdateInfo,
   AppVersionInfo,
@@ -435,23 +436,37 @@ export default function App() {
     setToast(`已忽略版本 ${version}`);
   }, []);
 
-  useEffect(() => {
-    if (!RUNTIME_AWARE_TABS.includes(activeTab)) {
-      return;
+  const runtimeStatus = dashboard?.runtime_status ?? null;
+  const runtimeRunning = Boolean(runtimeStatus?.running);
+  const pollActiveTabData = useCallback(async () => {
+    try {
+      if (activeTab === "overview") {
+        await refreshOverviewData(false);
+        return;
+      }
+      await loadTabData(activeTab, { markLoaded: false, forceBrowserRefresh: false });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "自动刷新失败");
     }
-    const isRunning = dashboard?.runtime_status.running;
-    const isActiveCycle = dashboard?.runtime_status ? isRuntimeActivelyProcessing(dashboard.runtime_status) : false;
-    const intervalMs = isActiveCycle ? 2000 : isRunning ? 6000 : 60000;
-    const timer = window.setInterval(() => {
-      const task = activeTab === "overview"
-        ? refreshOverviewData(false)
-        : loadTabData(activeTab, { markLoaded: false, forceBrowserRefresh: false });
-      void task.catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "自动刷新失败");
-      });
-    }, intervalMs);
-    return () => window.clearInterval(timer);
-  }, [activeTab, dashboard?.runtime_status, loadTabData, refreshOverviewData]);
+  }, [activeTab, loadTabData, refreshOverviewData]);
+
+  useAdaptivePolling(
+    activeTab,
+    runtimeStatus,
+    pollActiveTabData,
+    RUNTIME_AWARE_TABS.includes(activeTab),
+  );
+
+  const pollRuntimeStatus = useCallback(async () => {
+    try {
+      const res = await api.getRuntimeStatus();
+      setDashboard((cur) =>
+        cur ? { ...cur, runtime_status: pickNewerRuntimeStatus(cur.runtime_status, res.item) ?? res.item } : cur
+      );
+    } catch {
+      // Keep runtime heartbeat polling silent.
+    }
+  }, []);
 
   useEffect(() => {
     if (loadedTabs[activeTab]) {
@@ -948,23 +963,13 @@ export default function App() {
     }
   }
 
-  // 独立的 runtime 状态快速轮询，活跃周期 2 秒一次，空闲 10 秒
-  useEffect(() => {
-    if (!dashboard?.runtime_status?.running) return;
-    const isActiveCycle = isRuntimeActivelyProcessing(dashboard.runtime_status);
-    const intervalMs = isActiveCycle ? 2000 : 10000;
-    const timer = window.setInterval(async () => {
-      try {
-        const res = await api.getRuntimeStatus();
-        setDashboard((cur) =>
-          cur ? { ...cur, runtime_status: pickNewerRuntimeStatus(cur.runtime_status, res.item) ?? res.item } : cur
-        );
-      } catch {
-        // silent
-      }
-    }, intervalMs);
-    return () => window.clearInterval(timer);
-  }, [dashboard?.runtime_status?.running, dashboard?.runtime_status?.control_state, dashboard?.runtime_status?.current_cycle]);
+  useAdaptivePolling(
+    "runtime-status",
+    runtimeStatus,
+    pollRuntimeStatus,
+    runtimeRunning,
+    { active: 2000, running: 10000, idle: 10000 },
+  );
 
   function showToast(message: string) {
     setToast(message);

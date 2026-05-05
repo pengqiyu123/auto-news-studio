@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .models_llm import (
     LLMConfig,
@@ -544,6 +544,7 @@ class EventDeepDive(BaseModel):
     timeline: list[str] = Field(default_factory=list)
     worthiness: dict[str, Any] = Field(default_factory=dict)
     last_error: Optional[str] = None
+    article_writing_guide: str = ""
 
 
 class BriefItem(BaseModel):
@@ -958,6 +959,13 @@ class RuntimePlanPayload(BaseModel):
     admission_strategy: AdmissionStrategy = "balanced"
     batch_limit: int = Field(default=3, ge=1, le=20)
     admission_filters: dict[str, bool | int] = Field(default_factory=dict)
+
+
+class SettingsUpdatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_workers: Optional[int] = Field(default=None, ge=1, le=20)
+    tavily_api_key: Optional[str] = None
 
 
 class EntityWatchlistPayload(BaseModel):

@@ -63,7 +63,7 @@ from .store_base import (
 )
 
 from .connectors import _collect_with_retry, collect_enabled_sources, collect_from_source
-from .briefing import build_prompt_package_markdown, build_rule_brief_payload
+from .briefing import build_prompt_package_markdown, build_rule_brief_payload, build_agent_article_writing_guide
 from .deep_dive import canonicalize_url, fetch_and_extract_link, search_tavily
 from .entity_extractor import entity_id_for_name, entity_type_for_name
 from .intel_pipeline import build_intel_state
@@ -594,7 +594,7 @@ class StudioStore:
     def get_app_version_info(self) -> AppVersionInfo:
         manifest = self.version_manifest
         return AppVersionInfo(
-            version=str(manifest.get("version") or "0.2.2"),
+            version=str(manifest.get("version") or "0.2.4"),
             release_channel=str(manifest.get("release_channel") or "stable"),
             release_repo=str(manifest.get("release_repo") or DEFAULT_RELEASE_REPO),
             release_notes_url=str(manifest.get("release_notes_url") or DEFAULT_RELEASE_NOTES_URL),
@@ -929,6 +929,258 @@ class StudioStore:
             state = json.loads(self.data_file.read_text(encoding="utf-8"))
             config = self._upgrade_user_settings(read_json_file(self.config_file, self._bootstrap_user_settings()))
             return self._apply_user_settings_to_state(state, config)
+
+    def _ensure_live_state_defaults(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        state.setdefault("automation_mode", "radar_only")
+        state.setdefault("automation_mode_definitions", deepcopy(AUTOMATION_MODE_DEFINITIONS))
+        state.setdefault("automation_profiles", deepcopy(DEFAULT_AUTOMATION_PROFILES))
+        state.setdefault("raw_items", [])
+        state.setdefault("normalized_items", [])
+        state.setdefault("discovery_items", [])
+        state.setdefault("intel_events", [])
+        state.setdefault("event_snapshots", [])
+        state.setdefault("intel_alerts", [])
+        state.setdefault("intel_event_history", [])
+        state.setdefault("intel_alert_history", [])
+        state.setdefault("event_deep_dives", [])
+        state.setdefault("briefs", [])
+        state.setdefault("publish_tasks", [])
+        state.setdefault("jobs", [])
+        state.setdefault("logs", [])
+        state.setdefault("reference_projects", [])
+        state.setdefault("runtime_plan", {})
+        state.setdefault(
+            "notifications",
+            {
+                "webhook": {
+                    "enabled": False,
+                    "url": "",
+                    "secret": "",
+                    "events": ["breakout"],
+                },
+                "delivery_log": [],
+            },
+        )
+        self._app_meta(state)
+
+        if not isinstance(state.get("sources"), list):
+            state["sources"] = self._build_source_registry()
+            self._apply_source_overrides_to_state(
+                state,
+                config.get("sources", {}).get("overrides", {}) if isinstance(config.get("sources"), dict) else {},
+            )
+
+        channels = state.setdefault("channels", {})
+        channels["wechat"] = ensure_channel_defaults(channels.get("wechat", {}))
+
+        browser = state.setdefault("browser", {})
+        browser_wechat = browser.setdefault("wechat", {})
+        browser_wechat.setdefault("platform", "wechat_mp")
+        browser_wechat["browser_name"] = channels["wechat"]["browser_name"]
+        browser_wechat["user_data_dir"] = channels["wechat"]["browser_profile_path"]
+        browser_wechat.setdefault("logged_in", False)
+        browser_wechat.setdefault("last_checked_at", None)
+        browser_wechat.setdefault("last_opened_url", None)
+        browser_wechat.setdefault("last_error", None)
+        browser_wechat["selectors_version"] = channels["wechat"]["selectors_version"]
+        browser_wechat.setdefault("last_screenshot", None)
+        browser_wechat.setdefault("last_selector_check", None)
+        browser_wechat.setdefault("current_page", channels["wechat"]["publish_entry_url"])
+        browser_wechat.setdefault("sidecar_health", "offline")
+        browser_wechat.setdefault("manager_alive", False)
+        browser_wechat.setdefault("window_state", "unknown")
+        browser_wechat.setdefault("resident_page", None)
+        browser_wechat.setdefault("busy", False)
+        browser_wechat.setdefault("last_reset_reason", None)
+        browser_wechat.setdefault("session_generation", 0)
+        browser_wechat.setdefault("last_action", None)
+        browser_wechat.setdefault("last_action_phase", None)
+        browser_wechat.setdefault("is_session_level_error", False)
+        browser_wechat.setdefault("last_draft_check", None)
+
+        runtime = state.setdefault("runtime", {})
+        runtime.setdefault("scheduler_running", False)
+        runtime.setdefault("control_state", "stopped")
+        runtime.setdefault("launch_mode", "interval_now")
+        runtime.setdefault("current_mode", state.get("automation_mode", "radar_only"))
+        runtime.setdefault("work_scope", state.get("runtime_plan", {}).get("work_scope", "collect_events_alerts"))
+        runtime.setdefault("last_collect_at", None)
+        runtime.setdefault("last_event_sync_at", None)
+        runtime.setdefault("last_brief_at", None)
+        runtime.setdefault("next_collect_at", None)
+        runtime.setdefault("delivery_mode", "immediate")
+        runtime.setdefault("delivery_schedule_time", None)
+        runtime.setdefault("admission_strategy", "balanced")
+        runtime.setdefault("batch_limit", 3)
+        runtime.setdefault("current_cycle", "idle")
+        runtime.setdefault("current_cycle_progress_percent", 0)
+        runtime.setdefault("current_cycle_progress_done", 0)
+        runtime.setdefault("current_cycle_progress_total", 0)
+        runtime.setdefault("current_cycle_progress_label", None)
+        runtime.setdefault("enabled_at", None)
+        runtime.setdefault("scheduled_start_at", None)
+        runtime.setdefault("current_cycle_started_at", None)
+        runtime.setdefault("last_cycle_started_at", None)
+        runtime.setdefault("last_cycle_finished_at", None)
+        runtime.setdefault("last_cycle_duration_seconds", None)
+        runtime.setdefault("completed_cycles_today", 0)
+        runtime.setdefault("failed_cycles_today", 0)
+        runtime.setdefault("counters_date", local_now().date().isoformat())
+        runtime.setdefault("last_error", None)
+        runtime.setdefault("blocked_reason", None)
+        runtime.setdefault("last_successful_sync_at", None)
+        runtime.setdefault("current_cycle_sources", [])
+        runtime.setdefault(
+            "current_cycle_metrics",
+            {
+                "selected_event_count": 0,
+                "deep_dive_count": 0,
+                "brief_count": 0,
+                "wechat_sync_count": 0,
+                "wechat_verify_count": 0,
+                "publish_count": 0,
+                "selected_titles": [],
+                "brief_titles": [],
+                "synced_titles": [],
+            },
+        )
+        runtime.setdefault("last_cycle_summary", None)
+        automation_run = runtime.setdefault("automation_run", {})
+        automation_run.setdefault("run_id", None)
+        automation_run.setdefault("status", "idle")
+        automation_run.setdefault("stage", "idle")
+        automation_run.setdefault("started_at", None)
+        automation_run.setdefault("heartbeat_at", None)
+        automation_run.setdefault("finished_at", None)
+        automation_run.setdefault("triggered_by", None)
+        automation_run.setdefault("error", None)
+        automation_run.setdefault("recovered_run_id", None)
+        automation_run.setdefault("intent", DEFAULT_RUNTIME_INTENT)
+        automation_run.setdefault("last_run_outcome", None)
+        self._sync_runtime_counters(runtime)
+
+        for source in state.get("sources", []):
+            if not isinstance(source, dict):
+                continue
+            source.setdefault("last_attempt_at", None)
+            source.setdefault("last_success_at", None)
+            source.setdefault("last_failure_at", None)
+            source.setdefault("consecutive_failures", 0)
+            source.setdefault("last_duration_ms", None)
+            source.setdefault("avg_duration_ms", None)
+            source.setdefault("last_item_count", int(source.get("item_count", 0) or 0))
+
+        for log in state.get("logs", []):
+            if isinstance(log, dict):
+                log.setdefault("stream", "business_event")
+                log.setdefault("actor", "system")
+                log.setdefault("detail", None)
+
+        for deep_dive in state.get("event_deep_dives", []):
+            if not isinstance(deep_dive, dict):
+                continue
+            deep_dive.setdefault("status", "pending")
+            deep_dive.setdefault("started_at", None)
+            deep_dive.setdefault("finished_at", None)
+            deep_dive.setdefault("updated_at", now_iso())
+            deep_dive.setdefault("attempted_count", 0)
+            deep_dive.setdefault("success_count", 0)
+            deep_dive.setdefault("failed_count", 0)
+            deep_dive.setdefault("resolved_evidence_pack", [])
+            deep_dive.setdefault("full_text_sources", [])
+            deep_dive.setdefault("sources", [])
+            deep_dive.setdefault("facts", [])
+            deep_dive.setdefault("quotes", [])
+            deep_dive.setdefault("timeline", [])
+            deep_dive.setdefault("worthiness", {})
+            deep_dive.setdefault("last_error", None)
+            for source in deep_dive.get("sources", []):
+                if isinstance(source, dict):
+                    source.setdefault("cleaned_full_text", "")
+
+        for brief in state.get("briefs", []):
+            if not isinstance(brief, dict):
+                continue
+            brief.setdefault("brief_level", "rule")
+            brief.setdefault("stage", "prepared")
+            brief.setdefault("one_line", "")
+            brief.setdefault("why_it_matters", "")
+            brief.setdefault("facts", [])
+            brief.setdefault("quotes", [])
+            brief.setdefault("timeline", [])
+            brief.setdefault("entity_names", [])
+            brief.setdefault("source_links", [])
+            brief.setdefault("risk_notes", [])
+            brief.setdefault("prompt_package_markdown", "")
+            brief.setdefault("wechat_markdown", "")
+            brief.setdefault("wechat_html", "")
+            brief.setdefault("wechat_target_id", None)
+            brief.setdefault("wechat_editor_url", None)
+            brief.setdefault("wechat_remote_appmsg_id", None)
+            brief.setdefault("preview_url", None)
+            brief.setdefault("last_error", None)
+            brief.setdefault("delivery_status", "idle")
+            brief.setdefault("delivery_attempt_count", 0)
+            brief.setdefault("last_delivery_attempt_at", None)
+            brief.setdefault("last_verified_at", None)
+            brief.setdefault("last_delivery_error_kind", None)
+            brief.setdefault("needs_resync", False)
+            brief.setdefault("last_synced_revision", None)
+            brief.setdefault("last_successful_upload_at", None)
+            brief.setdefault("updated_at", now_iso())
+            brief.pop("wechat_draft_id", None)
+
+        profiles_by_mode = {
+            item["mode"]: item
+            for item in state.get("automation_profiles", [])
+            if isinstance(item, dict) and item.get("mode")
+        }
+        merged_profiles: list[dict[str, Any]] = []
+        for default_profile in deepcopy(DEFAULT_AUTOMATION_PROFILES):
+            profile = profiles_by_mode.get(default_profile["mode"], {})
+            if "draft_trigger" in profile and "brief_trigger" not in profile:
+                profile["brief_trigger"] = profile.get("draft_trigger")
+            if "draft_schedule_time" in profile and "brief_schedule_time" not in profile:
+                profile["brief_schedule_time"] = profile.get("draft_schedule_time")
+            if "draft_delivery" in profile and "delivery_target" not in profile:
+                profile["delivery_target"] = profile.get("draft_delivery")
+            if "draft_selection" in profile and "selection_mode" not in profile:
+                profile["selection_mode"] = profile.get("draft_selection")
+            if "draft_limit" in profile and "brief_limit" not in profile:
+                profile["brief_limit"] = profile.get("draft_limit")
+            merged = {**default_profile, **profile}
+            merged.pop("draft_trigger", None)
+            merged.pop("draft_schedule_time", None)
+            merged.pop("draft_delivery", None)
+            merged.pop("draft_selection", None)
+            merged.pop("draft_limit", None)
+            merged_profiles.append(merged)
+        state["automation_profiles"] = merged_profiles
+
+        mode_defs_by_key = {
+            item["key"]: item
+            for item in state.get("automation_mode_definitions", [])
+            if isinstance(item, dict) and item.get("key")
+        }
+        merged_mode_defs: list[dict[str, Any]] = []
+        for default_mode in deepcopy(AUTOMATION_MODE_DEFINITIONS):
+            existing_mode = mode_defs_by_key.get(default_mode["key"], {})
+            if "auto_generate_candidates" in existing_mode and "auto_build_events" not in existing_mode:
+                existing_mode["auto_build_events"] = existing_mode.get("auto_generate_candidates")
+            if "auto_generate_drafts" in existing_mode and "auto_build_briefs" not in existing_mode:
+                existing_mode["auto_build_briefs"] = existing_mode.get("auto_generate_drafts")
+            merged_mode_defs.append({**existing_mode, **default_mode})
+        state["automation_mode_definitions"] = merged_mode_defs
+        state.pop("current_mode", None)
+        state.pop("mode_definitions", None)
+        return state
+
+    def _read_live(self) -> dict[str, Any]:
+        state = json.loads(self.data_file.read_text(encoding="utf-8"))
+        config = self._upgrade_user_settings(read_json_file(self.config_file, self._bootstrap_user_settings()))
+        state = self._apply_user_settings_to_state(state, config)
+        state.setdefault("llm", deepcopy_json(config.get("llm", default_llm_state())))
+        return self._ensure_live_state_defaults(state, config)
 
     def _write(self, payload: dict[str, Any]) -> None:
         with self._lock:
@@ -1509,30 +1761,9 @@ class StudioStore:
         }
 
     def _event_evidence_pack(self, state: dict[str, Any], event: dict[str, Any]) -> list[dict[str, Any]]:
-        discovery_by_id = {
-            str(item.get("id") or ""): item
-            for item in state.get("discovery_items", [])
-            if isinstance(item, dict) and item.get("id")
-        }
-        representative_id = str(event.get("representative_discovery_item_id") or "").strip()
         seen_links: set[str] = set()
         evidence_pack: list[dict[str, Any]] = []
-
-        def sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
-            return (
-                parse_time(item.get("published_at")) or datetime.min.replace(tzinfo=UTC),
-                parse_time(item.get("collected_at")) or datetime.min.replace(tzinfo=UTC),
-                float(item.get("engagement_score", 0) or 0),
-            )
-
-        candidate_items = [
-            discovery_by_id[item_id]
-            for item_id in event.get("discovery_item_ids", [])
-            if item_id in discovery_by_id
-        ]
-        candidate_items.sort(key=sort_key, reverse=True)
-        if representative_id in discovery_by_id:
-            candidate_items.sort(key=lambda item: str(item.get("id") or "") != representative_id)
+        candidate_items = self._rank_event_discovery_items(state, event)
 
         for item in candidate_items:
             link = str(item.get("link") or "").strip()
@@ -1556,27 +1787,7 @@ class StudioStore:
         return evidence_pack
 
     def _event_deep_dive_inputs(self, state: dict[str, Any], event: dict[str, Any]) -> list[dict[str, Any]]:
-        discovery_by_id = {
-            str(item.get("id") or ""): item
-            for item in state.get("discovery_items", [])
-            if isinstance(item, dict) and item.get("id")
-        }
-        representative_id = str(event.get("representative_discovery_item_id") or "").strip()
-        candidate_items = [
-            discovery_by_id[item_id]
-            for item_id in event.get("discovery_item_ids", [])
-            if item_id in discovery_by_id
-        ]
-        candidate_items.sort(
-            key=lambda item: (
-                parse_time(item.get("published_at")) or datetime.min.replace(tzinfo=UTC),
-                parse_time(item.get("collected_at")) or datetime.min.replace(tzinfo=UTC),
-                float(item.get("engagement_score", 0) or 0),
-            ),
-            reverse=True,
-        )
-        if representative_id in discovery_by_id:
-            candidate_items.sort(key=lambda item: str(item.get("id") or "") != representative_id)
+        candidate_items = self._rank_event_discovery_items(state, event)
         seen_links: set[str] = set()
         resolved: list[dict[str, Any]] = []
 
@@ -1615,25 +1826,91 @@ class StudioStore:
                 append_item(item)
         return resolved
 
+    def _discovery_lookup(self, state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {
+            str(item.get("id") or ""): item
+            for item in state.get("discovery_items", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+
+    def _event_lookup(self, state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {
+            str(item.get("id") or ""): item
+            for item in state.get("intel_events", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+
+    @staticmethod
+    def _event_discovery_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            parse_time(item.get("published_at")) or datetime.min.replace(tzinfo=UTC),
+            parse_time(item.get("collected_at")) or datetime.min.replace(tzinfo=UTC),
+            float(item.get("engagement_score", 0) or 0),
+        )
+
+    def _rank_event_discovery_items(self, state: dict[str, Any], event: dict[str, Any]) -> list[dict[str, Any]]:
+        discovery_by_id = self._discovery_lookup(state)
+        representative_id = str(event.get("representative_discovery_item_id") or "").strip()
+        candidate_items = [
+            discovery_by_id[item_id]
+            for item_id in event.get("discovery_item_ids", [])
+            if item_id in discovery_by_id
+        ]
+        candidate_items.sort(key=self._event_discovery_sort_key, reverse=True)
+        if representative_id and representative_id in discovery_by_id:
+            candidate_items.sort(key=lambda item: str(item.get("id") or "") != representative_id)
+        return candidate_items
+
+    def _deep_dive_lookup(self, state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        lookup: dict[str, dict[str, Any]] = {}
+        for item in state.get("event_deep_dives", []):
+            if not isinstance(item, dict):
+                continue
+            event_id = str(item.get("event_id") or "").strip()
+            if not event_id:
+                continue
+            current = lookup.get(event_id)
+            if not current:
+                lookup[event_id] = item
+                continue
+            current_updated = parse_time(current.get("updated_at")) or datetime.min.replace(tzinfo=UTC)
+            item_updated = parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC)
+            if item_updated >= current_updated:
+                lookup[event_id] = item
+        return lookup
+
+    def _brief_lookup(self, state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        lookup: dict[str, dict[str, Any]] = {}
+        for item in state.get("briefs", []):
+            if not isinstance(item, dict):
+                continue
+            event_id = str(item.get("event_id") or "").strip()
+            if not event_id:
+                continue
+            current = lookup.get(event_id)
+            if not current:
+                lookup[event_id] = item
+                continue
+            current_updated = parse_time(current.get("updated_at")) or datetime.min.replace(tzinfo=UTC)
+            item_updated = parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC)
+            if item_updated >= current_updated:
+                lookup[event_id] = item
+        return lookup
+
     def _find_deep_dive_record(self, state: dict[str, Any], deep_dive_id: str) -> dict[str, Any]:
         for item in state.get("event_deep_dives", []):
             if isinstance(item, dict) and str(item.get("id") or "") == deep_dive_id:
                 return item
         raise ValueError(f"未找到正文深挖记录：{deep_dive_id}")
 
-    def _find_deep_dive_for_event(self, state: dict[str, Any], event_id: str) -> dict[str, Any] | None:
-        matches = [
-            item
-            for item in state.get("event_deep_dives", [])
-            if isinstance(item, dict) and str(item.get("event_id") or "") == event_id
-        ]
-        if not matches:
-            return None
-        matches.sort(
-            key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC),
-            reverse=True,
-        )
-        return matches[0]
+    def _find_deep_dive_for_event(
+        self,
+        state: dict[str, Any],
+        event_id: str,
+        *,
+        deep_dive_lookup: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        return (deep_dive_lookup or self._deep_dive_lookup(state)).get(event_id)
 
     def _find_brief(self, state: dict[str, Any], brief_id: str) -> dict[str, Any]:
         for item in state.get("briefs", []):
@@ -1641,19 +1918,14 @@ class StudioStore:
                 return item
         raise ValueError(f"未找到简报：{brief_id}")
 
-    def _find_brief_for_event(self, state: dict[str, Any], event_id: str) -> dict[str, Any] | None:
-        matches = [
-            item
-            for item in state.get("briefs", [])
-            if isinstance(item, dict) and str(item.get("event_id") or "") == event_id
-        ]
-        if not matches:
-            return None
-        matches.sort(
-            key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC),
-            reverse=True,
-        )
-        return matches[0]
+    def _find_brief_for_event(
+        self,
+        state: dict[str, Any],
+        event_id: str,
+        *,
+        brief_lookup: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        return (brief_lookup or self._brief_lookup(state)).get(event_id)
 
     def _summarize_deep_dive(self, deep_dive: dict[str, Any] | None) -> str:
         if not deep_dive:
@@ -1776,6 +2048,8 @@ class StudioStore:
         strategy = str(plan.get("admission_strategy") or "balanced")
         filters = self._delivery_filters(state)
         limit = max(int(plan.get("batch_limit", 3) or 3), 1)
+        deep_dive_lookup = self._deep_dive_lookup(state)
+        brief_lookup = self._brief_lookup(state)
 
         projected_events = [
             self._project_event_runtime_fields(state, item)
@@ -1796,12 +2070,12 @@ class StudioStore:
             if filters["exclude_existing_brief"] and str(event.get("brief_id") or "").strip():
                 continue
             if filters["exclude_synced_brief"]:
-                brief = self._find_brief_for_event(state, str(event.get("id") or ""))
+                brief = brief_lookup.get(str(event.get("id") or ""))
                 if brief and str(brief.get("stage") or "") == "synced":
                     continue
 
             alert_state = str(event.get("alert_state") or "")
-            deep_dive = self._find_deep_dive_for_event(state, str(event.get("id") or ""))
+            deep_dive = deep_dive_lookup.get(str(event.get("id") or ""))
             fulltext_count = int(deep_dive.get("success_count", 0) or 0) if deep_dive else 0
 
             if strategy == "conservative":
@@ -1822,22 +2096,7 @@ class StudioStore:
 
             selected.append(event)
 
-        def sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
-            alert_rank = {"breakout": 3, "rising": 2, "watch": 1, "cooling": 0, "new": 0}.get(str(item.get("alert_state") or "new"), 0)
-            deep_dive = self._find_deep_dive_for_event(state, str(item.get("id") or ""))
-            evidence_score = int(deep_dive.get("success_count", 0) or 0) if deep_dive else 0
-            return (
-                alert_rank,
-                float(item.get("worth_to_brief") or False),
-                float(item.get("composite_score", 0) or 0),
-                float(item.get("velocity_score", 0) or 0),
-                float(item.get("coverage_score", 0) or 0),
-                float(item.get("freshness_score", 0) or 0),
-                evidence_score,
-                len(list(item.get("entity_names", []))),
-            )
-
-        selected.sort(key=sort_key, reverse=True)
+        selected.sort(key=lambda item: self._delivery_sort_key(item, deep_dive_lookup), reverse=True)
         return selected[:limit]
 
     def _select_delivery_events(self, state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1846,27 +2105,14 @@ class StudioStore:
         selected = self._select_delivery_events_strict(state)
         if selected:
             return selected
+        deep_dive_lookup = self._deep_dive_lookup(state)
+        brief_lookup = self._brief_lookup(state)
 
         projected_events = [
             self._project_event_runtime_fields(state, item)
             for item in state.get("intel_events", [])
             if isinstance(item, dict) and not bool(item.get("ignored"))
         ]
-
-        def sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
-            alert_rank = {"breakout": 3, "rising": 2, "watch": 1, "cooling": 0, "new": 0}.get(str(item.get("alert_state") or "new"), 0)
-            deep_dive = self._find_deep_dive_for_event(state, str(item.get("id") or ""))
-            evidence_score = int(deep_dive.get("success_count", 0) or 0) if deep_dive else 0
-            return (
-                alert_rank,
-                float(item.get("worth_to_brief") or False),
-                float(item.get("composite_score", 0) or 0),
-                float(item.get("velocity_score", 0) or 0),
-                float(item.get("coverage_score", 0) or 0),
-                float(item.get("freshness_score", 0) or 0),
-                evidence_score,
-                len(list(item.get("entity_names", []))),
-            )
 
         limit = max(int(plan.get("batch_limit", 3) or 3), 1)
         fallback_candidates: list[dict[str, Any]] = []
@@ -1885,17 +2131,18 @@ class StudioStore:
             if filters["exclude_existing_brief"] and str(event.get("brief_id") or "").strip():
                 continue
             if filters["exclude_synced_brief"]:
-                brief = self._find_brief_for_event(state, str(event.get("id") or ""))
+                brief = brief_lookup.get(str(event.get("id") or ""))
                 if brief and str(brief.get("stage") or "") == "synced":
                     continue
             if str(event.get("alert_state") or "") == "cooling":
                 continue
             fallback_candidates.append(event)
 
-        fallback_candidates.sort(key=sort_key, reverse=True)
+        fallback_candidates.sort(key=lambda item: self._delivery_sort_key(item, deep_dive_lookup), reverse=True)
         return fallback_candidates[:1]
 
     def _select_retry_briefs(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        event_lookup = {str(item.get("id") or ""): item for item in state.get("intel_events", []) if isinstance(item, dict) and item.get("id")}
         candidates = [
             item for item in state.get("briefs", [])
             if isinstance(item, dict) and (
@@ -1913,7 +2160,7 @@ class StudioStore:
                 priority = 1
             else:
                 priority = 2
-            event = self._find_event(state, str(item.get("event_id") or "")) if str(item.get("event_id") or "").strip() else None
+            event = event_lookup.get(str(item.get("event_id") or "")) if str(item.get("event_id") or "").strip() else None
             updated_at = parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC)
             composite_score = float((event or {}).get("composite_score", 0) or 0)
             watchlisted = 1 if bool((event or {}).get("watchlisted")) else 0
@@ -1927,6 +2174,21 @@ class StudioStore:
         candidates.sort(key=retry_rank)
         limit = max(int(self._delivery_plan(state).get("batch_limit", 3) or 3), 1)
         return candidates[:limit]
+
+    def _delivery_sort_key(self, item: dict[str, Any], deep_dive_lookup: dict[str, dict[str, Any]]) -> tuple[Any, ...]:
+        alert_rank = {"breakout": 3, "rising": 2, "watch": 1, "cooling": 0, "new": 0}.get(str(item.get("alert_state") or "new"), 0)
+        deep_dive = deep_dive_lookup.get(str(item.get("id") or ""))
+        evidence_score = int(deep_dive.get("success_count", 0) or 0) if deep_dive else 0
+        return (
+            alert_rank,
+            float(item.get("worth_to_brief") or False),
+            float(item.get("composite_score", 0) or 0),
+            float(item.get("velocity_score", 0) or 0),
+            float(item.get("coverage_score", 0) or 0),
+            float(item.get("freshness_score", 0) or 0),
+            evidence_score,
+            len(list(item.get("entity_names", []))),
+        )
 
     def _run_delivery_pipeline(self, state: dict[str, Any], runtime: dict[str, Any], *, triggered_by: str) -> None:
         plan = self._delivery_plan(state)
@@ -2141,11 +2403,18 @@ class StudioStore:
                 actor=triggered_by,
             )
 
-    def _project_event_runtime_fields(self, state: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+    def _project_event_runtime_fields(
+        self,
+        state: dict[str, Any],
+        event: dict[str, Any],
+        *,
+        deep_dive_lookup: dict[str, dict[str, Any]] | None = None,
+        brief_lookup: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         projected = dict(event)
         event_id = str(projected.get("id") or "")
-        deep_dive = self._find_deep_dive_for_event(state, event_id)
-        brief = self._find_brief_for_event(state, event_id)
+        deep_dive = self._find_deep_dive_for_event(state, event_id, deep_dive_lookup=deep_dive_lookup)
+        brief = self._find_brief_for_event(state, event_id, brief_lookup=brief_lookup)
         projected["deep_dive_id"] = deep_dive.get("id") if deep_dive else projected.get("deep_dive_id")
         projected["brief_id"] = brief.get("id") if brief else projected.get("brief_id")
         projected["deep_dive_status"] = deep_dive.get("status") if deep_dive else None
@@ -2159,16 +2428,26 @@ class StudioStore:
         projected["worth_reason"] = worth_reason if deep_dive else "尚未完成正文深挖。"
         return projected
 
-    def _project_alert_runtime_fields(self, state: dict[str, Any], alert: dict[str, Any]) -> dict[str, Any]:
+    def _project_alert_runtime_fields(
+        self,
+        state: dict[str, Any],
+        alert: dict[str, Any],
+        *,
+        event_lookup: dict[str, dict[str, Any]] | None = None,
+        deep_dive_lookup: dict[str, dict[str, Any]] | None = None,
+        brief_lookup: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         projected = dict(alert)
         event_id = str(projected.get("event_id") or "")
-        event = next(
-            (item for item in state.get("intel_events", []) if isinstance(item, dict) and str(item.get("id") or "") == event_id),
-            None,
-        )
+        event = (event_lookup or self._event_lookup(state)).get(event_id)
         if not event:
             return projected
-        runtime_event = self._project_event_runtime_fields(state, event)
+        runtime_event = self._project_event_runtime_fields(
+            state,
+            event,
+            deep_dive_lookup=deep_dive_lookup,
+            brief_lookup=brief_lookup,
+        )
         projected["deep_dive_id"] = runtime_event.get("deep_dive_id")
         projected["brief_id"] = runtime_event.get("brief_id")
         projected["deep_dive_status"] = runtime_event.get("deep_dive_status")
@@ -2347,56 +2626,6 @@ class StudioStore:
 
     def _runtime(self, state: dict[str, Any]) -> dict[str, Any]:
         runtime = state.setdefault("runtime", {})
-        runtime.setdefault("scheduler_running", False)
-        runtime.setdefault("control_state", "stopped")
-        runtime.setdefault("launch_mode", "interval_now")
-        runtime.setdefault("current_mode", state.get("automation_mode", "radar_only"))
-        runtime.setdefault("last_collect_at", None)
-        runtime.setdefault("last_event_sync_at", None)
-        runtime.setdefault("last_brief_at", None)
-        runtime.setdefault("next_collect_at", None)
-        runtime.setdefault("current_cycle", "idle")
-        runtime.setdefault("current_cycle_progress_percent", 0)
-        runtime.setdefault("current_cycle_progress_done", 0)
-        runtime.setdefault("current_cycle_progress_total", 0)
-        runtime.setdefault("current_cycle_progress_label", None)
-        runtime.setdefault("enabled_at", None)
-        runtime.setdefault("scheduled_start_at", None)
-        runtime.setdefault("current_cycle_started_at", None)
-        runtime.setdefault("last_cycle_started_at", None)
-        runtime.setdefault("last_cycle_finished_at", None)
-        runtime.setdefault("last_cycle_duration_seconds", None)
-        runtime.setdefault("completed_cycles_today", 0)
-        runtime.setdefault("failed_cycles_today", 0)
-        runtime.setdefault("counters_date", local_now().date().isoformat())
-        runtime.setdefault("last_error", None)
-        runtime.setdefault("blocked_reason", None)
-        runtime.setdefault("last_successful_sync_at", None)
-        runtime.setdefault("current_cycle_sources", [])
-        runtime.setdefault("current_cycle_metrics", {
-            "selected_event_count": 0,
-            "deep_dive_count": 0,
-            "brief_count": 0,
-            "wechat_sync_count": 0,
-            "wechat_verify_count": 0,
-            "publish_count": 0,
-            "selected_titles": [],
-            "brief_titles": [],
-            "synced_titles": [],
-        })
-        runtime.setdefault("last_cycle_summary", None)
-        automation_run = runtime.setdefault("automation_run", {})
-        automation_run.setdefault("run_id", None)
-        automation_run.setdefault("status", "idle")
-        automation_run.setdefault("stage", "idle")
-        automation_run.setdefault("started_at", None)
-        automation_run.setdefault("heartbeat_at", None)
-        automation_run.setdefault("finished_at", None)
-        automation_run.setdefault("triggered_by", None)
-        automation_run.setdefault("error", None)
-        automation_run.setdefault("recovered_run_id", None)
-        automation_run.setdefault("intent", DEFAULT_RUNTIME_INTENT)
-        automation_run.setdefault("last_run_outcome", None)
         self._sync_runtime_counters(runtime)
         return runtime
 
@@ -3764,11 +3993,8 @@ class StudioStore:
         return AutomationModeDefinition(**modes[mode])
 
     def get_runtime_plan(self) -> RuntimePlan:
-        with self._lock:
-            state = self._upgrade_state(self._read())
-            plan = self._runtime_plan_from_state(state)
-            self._write(state)
-            return plan
+        state = self._read_live()
+        return self._runtime_plan_from_state(state)
 
     def update_runtime_plan(self, payload: RuntimePlanPayload, actor: str = "dashboard") -> RuntimePlan:
         with self._lock:
@@ -3791,7 +4017,7 @@ class StudioStore:
 
     def get_runtime_status(self) -> SchedulerStatus:
         with self._lock:
-            state = self._upgrade_state(self._read())
+            state = self._read_live()
             recovered_run_id = self._recover_stale_runtime_run(state, actor="runtime_status")
             if recovered_run_id:
                 self._write(state)
@@ -4772,6 +4998,7 @@ class StudioStore:
                 "timeline": timeline,
                 "worthiness": {"worth_to_brief": worth_to_brief, "reason": worth_reason},
                 "last_error": None if success_sources else "没有拿到可用正文来源",
+                "article_writing_guide": build_agent_article_writing_guide(),
             }
             if existing:
                 index = next(
@@ -4794,16 +5021,18 @@ class StudioStore:
             return EventDeepDive(**record)
 
     def list_event_deep_dives(self) -> list[EventDeepDive]:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         items = [item for item in state.get("event_deep_dives", []) if isinstance(item, dict)]
         items.sort(key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
         return [EventDeepDive(**item) for item in items]
 
     def get_event_deep_dive(self, event_id: str) -> EventDeepDive:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         record = self._find_deep_dive_for_event(state, event_id)
         if not record:
             raise ValueError(f"未找到事件正文深挖：{event_id}")
+        if not record.get("article_writing_guide"):
+            record["article_writing_guide"] = build_agent_article_writing_guide()
         return EventDeepDive(**record)
 
     def create_brief_from_event(self, event_id: str, *, triggered_by: str = "dashboard") -> BriefItem:
@@ -5070,13 +5299,13 @@ class StudioStore:
         return BriefItem(**brief)
 
     def list_briefs(self) -> list[BriefItem]:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         items = [item for item in state.get("briefs", []) if isinstance(item, dict)]
         items.sort(key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
         return [BriefItem(**item) for item in items]
 
     def get_brief(self, brief_id: str) -> BriefItem:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         return BriefItem(**self._find_brief(state, brief_id))
 
     def _brief_revision(self, brief: dict[str, Any]) -> str:
@@ -5437,7 +5666,7 @@ class StudioStore:
         )
 
     def get_wechat_mapping(self) -> WeChatMappingSnapshot:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         return self._build_wechat_mapping_snapshot(state)
 
     def refresh_wechat_mapping(self, triggered_by: str = "dashboard") -> WeChatMappingSnapshot:
@@ -5569,7 +5798,7 @@ class StudioStore:
         return WeChatChannelConfig(**state["channels"]["wechat"])
 
     def get_browser_session(self) -> BrowserSessionState:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         browser = self._refresh_browser_session(state)
         self._write(state)
         return BrowserSessionState(**browser)
@@ -5915,7 +6144,7 @@ class StudioStore:
             )
 
     def get_publish_backends(self) -> list[PublishBackendStatus]:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         browser = self._refresh_browser_session(state)
         state["browser"]["wechat"] = browser
         backends = self._publish_backends(state)
@@ -5929,8 +6158,7 @@ class StudioStore:
         return [ReferenceProject(**item) for item in state["reference_projects"]]
 
     def list_logs(self) -> list[LogItem]:
-        state = self._upgrade_state(self._read())
-        self._write(state)
+        state = self._read_live()
         return [LogItem(**item) for item in state["logs"]]
 
     def _latest_collected_at(self, raw_lookup: dict[str, dict[str, Any]], raw_ids: list[str]) -> str | None:
@@ -6238,7 +6466,7 @@ class StudioStore:
 
     def get_intel_summary(self) -> IntelOverviewSummary:
         with self._lock:
-            state = self._upgrade_state(self._read())
+            state = self._read_live()
             recovered_run_id = self._recover_stale_runtime_run(state, actor="intel_summary")
             runtime = self._runtime(state)
             if recovered_run_id:
@@ -6246,16 +6474,47 @@ class StudioStore:
 
         alert_dicts = [item for item in state.get("intel_alerts", []) if isinstance(item, dict)]
         event_dicts = [item for item in state.get("intel_events", []) if isinstance(item, dict)]
+        event_lookup = self._event_lookup(state)
+        deep_dive_lookup = self._deep_dive_lookup(state)
+        brief_lookup = self._brief_lookup(state)
         recent_alert_dicts = self._prune_intel_alert_history(state.get("intel_alert_history", []))
         recent_event_dicts = self._prune_intel_event_history(state.get("intel_event_history", []))
-        alerts = [IntelAlert(**self._project_alert_runtime_fields(state, item)) for item in alert_dicts]
-        events = [IntelEvent(**self._project_event_runtime_fields(state, item)) for item in event_dicts]
+        alerts = [
+            IntelAlert(
+                **self._project_alert_runtime_fields(
+                    state,
+                    item,
+                    event_lookup=event_lookup,
+                    deep_dive_lookup=deep_dive_lookup,
+                    brief_lookup=brief_lookup,
+                )
+            )
+            for item in alert_dicts
+        ]
+        events = [
+            IntelEvent(
+                **self._project_event_runtime_fields(
+                    state,
+                    item,
+                    deep_dive_lookup=deep_dive_lookup,
+                    brief_lookup=brief_lookup,
+                )
+            )
+            for item in event_dicts
+        ]
         recent_alerts = [item for item in recent_alert_dicts]
         recent_events = [item for item in recent_event_dicts]
         featured_alerts = [item for item in alerts if item.level in {"breakout", "rising"}]
         engagement_threshold = self._featured_event_engagement_threshold(event_dicts)
         featured_events = [
-            IntelEvent(**self._project_event_runtime_fields(state, item))
+            IntelEvent(
+                **self._project_event_runtime_fields(
+                    state,
+                    item,
+                    deep_dive_lookup=deep_dive_lookup,
+                    brief_lookup=brief_lookup,
+                )
+            )
             for item in event_dicts
             if self._is_featured_event(item, engagement_threshold)
         ]
@@ -6314,7 +6573,7 @@ class StudioStore:
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[DiscoveryItem], int]:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         all_items = [DiscoveryItem(**item) for item in state.get("discovery_items", [])]
         safe_page = max(1, int(page or 1))
         safe_page_size = max(1, min(int(page_size or 50), 200))
@@ -6328,8 +6587,20 @@ class StudioStore:
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[IntelEvent], int]:
-        state = self._upgrade_state(self._read())
-        all_items = [IntelEvent(**self._project_event_runtime_fields(state, item)) for item in state.get("intel_events", [])]
+        state = self._read_live()
+        deep_dive_lookup = self._deep_dive_lookup(state)
+        brief_lookup = self._brief_lookup(state)
+        all_items = [
+            IntelEvent(
+                **self._project_event_runtime_fields(
+                    state,
+                    item,
+                    deep_dive_lookup=deep_dive_lookup,
+                    brief_lookup=brief_lookup,
+                )
+            )
+            for item in state.get("intel_events", [])
+        ]
         safe_page = max(1, int(page or 1))
         safe_page_size = max(1, min(int(page_size or 50), 200))
         start = (safe_page - 1) * safe_page_size
@@ -6337,19 +6608,40 @@ class StudioStore:
         return all_items[start:end], len(all_items)
 
     def list_intel_event_history(self) -> list[dict[str, Any]]:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         return self._prune_intel_event_history(state.get("intel_event_history", []))
 
     def get_intel_event(self, event_id: str) -> IntelEvent:
-        state = self._upgrade_state(self._read())
-        return IntelEvent(**self._project_event_runtime_fields(state, self._find_event(state, event_id)))
+        state = self._read_live()
+        return IntelEvent(
+            **self._project_event_runtime_fields(
+                state,
+                self._find_event(state, event_id),
+                deep_dive_lookup=self._deep_dive_lookup(state),
+                brief_lookup=self._brief_lookup(state),
+            )
+        )
 
     def list_intel_alerts(self) -> list[IntelAlert]:
-        state = self._upgrade_state(self._read())
-        return [IntelAlert(**self._project_alert_runtime_fields(state, item)) for item in state.get("intel_alerts", [])]
+        state = self._read_live()
+        event_lookup = self._event_lookup(state)
+        deep_dive_lookup = self._deep_dive_lookup(state)
+        brief_lookup = self._brief_lookup(state)
+        return [
+            IntelAlert(
+                **self._project_alert_runtime_fields(
+                    state,
+                    item,
+                    event_lookup=event_lookup,
+                    deep_dive_lookup=deep_dive_lookup,
+                    brief_lookup=brief_lookup,
+                )
+            )
+            for item in state.get("intel_alerts", [])
+        ]
 
     def list_intel_alert_history(self) -> list[dict[str, Any]]:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         return self._prune_intel_alert_history(state.get("intel_alert_history", []))
 
     def _normalize_entity_watchlist_item(
@@ -6387,7 +6679,7 @@ class StudioStore:
         return items
 
     def list_entity_watchlist(self) -> list[EntityWatchlistItem]:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         return [EntityWatchlistItem(**item) for item in self._entity_watchlist(state)]
 
     def update_entity_watchlist(self, items: list[dict[str, Any]]) -> list[EntityWatchlistItem]:
@@ -6464,7 +6756,7 @@ class StudioStore:
         return summaries
 
     def list_intel_sources(self) -> list[SourceConnector]:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         return [SourceConnector(**item) for item in state.get("sources", [])]
 
     def watchlist_event(self, event_id: str) -> IntelEvent:
@@ -6608,7 +6900,7 @@ class StudioStore:
         return result
 
     def get_llm_usage(self) -> dict[str, dict[str, int]]:
-        state = self._upgrade_state(self._read())
+        state = self._read_live()
         return state.get("llm", {}).get("usage_today", {})
 
     def import_cc_switch_profiles(self, cc_profiles: list[dict[str, Any]]) -> dict[str, Any]:
@@ -6661,7 +6953,7 @@ class StudioStore:
 
     def get_dashboard(self) -> DashboardResponse:
         with self._lock:
-            state = self._upgrade_state(self._read())
+            state = self._read_live()
             recovered_run_id = self._recover_stale_runtime_run(state, actor="dashboard")
             if recovered_run_id:
                 self._write(state)

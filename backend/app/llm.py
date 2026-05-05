@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
@@ -633,15 +633,15 @@ class LLMService:
             )
         return routes
 
-    def _invoke_openai_chat(
+    def _invoke_openai_with_model_fallback(
         self,
         provider: dict[str, Any],
         route: dict[str, Any],
-        messages: list[dict[str, str]],
         *,
-        temperature: float,
-        max_tokens: int,
+        api_format: str,
         timeout: float,
+        invoke_request: Callable[[OpenAI, str], Any],
+        extract_content: Callable[[Any], tuple[str, int, int]],
     ) -> dict[str, Any]:
         model_candidates = _resolve_openai_model_candidates(provider, route, timeout, self)
         model_candidates = [candidate for candidate in model_candidates if _clean_str(candidate)]
@@ -653,19 +653,14 @@ class LLMService:
                 resolved_format=route["format"],
             )
         client = OpenAI(
-            base_url=_openai_base_url_from_endpoint(route["endpoint"], "openai_chat"),
+            base_url=_openai_base_url_from_endpoint(route["endpoint"], api_format),
             api_key=provider["api_key"],
             timeout=timeout,
         )
         last_error: LLMRouteError | None = None
         for model_id in model_candidates:
             try:
-                response = client.chat.completions.create(
-                    model=model_id,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
+                response = invoke_request(client, model_id)
             except AuthenticationError as exc:
                 raise LLMRouteError("auth_failed", "认证失败，请检查 API Key", endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id, cause=exc) from exc
             except RateLimitError as exc:
@@ -689,18 +684,17 @@ class LLMService:
                     last_error = err
                     continue
                 raise err from exc
+
             embedded_error = _extract_openai_embedded_error(response)
             if embedded_error:
                 status = "protocol_mismatch" if "not_found" in embedded_error.lower() or "404" in embedded_error.lower() else "request_failed"
-                err = LLMRouteError(status, embedded_error, endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id)
-                if status == "model_missing" and not route["model"]:
-                    last_error = err
-                    continue
-                if status == "request_failed" and ("不支持的模型" in embedded_error or "unsupported model" in embedded_error.lower()) and not route["model"]:
+                if ("不支持的模型" in embedded_error or "unsupported model" in embedded_error.lower()) and not route["model"]:
                     last_error = LLMRouteError("model_missing", embedded_error, endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id)
                     continue
+                err = LLMRouteError(status, embedded_error, endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id)
                 raise err
-            content, input_tokens, output_tokens = _extract_openai_chat_content(response)
+
+            content, input_tokens, output_tokens = extract_content(response)
             if _looks_like_html(content):
                 raise LLMRouteError("html_homepage", "返回了网页首页，不是 API 接口", endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id)
             if not content:
@@ -715,9 +709,34 @@ class LLMService:
                 "output_tokens": output_tokens,
                 "resolved_model": model_id,
             }
+
         if last_error:
             raise last_error
         raise LLMRouteError("model_missing", "缺少可用模型", endpoint=route["endpoint"], resolved_format=route["format"])
+
+    def _invoke_openai_chat(
+        self,
+        provider: dict[str, Any],
+        route: dict[str, Any],
+        messages: list[dict[str, str]],
+        *,
+        temperature: float,
+        max_tokens: int,
+        timeout: float,
+    ) -> dict[str, Any]:
+        return self._invoke_openai_with_model_fallback(
+            provider,
+            route,
+            api_format="openai_chat",
+            timeout=timeout,
+            invoke_request=lambda client, model_id: client.chat.completions.create(
+                    model=model_id,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                ),
+            extract_content=_extract_openai_chat_content,
+        )
 
     def _invoke_openai_responses(
         self,
@@ -729,82 +748,23 @@ class LLMService:
         max_tokens: int,
         timeout: float,
     ) -> dict[str, Any]:
-        model_candidates = _resolve_openai_model_candidates(provider, route, timeout, self)
-        model_candidates = [candidate for candidate in model_candidates if _clean_str(candidate)]
-        if not model_candidates:
-            raise LLMRouteError(
-                "model_missing",
-                "缺少模型，未能从服务端发现可用模型",
-                endpoint=route["endpoint"],
-                resolved_format=route["format"],
-            )
         system_text, input_text = _messages_to_text(messages)
-        client = OpenAI(
-            base_url=_openai_base_url_from_endpoint(route["endpoint"], "openai_responses"),
-            api_key=provider["api_key"],
+        return self._invoke_openai_with_model_fallback(
+            provider,
+            route,
+            api_format="openai_responses",
             timeout=timeout,
+            invoke_request=lambda client, model_id: client.responses.create(
+                **{
+                    "model": model_id,
+                    "input": input_text or "user: Hi",
+                    "temperature": temperature,
+                    "max_output_tokens": max_tokens,
+                    **({"instructions": system_text} if system_text else {}),
+                }
+            ),
+            extract_content=_extract_openai_responses_content,
         )
-        last_error: LLMRouteError | None = None
-        for model_id in model_candidates:
-            kwargs: dict[str, Any] = {
-                "model": model_id,
-                "input": input_text or "user: Hi",
-                "temperature": temperature,
-                "max_output_tokens": max_tokens,
-            }
-            if system_text:
-                kwargs["instructions"] = system_text
-            try:
-                response = client.responses.create(**kwargs)
-            except AuthenticationError as exc:
-                raise LLMRouteError("auth_failed", "认证失败，请检查 API Key", endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id, cause=exc) from exc
-            except RateLimitError as exc:
-                raise LLMRouteError("rate_limited", f"请求被限流：{exc}", endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id, retryable=True, cause=exc) from exc
-            except InternalServerError as exc:
-                err = LLMRouteError("request_failed", _clean_str(exc) or "服务端返回异常", endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id, retryable=True, cause=exc)
-                if not route["model"] and model_id == "default":
-                    last_error = err
-                    continue
-                raise err from exc
-            except (APIConnectionError, APITimeoutError) as exc:
-                raise LLMRouteError("connection_failed", f"连接失败：{exc}", endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id, retryable=True, cause=exc) from exc
-            except NotFoundError as exc:
-                last_error = LLMRouteError("model_missing", f"模型不可用：{exc}", endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id, cause=exc)
-                continue
-            except BadRequestError as exc:
-                message = _clean_str(exc)
-                status = "model_missing" if ("model" in message.lower() or "模型" in message) else "protocol_mismatch"
-                err = LLMRouteError(status, message or _format_probe_label(status), endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id, cause=exc)
-                if status == "model_missing" and not route["model"]:
-                    last_error = err
-                    continue
-                raise err from exc
-            embedded_error = _extract_openai_embedded_error(response)
-            if embedded_error:
-                status = "protocol_mismatch" if "not_found" in embedded_error.lower() or "404" in embedded_error.lower() else "request_failed"
-                if ("不支持的模型" in embedded_error or "unsupported model" in embedded_error.lower()) and not route["model"]:
-                    last_error = LLMRouteError("model_missing", embedded_error, endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id)
-                    continue
-                err = LLMRouteError(status, embedded_error, endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id)
-                raise err
-            content, input_tokens, output_tokens = _extract_openai_responses_content(response)
-            if _looks_like_html(content):
-                raise LLMRouteError("html_homepage", "返回了网页首页，不是 API 接口", endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id)
-            if not content:
-                err = LLMRouteError("protocol_mismatch", "响应里没有有效文本内容", endpoint=route["endpoint"], resolved_format=route["format"], resolved_model=model_id)
-                if not route["model"]:
-                    last_error = err
-                    continue
-                raise err
-            return {
-                "content": content.strip(),
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "resolved_model": model_id,
-            }
-        if last_error:
-            raise last_error
-        raise LLMRouteError("model_missing", "缺少可用模型", endpoint=route["endpoint"], resolved_format=route["format"])
 
     def _invoke_anthropic(
         self,

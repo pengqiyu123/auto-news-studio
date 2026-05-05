@@ -9,3 +9,7 @@ ignore = ["E501"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+norecursedirs = ["archive", "data", "frontend", "runtime", "logs", ".ruff_cache"]

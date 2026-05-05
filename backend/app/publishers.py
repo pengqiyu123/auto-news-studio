@@ -1161,13 +1161,27 @@ def _delete_wechat_draft_in_page(page, target: dict[str, object], step_logs: lis
     row = rows.nth(matched_index)
     row.hover(timeout=2500)
     delete_target = row.locator(".weui-desktop-popover__wrp .weui-desktop-popover__target").first
-    delete_button = row.locator("a.weui-desktop-icon20.weui-desktop-icon-btn").first
+    delete_button_candidates = [
+        ".weui-desktop-publish__opr a.weui-desktop-icon20.weui-desktop-icon-btn",
+        ".weui-desktop-link-group a.weui-desktop-icon20.weui-desktop-icon-btn",
+        "a.weui-desktop-icon20.weui-desktop-icon-btn",
+    ]
+    delete_button = None
+    for candidate in delete_button_candidates:
+        locator = row.locator(candidate).first
+        try:
+            locator.wait_for(timeout=1500)
+            delete_button = locator
+            break
+        except Exception:
+            continue
+    if not delete_button:
+        raise RuntimeError("无法定位删除按钮。")
     if delete_target.count() > 0:
         try:
             delete_target.hover(timeout=2000)
         except Exception:
             pass
-    delete_button.wait_for(timeout=3000)
     try:
         delete_button.hover(timeout=2000)
     except Exception:
@@ -1230,17 +1244,31 @@ def delete_wechat_remote_draft(
         def _run(_context, page):
             page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(1800)
+            if not _validate_wechat_page_identity(page, selector_profile, expected="home"):
+                page.wait_for_timeout(3000)
+                if not _validate_wechat_page_identity(page, selector_profile, expected="home"):
+                    step_logs.append("首页验证未通过，尝试继续导航。")
             if not _open_wechat_draft_box(page, selector_profile, step_logs):
-                raise RuntimeError("未能进入正式草稿箱页面（/cgi-bin/appmsg?...action=list_card...）。")
-            current_page = _context.pages[-1] if _context.pages else page
-            current_page.wait_for_timeout(2000)
-            if "action=list_card" not in str(current_page.url or ""):
-                raise RuntimeError(f"当前页面不是正式草稿箱：{current_page.url}")
-            _delete_wechat_draft_in_page(current_page, target, step_logs)
-            current_page.screenshot(path=str(screenshot_path), full_page=True)
+                direct_url = "https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=list_card"
+                step_logs.append(f"侧栏导航失败，尝试直接跳转草稿箱 {direct_url}")
+                page.goto(direct_url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(2500)
+                if "action=list_card" not in str(page.url or ""):
+                    raise RuntimeError(f"直接跳转后仍未进入草稿箱：{page.url}")
+                step_logs.append(f"已直接跳转到草稿箱 url={page.url}")
+            active_page = page
+            for candidate in _context.pages:
+                if "action=list_card" in str(candidate.url or ""):
+                    active_page = candidate
+                    break
+            active_page.wait_for_timeout(2000)
+            if "action=list_card" not in str(active_page.url or ""):
+                raise RuntimeError(f"当前页面不是正式草稿箱：{active_page.url}")
+            _delete_wechat_draft_in_page(active_page, target, step_logs)
+            active_page.screenshot(path=str(screenshot_path), full_page=True)
             artifacts.append(str(screenshot_path))
-            browser_state["last_opened_url"] = current_page.url
-            browser_state["current_page"] = current_page.url
+            browser_state["last_opened_url"] = active_page.url
+            browser_state["current_page"] = active_page.url
             browser_state["last_screenshot"] = str(screenshot_path)
             browser_state["resident_page"] = "draft_box"
             WECHAT_BROWSER_MANAGER.set_resident_page("draft_box")
