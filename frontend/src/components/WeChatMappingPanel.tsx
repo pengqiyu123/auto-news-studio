@@ -7,9 +7,9 @@ import type { WeChatMappingSnapshot, WeChatMappingStatus } from "../types";
 type MappingView = "all" | "matched" | "remote_only" | "local_only" | "unresolved";
 
 const statusLabel: Record<WeChatMappingStatus, string> = {
-  matched: "已映射",
+  matched: "已同步",
   remote_only: "仅远端",
-  local_only: "本地缺失",
+  local_only: "仅本地",
   unresolved: "未解析",
 };
 
@@ -47,11 +47,11 @@ export function WeChatMappingPanel({
   return (
     <section className="panel">
       <div className="panel-header">
-        <div>
-          <p className="eyebrow">公众号映射</p>
-          <h2>微信草稿箱远端真相</h2>
-          <p className="subtle">这里直接看浏览器抓到的公众号草稿箱数据，以及它和本地简报的映射关系。</p>
-        </div>
+          <div>
+            <p className="eyebrow">公众号映射</p>
+            <h2>微信草稿与本地记录</h2>
+            <p className="subtle">这里直接看浏览器抓到的公众号草稿箱数据，以及它和本地记录的对应关系。</p>
+          </div>
         <button type="button" className="ghost-button" onClick={() => void onRefresh()}>
           <RefreshCcw size={16} />
           {refreshing ? "刷新中..." : "刷新映射"}
@@ -60,9 +60,9 @@ export function WeChatMappingPanel({
 
       <div className="segmented-control draft-workbench-tabs">
         <button type="button" className={view === "all" ? "segment-active" : ""} onClick={() => setView("all")}>全部<strong>{counts.all}</strong></button>
-        <button type="button" className={view === "matched" ? "segment-active" : ""} onClick={() => setView("matched")}>已映射<strong>{counts.matched}</strong></button>
+        <button type="button" className={view === "matched" ? "segment-active" : ""} onClick={() => setView("matched")}>已同步<strong>{counts.matched}</strong></button>
         <button type="button" className={view === "remote_only" ? "segment-active" : ""} onClick={() => setView("remote_only")}>仅远端<strong>{counts.remote_only}</strong></button>
-        <button type="button" className={view === "local_only" ? "segment-active" : ""} onClick={() => setView("local_only")}>本地缺失<strong>{counts.local_only}</strong></button>
+        <button type="button" className={view === "local_only" ? "segment-active" : ""} onClick={() => setView("local_only")}>仅本地<strong>{counts.local_only}</strong></button>
         <button type="button" className={view === "unresolved" ? "segment-active" : ""} onClick={() => setView("unresolved")}>未解析<strong>{counts.unresolved}</strong></button>
       </div>
 
@@ -100,7 +100,7 @@ export function WeChatMappingPanel({
                 <span>{row.remote_updated_at || "时间未知"}</span>
               </div>
               <strong>{row.remote_title || row.local_brief_title || "未命名远端稿件"}</strong>
-              <p>{row.local_brief_title ? `本地简报：${row.local_brief_title}` : "当前没有匹配到本地简报。"}</p>
+              <p>{row.local_brief_title ? `本地记录：${row.local_brief_title}` : "当前没有匹配到本地记录。"}</p>
               <div className="intel-score-row">
                 <span>{row.remote_appmsg_id || "无 appmsg_id"}</span>
                 <span>{row.local_stage || "无本地状态"}</span>

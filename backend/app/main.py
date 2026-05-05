@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager, suppress
+import json
 import os
 from typing import Any
 from uuid import uuid4
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from pydantic import BaseModel, ValidationError
 
 from .models import (
+    AgentArticlePayload,
     AppUpdateDismissPayload,
     AppUpdateResponse,
     AutomationModeProfile,
@@ -58,6 +61,7 @@ from .models import (
     WeChatChannelResponse,
     WeChatDraftSyncCheckResponse,
     WeChatMappingResponse,
+    WeChatPublishHistoryResponse,
     DictOkResponse,
 )
 from .publishers import WECHAT_BROWSER_MANAGER
@@ -152,7 +156,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Auto News Studio API",
-    version=str(VERSION_MANIFEST.get("version") or "0.2.2"),
+    version=str(VERSION_MANIFEST.get("version") or "0.2.3"),
     description="自动化新闻助手运营后台 API，覆盖信息采集、候选选题、公众号草稿和浏览器会话。",
     lifespan=lifespan,
 )
@@ -173,6 +177,48 @@ def _http_from_value_error(exc: ValueError) -> HTTPException:
     message = str(exc)
     status_code = 404 if message.startswith("未找到") else 400
     return HTTPException(status_code=status_code, detail=message)
+
+
+_JSON_FALLBACK_ENCODINGS = (
+    "utf-8",
+    "utf-8-sig",
+    "utf-16",
+    "utf-16-le",
+    "utf-16-be",
+    "utf-32",
+    "utf-32-le",
+    "utf-32-be",
+    "gb18030",
+    "gbk",
+)
+
+
+def _decode_json_body(raw_body: bytes) -> Any:
+    if not raw_body or not raw_body.strip():
+        raise HTTPException(status_code=400, detail="请求体不能为空。")
+
+    for encoding in _JSON_FALLBACK_ENCODINGS:
+        try:
+            decoded = raw_body.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        try:
+            return json.loads(decoded)
+        except json.JSONDecodeError:
+            continue
+
+    raise HTTPException(
+        status_code=400,
+        detail="JSON 请求体解析失败。请优先使用 UTF-8 编码；在 Windows 下用 curl/PowerShell 发送中文正文时，也可改为 UTF-8 文件再上传。",
+    )
+
+
+async def _parse_request_model(request: Request, model_type: type[BaseModel]) -> BaseModel:
+    payload_data = _decode_json_body(await request.body())
+    try:
+        return model_type.model_validate(payload_data)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
 @app.get("/api/health")
@@ -423,22 +469,28 @@ async def import_system_backup(file: UploadFile = File(...)):
 
 
 @app.post("/api/admin/sources/sync", response_model=SourceSyncResponse)
-def sync_sources():
-    return store.sync_sources()
+def sync_sources(triggered_by: str = "dashboard"):
+    return store.sync_sources(triggered_by=triggered_by)
 
 
 @app.post("/api/admin/sources/{source_key}/sync", response_model=SourceSyncResponse)
-def sync_source(source_key: str):
+def sync_source(source_key: str, triggered_by: str = "dashboard"):
     try:
-        return store.sync_source(source_key)
+        return store.sync_source(source_key, triggered_by=triggered_by)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/admin/intel/events/{event_id}/deep-dive", response_model=EventDeepDiveResponse)
-def create_event_deep_dive(event_id: str, payload: EventDeepDivePayload | None = None):
+def create_event_deep_dive(event_id: str, payload: EventDeepDivePayload | None = None, triggered_by: str = "dashboard"):
     try:
-        return EventDeepDiveResponse(item=store.create_event_deep_dive(event_id, force=bool(payload.force) if payload else False))
+        return EventDeepDiveResponse(
+            item=store.create_event_deep_dive(
+                event_id,
+                force=bool(payload.force) if payload else False,
+                triggered_by=triggered_by,
+            )
+        )
     except ValueError as exc:
         raise _http_from_value_error(exc) from exc
 
@@ -457,9 +509,18 @@ def get_event_deep_dive(event_id: str):
 
 
 @app.post("/api/admin/intel/events/{event_id}/brief", response_model=BriefResponse)
-def create_brief_from_event(event_id: str):
+def create_brief_from_event(event_id: str, triggered_by: str = "dashboard"):
     try:
-        return BriefResponse(item=store.create_brief_from_event(event_id))
+        return BriefResponse(item=store.create_brief_from_event(event_id, triggered_by=triggered_by))
+    except ValueError as exc:
+        raise _http_from_value_error(exc) from exc
+
+
+@app.post("/api/admin/agent/articles", response_model=BriefResponse)
+async def create_agent_article(request: Request):
+    payload = await _parse_request_model(request, AgentArticlePayload)
+    try:
+        return BriefResponse(item=store.create_agent_article(payload))
     except ValueError as exc:
         raise _http_from_value_error(exc) from exc
 
@@ -478,9 +539,9 @@ def get_brief(brief_id: str):
 
 
 @app.post("/api/admin/briefs/{brief_id}/wechat-draft", response_model=BriefResponse)
-def sync_brief_wechat_draft(brief_id: str):
+def sync_brief_wechat_draft(brief_id: str, triggered_by: str = "dashboard"):
     try:
-        return BriefResponse(item=store.sync_brief_wechat_draft(brief_id))
+        return BriefResponse(item=store.sync_brief_wechat_draft(brief_id, triggered_by=triggered_by))
     except ValueError as exc:
         raise _http_from_value_error(exc) from exc
 
@@ -564,13 +625,23 @@ def check_browser_session():
 
 
 @app.post("/api/admin/browser/wechat/check-drafts", response_model=WeChatDraftSyncCheckResponse)
-def check_wechat_draft_box():
+def check_wechat_draft_box(triggered_by: str = "dashboard"):
     try:
-        return WeChatDraftSyncCheckResponse(item=store.check_wechat_draft_box())
+        return WeChatDraftSyncCheckResponse(item=store.check_wechat_draft_box(triggered_by=triggered_by))
     except ValueError as exc:
         raise _http_from_value_error(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"微信草稿箱检查失败：{exc}") from exc
+
+
+@app.post("/api/admin/browser/wechat/check-publish-history", response_model=WeChatPublishHistoryResponse)
+def check_wechat_publish_history(triggered_by: str = "dashboard"):
+    try:
+        return WeChatPublishHistoryResponse(item=store.check_wechat_publish_history(triggered_by=triggered_by))
+    except ValueError as exc:
+        raise _http_from_value_error(exc) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"微信发表记录检查失败：{exc}") from exc
 
 
 @app.get("/api/admin/wechat/mapping", response_model=WeChatMappingResponse)
@@ -579,9 +650,9 @@ def get_wechat_mapping():
 
 
 @app.post("/api/admin/wechat/mapping/refresh", response_model=WeChatMappingResponse)
-def refresh_wechat_mapping():
+def refresh_wechat_mapping(triggered_by: str = "dashboard"):
     try:
-        return WeChatMappingResponse(item=store.refresh_wechat_mapping())
+        return WeChatMappingResponse(item=store.refresh_wechat_mapping(triggered_by=triggered_by))
     except ValueError as exc:
         raise _http_from_value_error(exc) from exc
 

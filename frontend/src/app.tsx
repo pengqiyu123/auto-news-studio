@@ -23,6 +23,7 @@ import { LogsPanel } from "./components/LogsPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SourceHealthPage } from "./components/SourceHealthPage";
 import { WeChatDraftBoxPanel } from "./components/WeChatDraftBoxPanel";
+import { WeChatPublishHistoryPanel } from "./components/WeChatPublishHistoryPanel";
 import { api } from "./lib/api";
 import { deriveRuntimeDisplayStatus, isRuntimeActivelyProcessing, pickNewerRuntimeStatus, RUNTIME_INTENT_LABELS } from "./lib/runtimeIntent";
 import type {
@@ -48,6 +49,7 @@ import type {
   SourceConnector,
   SystemDoctorResult,
   WeChatMappingSnapshot,
+  WeChatPublishHistorySnapshot,
   WeChatChannelConfig,
 } from "./types";
 
@@ -59,6 +61,7 @@ type TabKey =
   | "source-health"
   | "watchlist"
   | "briefs"
+  | "publish-history"
   | "draft-box"
   | "settings"
   | "logs";
@@ -74,6 +77,7 @@ const intelTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboar
 const draftTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }> = [
   { key: "watchlist", label: "深挖池", icon: Sparkles },
   { key: "briefs", label: "简报", icon: FileStack },
+  { key: "publish-history", label: "发表记录", icon: CheckCircle },
   { key: "draft-box", label: "微信草稿箱", icon: RadioTower },
 ];
 
@@ -90,6 +94,7 @@ const pageMeta: Record<TabKey, { eyebrow: string; title: string }> = {
   "source-health": { eyebrow: "来源巡检", title: "来源运行状态" },
   watchlist: { eyebrow: "深挖池", title: "待深挖的观察事件" },
   briefs: { eyebrow: "简报", title: "简报工作台" },
+  "publish-history": { eyebrow: "发表记录", title: "微信公众号发表记录" },
   "draft-box": { eyebrow: "微信草稿箱", title: "远端草稿与本地简报对照" },
   settings: { eyebrow: "系统配置", title: "AI 模型、信息源与系统偏好" },
   logs: { eyebrow: "运行记录", title: "系统日志与异常" },
@@ -112,6 +117,7 @@ export default function App() {
   const [publishTasks, setPublishTasks] = useState<PublishTask[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [wechatMapping, setWechatMapping] = useState<WeChatMappingSnapshot | null>(null);
+  const [wechatPublishHistory, setWechatPublishHistory] = useState<WeChatPublishHistorySnapshot | null>(null);
   const [wechatConfig, setWechatConfig] = useState<WeChatChannelConfig | null>(null);
   const [browserSession, setBrowserSession] = useState<BrowserSessionState | null>(null);
   const [referenceProjects, setReferenceProjects] = useState<ReferenceProject[]>([]);
@@ -132,6 +138,7 @@ export default function App() {
   const [refreshingBrowser, setRefreshingBrowser] = useState(false);
   const [openingBrowser, setOpeningBrowser] = useState(false);
   const [refreshingMapping, setRefreshingMapping] = useState(false);
+  const [refreshingPublishHistory, setRefreshingPublishHistory] = useState(false);
   const [deletingRemoteId, setDeletingRemoteId] = useState<string | null>(null);
   const [busyRuntimeAction, setBusyRuntimeAction] = useState<"start" | "stop" | null>(null);
   const [busyMaintenanceIntent, setBusyMaintenanceIntent] = useState<RuntimeIntent | null>(null);
@@ -191,6 +198,7 @@ export default function App() {
         publishTaskData,
         logData,
         mappingData,
+        publishHistoryData,
         channelData,
         browserData,
         referenceData,
@@ -209,6 +217,7 @@ export default function App() {
         api.getPublishTasks(),
         api.getLogs(),
         api.getWeChatMapping(),
+        api.checkWeChatPublishHistory(),
         api.getWeChatConfig(),
         api.getBrowserSession(),
         api.getReferenceProjects(),
@@ -236,6 +245,7 @@ export default function App() {
       setPublishTasks(publishTaskData.items);
       setLogs(logData.items);
       setWechatMapping(mappingData.item);
+      setWechatPublishHistory(publishHistoryData.item);
       setWechatConfig(channelData.item);
       setBrowserSession(browserData.item);
       setAppVersion(dashboardData.app_version);
@@ -302,7 +312,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const runtimeAwareTabs: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "draft-box", "logs"];
+    const runtimeAwareTabs: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "briefs", "draft-box", "logs"];
     if (!runtimeAwareTabs.includes(activeTab)) {
       return;
     }
@@ -722,6 +732,21 @@ export default function App() {
     }
   }
 
+  async function handleRefreshWeChatPublishHistory() {
+    setRefreshingPublishHistory(true);
+    try {
+      const result = await api.checkWeChatPublishHistory();
+      setWechatPublishHistory(result.item);
+      const browserData = await api.getBrowserSession();
+      setBrowserSession(browserData.item);
+      showToast(result.item.message || "发表记录已刷新");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "发表记录刷新失败");
+    } finally {
+      setRefreshingPublishHistory(false);
+    }
+  }
+
   async function handleDeleteRemoteDraft(remoteId: string) {
     const confirmed = window.confirm("确定删除这个微信远端草稿吗？删除后不可恢复。");
     if (!confirmed) return;
@@ -1100,9 +1125,18 @@ export default function App() {
               />
             ) : null}
 
+            {activeTab === "publish-history" ? (
+              <WeChatPublishHistoryPanel
+                history={wechatPublishHistory}
+                refreshing={refreshingPublishHistory}
+                onRefresh={handleRefreshWeChatPublishHistory}
+              />
+            ) : null}
+
             {activeTab === "draft-box" ? (
               <WeChatDraftBoxPanel
                 mapping={wechatMapping}
+                briefs={briefs}
                 browserSession={browserSession}
                 publishTasks={publishTasks}
                 refreshing={refreshingMapping}

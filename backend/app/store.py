@@ -70,6 +70,7 @@ from .intel_pipeline import build_intel_state
 from .llm import LLMService
 from .legacy_sources import build_legacy_rss_sources
 from .models import (
+    AgentArticlePayload,
     AppUpdateInfo,
     AppVersionInfo,
     AutomationMode,
@@ -122,6 +123,8 @@ from .models import (
     WeChatMappingRow,
     WeChatMappingSnapshot,
     WeChatRemoteDraftItem,
+    WeChatPublishHistorySnapshot,
+    WeChatPublishRecordItem,
     WeChatChannelConfig,
     DictOkResponse,
 )
@@ -152,6 +155,7 @@ from .publishers import (
     ensure_channel_defaults,
     extract_wechat_appmsg_id,
     inspect_wechat_draft_box,
+    inspect_wechat_publish_history,
     inspect_wechat_session,
     launch_wechat_dashboard,
     refresh_browser_session,
@@ -2133,6 +2137,9 @@ class StudioStore:
         projected["deep_dive_id"] = deep_dive.get("id") if deep_dive else projected.get("deep_dive_id")
         projected["brief_id"] = brief.get("id") if brief else projected.get("brief_id")
         projected["deep_dive_status"] = deep_dive.get("status") if deep_dive else None
+        projected["deep_dive_started_at"] = deep_dive.get("started_at") if deep_dive else None
+        projected["deep_dive_finished_at"] = deep_dive.get("finished_at") if deep_dive else None
+        projected["deep_dive_updated_at"] = deep_dive.get("updated_at") if deep_dive else None
         projected["brief_status"] = brief.get("stage") if brief else None
         projected["deep_dive_summary"] = self._summarize_deep_dive(deep_dive)
         worth_to_brief, worth_reason = self._evaluate_worthiness(projected, deep_dive or {})
@@ -4516,14 +4523,19 @@ class StudioStore:
         self._write_config(self._upgrade_user_settings(config))
         self._write(state)
 
-    def sync_sources(self) -> SourceSyncResponse:
+    def sync_sources(self, triggered_by: str = "dashboard") -> SourceSyncResponse:
         state = self._upgrade_state(self._read())
-        response = self._sync_sources_internal(state, triggered_by="dashboard")
-        self._append_job(state, "collect_news", f"已采集 {response.raw_count} 条素材并刷新事件聚合。")
+        response = self._sync_sources_internal(state, triggered_by=triggered_by)
+        self._append_job(
+            state,
+            "collect_news",
+            f"已采集 {response.raw_count} 条素材并刷新事件聚合。",
+            triggered_by=triggered_by,
+        )
         self._write(state)
         return response
 
-    def sync_source(self, source_key: str) -> SourceSyncResponse:
+    def sync_source(self, source_key: str, triggered_by: str = "dashboard") -> SourceSyncResponse:
         state = self._upgrade_state(self._read())
         source = self._find_source(state, source_key)
         stamp = now_iso()
@@ -4574,11 +4586,11 @@ class StudioStore:
             "collection",
             message,
             stream="business_event",
-            actor="dashboard",
+            actor=triggered_by,
         )
         for warning in warnings[:3]:
-            self._append_log(state, "warning", "collection", warning, stream="business_event", actor="dashboard")
-        self._append_job(state, "collect_news", f"已重抓来源《{source['name']}》。", triggered_by="dashboard")
+            self._append_log(state, "warning", "collection", warning, stream="business_event", actor=triggered_by)
+        self._append_job(state, "collect_news", f"已重抓来源《{source['name']}》。", triggered_by=triggered_by)
         self._write(state)
         return SourceSyncResponse(
             raw_count=len(state["raw_items"]),
@@ -4690,7 +4702,7 @@ class StudioStore:
             "rule",
         )
 
-    def create_event_deep_dive(self, event_id: str, *, force: bool = False) -> EventDeepDive:
+    def create_event_deep_dive(self, event_id: str, *, force: bool = False, triggered_by: str = "dashboard") -> EventDeepDive:
         with self._lock:
             state = self._upgrade_state(self._read())
             event = self._find_event(state, event_id)
@@ -4763,6 +4775,7 @@ class StudioStore:
                 "success" if success_sources else "warning",
                 "deep_dive",
                 f"已完成正文深挖：{event.get('title', '未命名事件')}",
+                actor=triggered_by,
                 detail=self._summarize_deep_dive(record),
             )
             self._write(state)
@@ -4781,13 +4794,13 @@ class StudioStore:
             raise ValueError(f"未找到事件正文深挖：{event_id}")
         return EventDeepDive(**record)
 
-    def create_brief_from_event(self, event_id: str) -> BriefItem:
+    def create_brief_from_event(self, event_id: str, *, triggered_by: str = "dashboard") -> BriefItem:
         with self._lock:
             state = self._upgrade_state(self._read())
             event = self._find_event(state, event_id)
             deep_dive = self._find_deep_dive_for_event(state, event_id)
             if not deep_dive or str(deep_dive.get("status") or "") not in {"ready", "partial"}:
-                deep_dive_result = self.create_event_deep_dive(event_id)
+                deep_dive_result = self.create_event_deep_dive(event_id, triggered_by=triggered_by)
                 deep_dive = deep_dive_result.model_dump()
                 state = self._upgrade_state(self._read())
                 event = self._find_event(state, event_id)
@@ -4870,9 +4883,179 @@ class StudioStore:
                 state.setdefault("briefs", []).insert(0, brief)
             event["brief_id"] = brief["id"]
             self._sync_llm_usage(state, llm_service)
-            self._append_log(state, "success", "brief", f"已生成简报：{brief['title']}")
+            self._append_log(state, "success", "brief", f"已生成简报：{brief['title']}", actor=triggered_by)
             self._write(state)
             return BriefItem(**brief)
+
+    def create_agent_article(self, payload: AgentArticlePayload) -> BriefItem:
+        title = str(payload.title or "").strip()
+        article_markdown = str(payload.article_markdown or "").strip()
+        if not title:
+            raise ValueError("文章标题不能为空。")
+        if not article_markdown:
+            raise ValueError("文章正文不能为空。")
+
+        def dedupe_texts(values: list[str]) -> list[str]:
+            result: list[str] = []
+            seen: set[str] = set()
+            for value in values:
+                compact = re.sub(r"\s+", " ", str(value or "")).strip()
+                if not compact or compact in seen:
+                    continue
+                seen.add(compact)
+                result.append(compact)
+            return result
+
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            event = self._find_event(state, payload.event_id)
+            deep_dive = self._find_deep_dive_for_event(state, payload.event_id)
+            if not deep_dive:
+                self.create_event_deep_dive(payload.event_id, triggered_by=payload.triggered_by)
+                state = self._upgrade_state(self._read())
+                event = self._find_event(state, payload.event_id)
+                deep_dive = self._find_deep_dive_for_event(state, payload.event_id)
+            if not deep_dive:
+                raise ValueError("未找到可关联的正文深挖记录，无法保存 AI 成稿。")
+
+            facts = dedupe_texts(list(payload.facts))[:8]
+            quotes = dedupe_texts(list(payload.quotes))[:6]
+            timeline = dedupe_texts(list(payload.timeline))[:8]
+            entity_names = dedupe_texts(list(payload.entity_names) or list(event.get("entity_names", [])))[:12]
+            source_links = dedupe_texts(
+                list(payload.source_links)
+                or [
+                    str(item.get("canonical_link") or item.get("original_link") or "").strip()
+                    for item in deep_dive.get("sources", [])
+                    if isinstance(item, dict)
+                ]
+            )[:12]
+            risk_notes = dedupe_texts(list(payload.risk_notes))[:6]
+            one_line = str(payload.one_line or "").strip()
+            why_it_matters = str(payload.why_it_matters or "").strip()
+            if not one_line:
+                one_line = facts[0] if facts else (str(event.get("summary") or "").strip() or title)
+            if not why_it_matters:
+                why_it_matters = str(deep_dive.get("worthiness", {}).get("reason") or "").strip()
+            if not why_it_matters:
+                why_it_matters = f"该事件当前处于 {event.get('alert_state') or '观察'} 阶段，且已具备可发布价值。"
+
+            full_text_sources = self._build_full_text_sources_for_ai(deep_dive, limit=4)
+            source_quotes: list[dict[str, str]] = []
+            for item in deep_dive.get("sources", []):
+                if not isinstance(item, dict):
+                    continue
+                source_name = str(item.get("source_name") or "未知来源").strip() or "未知来源"
+                for quote in item.get("quotes", [])[:1]:
+                    compact = str(quote or "").strip()
+                    if compact:
+                        source_quotes.append({"source_name": source_name, "quote": compact})
+            prompt_package_markdown = (
+                build_prompt_package_markdown(
+                    title=title,
+                    one_line=one_line,
+                    why_it_matters=why_it_matters,
+                    facts=facts,
+                    full_text_sources=[
+                        {
+                            "source_name": str(item.get("source_name") or "未知来源"),
+                            "title": str(item.get("title") or ""),
+                            "full_text": str(item.get("cleaned_full_text") or ""),
+                        }
+                        for item in full_text_sources
+                    ],
+                    source_quotes=source_quotes[:4],
+                    timeline=timeline,
+                    risk_notes=risk_notes,
+                    source_links=source_links,
+                )
+                + "\n\n## AI 成稿正文\n"
+                + article_markdown
+            ).strip()
+
+            existing = self._find_brief_for_event(state, payload.event_id)
+            existing_revision = self._brief_revision(existing) if existing else None
+            brief_id = str(existing.get("id") or "") if existing else f"brief-{uuid4().hex[:12]}"
+            brief = {
+                "id": brief_id,
+                "event_id": payload.event_id,
+                "deep_dive_id": str(deep_dive.get("id") or ""),
+                "brief_level": "enhanced",
+                "stage": existing.get("stage") if existing else "prepared",
+                "title": title,
+                "one_line": one_line,
+                "why_it_matters": why_it_matters,
+                "facts": facts,
+                "quotes": quotes,
+                "timeline": timeline,
+                "entity_names": entity_names,
+                "source_links": source_links,
+                "risk_notes": risk_notes,
+                "prompt_package_markdown": prompt_package_markdown,
+                "wechat_markdown": article_markdown,
+                "wechat_html": _wechat_html(article_markdown),
+                "wechat_target_id": existing.get("wechat_target_id") if existing else build_wechat_target_id(brief_id),
+                "wechat_editor_url": existing.get("wechat_editor_url") if existing else None,
+                "wechat_remote_appmsg_id": existing.get("wechat_remote_appmsg_id") if existing else None,
+                "preview_url": existing.get("preview_url") if existing else build_preview_url(brief_id),
+                "last_error": None,
+                "delivery_status": existing.get("delivery_status") if existing else "idle",
+                "delivery_attempt_count": int(existing.get("delivery_attempt_count", 0) or 0) if existing else 0,
+                "last_delivery_attempt_at": existing.get("last_delivery_attempt_at") if existing else None,
+                "last_verified_at": existing.get("last_verified_at") if existing else None,
+                "last_delivery_error_kind": existing.get("last_delivery_error_kind") if existing else None,
+                "needs_resync": bool(existing.get("needs_resync")) if existing else False,
+                "last_synced_revision": existing.get("last_synced_revision") if existing else None,
+                "last_successful_upload_at": existing.get("last_successful_upload_at") if existing else None,
+                "updated_at": now_iso(),
+            }
+            if not brief.get("wechat_target_id"):
+                brief["wechat_target_id"] = build_wechat_target_id(brief_id)
+            if not brief.get("preview_url"):
+                brief["preview_url"] = build_preview_url(brief_id)
+            next_revision = self._brief_revision(brief)
+            revision_changed = existing_revision != next_revision
+            if existing and not revision_changed:
+                brief["stage"] = existing.get("stage") or "prepared"
+                brief["delivery_status"] = existing.get("delivery_status") or "idle"
+                brief["needs_resync"] = bool(existing.get("needs_resync"))
+                brief["last_synced_revision"] = existing.get("last_synced_revision")
+                brief["last_successful_upload_at"] = existing.get("last_successful_upload_at")
+                brief["last_verified_at"] = existing.get("last_verified_at")
+                brief["last_delivery_error_kind"] = existing.get("last_delivery_error_kind")
+                brief["last_error"] = existing.get("last_error")
+            elif existing:
+                brief["stage"] = "prepared"
+                brief["delivery_status"] = "idle"
+                brief["needs_resync"] = bool(existing.get("last_synced_revision") or existing.get("wechat_editor_url"))
+                brief["last_synced_revision"] = None
+                brief["last_successful_upload_at"] = None
+                brief["last_verified_at"] = None
+                brief["last_delivery_error_kind"] = None
+                brief["last_error"] = None
+
+            if existing:
+                index = next(
+                    idx for idx, item in enumerate(state.get("briefs", []))
+                    if isinstance(item, dict) and str(item.get("id") or "") == str(existing.get("id") or "")
+                )
+                state["briefs"][index] = brief
+            else:
+                state.setdefault("briefs", []).insert(0, brief)
+            event["brief_id"] = brief["id"]
+            self._append_log(
+                state,
+                "success",
+                "brief",
+                f"已保存 AI 成稿：{title}",
+                actor=payload.triggered_by,
+                detail=f"driver={payload.driver_label} | publish_to_wechat_draft={payload.publish_to_wechat_draft}",
+            )
+            self._write(state)
+
+        if payload.publish_to_wechat_draft:
+            return self.sync_brief_wechat_draft(brief_id, triggered_by=payload.triggered_by)
+        return BriefItem(**brief)
 
     def list_briefs(self) -> list[BriefItem]:
         state = self._upgrade_state(self._read())
@@ -5245,8 +5428,8 @@ class StudioStore:
         state = self._upgrade_state(self._read())
         return self._build_wechat_mapping_snapshot(state)
 
-    def refresh_wechat_mapping(self) -> WeChatMappingSnapshot:
-        self.check_wechat_draft_box()
+    def refresh_wechat_mapping(self, triggered_by: str = "dashboard") -> WeChatMappingSnapshot:
+        self.check_wechat_draft_box(triggered_by=triggered_by)
         latest_state = self._upgrade_state(self._read())
         return self._build_wechat_mapping_snapshot(latest_state)
 
@@ -5455,7 +5638,7 @@ class StudioStore:
         self._write(state)
         return BrowserSessionState(**browser)
 
-    def check_wechat_draft_box(self) -> WeChatDraftSyncCheckResult:
+    def check_wechat_draft_box(self, triggered_by: str = "dashboard") -> WeChatDraftSyncCheckResult:
         with self._lock:
             state = self._upgrade_state(self._read())
             browser = self._refresh_browser_session(state)
@@ -5628,7 +5811,7 @@ class StudioStore:
                 "browser",
                 str(result_payload["message"]),
                 stream="business_event",
-                actor="dashboard",
+                actor=triggered_by,
                 detail=" | ".join(step_logs[-3:]),
             )
             state["publish_tasks"].insert(
@@ -5638,7 +5821,7 @@ class StudioStore:
                     "check_wechat_drafts",
                     "blocked" if browser.get("last_error") else "completed",
                     str(result_payload["message"]),
-                    "dashboard",
+                    triggered_by,
                     str(state["channels"]["wechat"]["selectors_version"]),
                     artifacts=artifacts,
                     step_logs=step_logs + diff_logs[:8],
@@ -5652,6 +5835,70 @@ class StudioStore:
                 matched_count=int(result_payload["matched_count"]),
                 missing_count=int(result_payload["missing_count"]),
                 items=[WeChatRemoteDraftItem(**item) for item in result_payload["items"]],
+                message=str(result_payload["message"]),
+            )
+
+    def check_wechat_publish_history(self, triggered_by: str = "dashboard") -> WeChatPublishHistorySnapshot:
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            browser = self._refresh_browser_session(state)
+            previous_check = (
+                browser.get("last_publish_history_check")
+                if isinstance(browser.get("last_publish_history_check"), dict)
+                else {}
+            )
+            browser, artifacts, step_logs, remote_items = inspect_wechat_publish_history(state["channels"]["wechat"], browser)
+            state["browser"]["wechat"] = browser
+
+            if browser.get("last_error"):
+                previous_items = previous_check.get("items", []) if isinstance(previous_check.get("items"), list) else []
+                result_payload = {
+                    "checked_at": now_iso(),
+                    "record_count": int(previous_check.get("record_count", len(previous_items)) or 0),
+                    "items": previous_items[:50],
+                    "message": (
+                        f"本次发表记录检查失败，当前展示最近一次成功读取结果：{int(previous_check.get('record_count', len(previous_items)) or 0)} 条。"
+                        if previous_items
+                        else str(browser.get("last_error") or "微信发表记录检查失败。")
+                    ),
+                }
+            else:
+                result_payload = {
+                    "checked_at": now_iso(),
+                    "record_count": len(remote_items),
+                    "items": remote_items[:50],
+                    "message": f"已检查微信发表记录，共读取 {len(remote_items)} 条远端记录。",
+                }
+
+            state["browser"]["wechat"]["last_publish_history_check"] = result_payload
+            self._append_log(
+                state,
+                "success" if not browser.get("last_error") else "warning",
+                "browser",
+                str(result_payload["message"]),
+                stream="business_event",
+                actor=triggered_by,
+                detail=" | ".join(step_logs[-3:]),
+            )
+            state["publish_tasks"].insert(
+                0,
+                create_publish_task(
+                    "session-wechat",
+                    "check_wechat_publish_history",
+                    "blocked" if browser.get("last_error") else "completed",
+                    str(result_payload["message"]),
+                    triggered_by,
+                    str(state["channels"]["wechat"]["selectors_version"]),
+                    artifacts=artifacts,
+                    step_logs=step_logs,
+                ),
+            )
+            state["publish_tasks"] = state["publish_tasks"][:80]
+            self._write(state)
+            return WeChatPublishHistorySnapshot(
+                checked_at=str(result_payload["checked_at"]),
+                record_count=int(result_payload["record_count"]),
+                items=[WeChatPublishRecordItem(**item) for item in result_payload["items"]],
                 message=str(result_payload["message"]),
             )
 

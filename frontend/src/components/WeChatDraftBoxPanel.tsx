@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 
 import { formatDateTime, formatRelativeTime } from "../lib/time";
 import type {
+  BriefItem,
   BrowserSessionState,
   PublishTask,
   WeChatMappingSnapshot,
@@ -10,12 +11,36 @@ import type {
 } from "../types";
 import { PublishTaskBadge, SourceHealthBadge } from "./StatusBadge";
 
-type MappingView = "all" | "matched" | "remote_only" | "unresolved";
+type MappingView = "all" | "remote_only" | "local_records" | "unresolved";
+
+type LocalRecordViewRow = {
+  remote_title: string;
+  remote_key: string;
+  remote_appmsg_id: string | null;
+  remote_url: string;
+  remote_updated_at: string | null;
+  local_brief_id: string;
+  local_brief_title: string;
+  local_stage: BriefItem["stage"];
+  mapping_status: WeChatMappingStatus;
+};
+type BrowserRemoteRow = {
+  browser_row_key: string;
+  remote_title: string;
+  remote_key: string;
+  remote_appmsg_id: string | null;
+  remote_url: string;
+  remote_updated_at: string | null;
+  local_brief_id: string | null;
+  local_brief_title: string | null;
+  local_stage: BriefItem["stage"] | null;
+  mapping_status: WeChatMappingStatus;
+};
 
 const statusLabel: Record<WeChatMappingStatus, string> = {
   matched: "已同步",
   remote_only: "仅微信",
-  local_only: "待核对",
+  local_only: "仅本地",
   unresolved: "待确认",
 };
 
@@ -34,6 +59,7 @@ const PUBLISH_ACTION_LABELS: Record<string, string> = {
 
 interface WeChatDraftBoxPanelProps {
   mapping: WeChatMappingSnapshot | null;
+  briefs: BriefItem[];
   browserSession: BrowserSessionState | null;
   publishTasks: PublishTask[];
   refreshing: boolean;
@@ -45,6 +71,7 @@ interface WeChatDraftBoxPanelProps {
 
 export function WeChatDraftBoxPanel({
   mapping,
+  briefs,
   browserSession,
   publishTasks,
   refreshing,
@@ -55,33 +82,71 @@ export function WeChatDraftBoxPanel({
 }: WeChatDraftBoxPanelProps) {
   const [view, setView] = useState<MappingView>("all");
   const [showRecords, setShowRecords] = useState(false);
-  const [showPending, setShowPending] = useState(false);
 
   const rows = mapping?.mapping_rows ?? [];
+  const browserItems = mapping?.items ?? [];
 
-  const remoteRows = useMemo(
-    () => rows.filter((row) => row.mapping_status !== "local_only"),
-    [rows],
+  const remoteRows = useMemo(() => rows, [rows]);
+  const browserRows = useMemo(
+    () => browserItems.map((item, index): BrowserRemoteRow => ({
+      browser_row_key: `${item.remote_key || item.appmsg_id || item.url || item.title || "draft"}-${index}`,
+      remote_title: item.title,
+      remote_key: item.remote_key || item.appmsg_id || item.url || item.title || `draft-${index}`,
+      remote_appmsg_id: item.appmsg_id ?? null,
+      remote_url: item.url ?? "",
+      remote_updated_at: item.updated_at ?? null,
+      local_brief_id: null,
+      local_brief_title: null,
+      local_stage: null,
+      mapping_status: "remote_only",
+    })),
+    [browserItems],
   );
 
-  const pendingRows = useMemo(
-    () => rows.filter((row) => row.mapping_status === "local_only"),
-    [rows],
-  );
+  const localRows = useMemo(() => {
+    return [...briefs].sort((left, right) => {
+      const leftTime = Date.parse(String(left.updated_at || ""));
+      const rightTime = Date.parse(String(right.updated_at || ""));
+      const safeLeft = Number.isFinite(leftTime) ? leftTime : Number.NEGATIVE_INFINITY;
+      const safeRight = Number.isFinite(rightTime) ? rightTime : Number.NEGATIVE_INFINITY;
+      if (safeRight !== safeLeft) return safeRight - safeLeft;
+      return String(right.id || "").localeCompare(String(left.id || ""));
+    });
+  }, [briefs]);
 
   const filteredRows = useMemo(() => {
-    if (view === "all") return remoteRows;
+    if (view === "all") {
+      return remoteRows;
+    }
+    if (view === "local_records") {
+      return localRows.map(
+        (brief): LocalRecordViewRow => ({
+          remote_title: brief.title,
+          remote_key: brief.id,
+          remote_appmsg_id: brief.wechat_remote_appmsg_id ?? null,
+          remote_url: brief.wechat_editor_url ?? "",
+          remote_updated_at: brief.updated_at ?? null,
+          local_brief_id: brief.id,
+          local_brief_title: brief.title,
+          local_stage: brief.stage,
+          mapping_status: brief.stage === "synced" ? "matched" : "local_only",
+        }),
+      );
+    }
+    if (view === "remote_only") {
+      return browserRows;
+    }
     return remoteRows.filter((row) => row.mapping_status === view);
-  }, [remoteRows, view]);
+  }, [browserRows, localRows, remoteRows, view]);
 
   const counts = useMemo(
     () => ({
       all: remoteRows.length,
-      matched: remoteRows.filter((row) => row.mapping_status === "matched").length,
-      remote_only: remoteRows.filter((row) => row.mapping_status === "remote_only").length,
+      remote_only: browserRows.length,
+      local_records: briefs.length,
       unresolved: remoteRows.filter((row) => row.mapping_status === "unresolved").length,
     }),
-    [remoteRows],
+    [briefs.length, browserRows.length, remoteRows],
   );
 
   const isLoggedIn = Boolean(browserSession?.logged_in);
@@ -96,7 +161,7 @@ export function WeChatDraftBoxPanel({
       ? "执行中"
       : "空闲";
 
-  function renderRemoteTimeLabel(row: WeChatMappingSnapshot["mapping_rows"][number]) {
+  function renderRemoteTimeLabel(row: WeChatMappingSnapshot["mapping_rows"][number] | BrowserRemoteRow) {
     if (row.remote_updated_at) {
       return `更新于 ${row.remote_updated_at}`;
     }
@@ -105,165 +170,133 @@ export function WeChatDraftBoxPanel({
 
   return (
     <section className="panel">
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <p className="eyebrow">微信草稿箱</p>
-            <h2>远端草稿与本地简报对照</h2>
-            <p className="subtle">
-              这里展示浏览器抓到的公众号草稿箱数据，以及它和本地简报的映射关系。
-              浏览器配置请前往「设置」页。
-            </p>
+      <div className="panel-header">
+        <div>
+          <p className="eyebrow">微信草稿箱</p>
+          <h2>微信草稿与本地记录</h2>
+          <p className="subtle">
+            上方切换视图，下方直接看结果。仅微信以浏览器为准，本地记录以项目内 `briefs` 为准。
+          </p>
+        </div>
+        <button type="button" className="ghost-button" onClick={() => void onRefresh()}>
+          <RefreshCcw size={16} />
+          {refreshing ? "刷新中..." : "刷新草稿箱"}
+        </button>
+      </div>
+
+      <div className="mapping-summary-grid">
+        <article className="channel-session-stat">
+          <span>登录状态</span>
+          <div className="row-with-badge">
+            <strong>{isLoggedIn ? "已登录" : "未登录"}</strong>
+            <SourceHealthBadge health={isLoggedIn ? "healthy" : "warning"} />
+            <span className={`browser-status-indicator browser-status-${browserTone}`}>
+              <span className="browser-status-dot" />
+              {browserLabel}
+            </span>
           </div>
-          <button type="button" className="ghost-button" onClick={() => void onRefresh()}>
-            <RefreshCcw size={16} />
-            {refreshing ? "刷新中..." : "刷新草稿箱"}
-          </button>
-        </div>
+          <p>
+            {browserSession?.window_state ?? "unknown"} | {browserSession?.resident_page ?? "unknown"}
+          </p>
+        </article>
+        <article className="channel-session-stat">
+          <span>最近检查</span>
+          <strong>{formatDateTime(mapping?.checked_at, { fallback: "暂无" })}</strong>
+          <p>{formatRelativeTime(mapping?.checked_at, "尚未检查")}</p>
+        </article>
+        <article className="channel-session-stat">
+          <span>远端稿件</span>
+          <strong>{mapping?.remote_count ?? 0}</strong>
+        </article>
+        <article className="channel-session-stat">
+          <span>本地记录</span>
+          <strong>{counts.local_records}</strong>
+          {localRows.length > 0 ? <p>本地稿件 {localRows.length}</p> : null}
+        </article>
+      </div>
 
-        <div className="mapping-summary-grid">
-          <article className="channel-session-stat">
-            <span>登录状态</span>
-            <div className="row-with-badge">
-              <strong>{isLoggedIn ? "已登录" : "未登录"}</strong>
-              <SourceHealthBadge health={isLoggedIn ? "healthy" : "warning"} />
-              <span className={`browser-status-indicator browser-status-${browserTone}`}>
-                <span className="browser-status-dot" />
-                {browserLabel}
-              </span>
-            </div>
-            <p>
-              {browserSession?.window_state ?? "unknown"} | {browserSession?.resident_page ?? "unknown"}
-            </p>
-          </article>
-          <article className="channel-session-stat">
-            <span>最近检查</span>
-            <strong>{formatDateTime(mapping?.checked_at, { fallback: "暂无" })}</strong>
-            <p>{formatRelativeTime(mapping?.checked_at, "尚未检查")}</p>
-          </article>
-          <article className="channel-session-stat">
-            <span>远端稿件</span>
-            <strong>{mapping?.remote_count ?? 0}</strong>
-          </article>
-          <article className="channel-session-stat">
-            <span>已同步</span>
-            <strong>{counts.matched}</strong>
-            {pendingRows.length > 0 ? <p>待核对 {pendingRows.length}</p> : null}
-          </article>
-        </div>
-      </section>
+      <div className="segmented-control draft-workbench-tabs">
+        <button type="button" className={view === "all" ? "segment-active" : ""} onClick={() => setView("all")}>
+          全部<strong>{counts.all}</strong>
+        </button>
+        <button type="button" className={view === "remote_only" ? "segment-active" : ""} onClick={() => setView("remote_only")}>
+          仅微信<strong>{counts.remote_only}</strong>
+        </button>
+        <button type="button" className={view === "local_records" ? "segment-active" : ""} onClick={() => setView("local_records")}>
+          本地记录<strong>{counts.local_records}</strong>
+        </button>
+        <button type="button" className={view === "unresolved" ? "segment-active" : ""} onClick={() => setView("unresolved")}>
+          待确认<strong>{counts.unresolved}</strong>
+        </button>
+      </div>
 
-      <section className="panel">
-        <div className="segmented-control draft-workbench-tabs">
-          <button type="button" className={view === "all" ? "segment-active" : ""} onClick={() => setView("all")}>
-            全部<strong>{counts.all}</strong>
-          </button>
-          <button type="button" className={view === "matched" ? "segment-active" : ""} onClick={() => setView("matched")}>
-            已同步<strong>{counts.matched}</strong>
-          </button>
-          <button type="button" className={view === "remote_only" ? "segment-active" : ""} onClick={() => setView("remote_only")}>
-            仅微信<strong>{counts.remote_only}</strong>
-          </button>
-          <button type="button" className={view === "unresolved" ? "segment-active" : ""} onClick={() => setView("unresolved")}>
-            待确认<strong>{counts.unresolved}</strong>
-          </button>
-        </div>
-
-        <div className="intel-list">
-          {filteredRows.length
-              ? filteredRows.map((row, index) => {
-                const remoteKey = row.remote_key || row.remote_appmsg_id || row.remote_url || `${row.remote_title}-${index}`;
-                const deleting = deletingRemoteId === remoteKey;
-                return (
-                  <article key={remoteKey} className="intel-row-card">
-                    <div className="intel-card-topline">
-                      <span className={`status-badge status-${statusTone[row.mapping_status]}`}>
-                        {statusLabel[row.mapping_status]}
-                      </span>
-                      <span>{renderRemoteTimeLabel(row)}</span>
-                    </div>
-                    <strong>{row.remote_title || row.local_brief_title || "未命名远端稿件"}</strong>
-                    <p>
-                      {row.local_brief_title
-                        ? `本地简报：${row.local_brief_title}`
-                        : "当前没有匹配到本地简报。"}
-                    </p>
-                    <div className="intel-score-row">
-                      <span>{row.remote_appmsg_id || "无 appmsg_id"}</span>
-                      <span>{row.local_stage || "无本地状态"}</span>
-                    </div>
-                    <div className="intel-inline-actions">
-                      {row.remote_url ? (
-                        <a className="ghost-button compact" href={row.remote_url} target="_blank" rel="noreferrer">
-                          <ExternalLink size={14} />
-                          打开编辑页
-                        </a>
-                      ) : null}
-                      {(row.remote_key || row.remote_appmsg_id || row.remote_url) ? (
-                        <button
-                          type="button"
-                          className="ghost-button compact danger"
-                          disabled={deleting}
-                          onClick={() => void onDeleteRemote(row.remote_key || row.remote_appmsg_id || row.remote_url)}
-                        >
-                          <Trash2 size={14} />
-                          {deleting ? "删除中..." : "删除远端草稿"}
-                        </button>
-                      ) : null}
-                    </div>
-                  </article>
-                );
-              })
-            : <p className="empty-state">当前筛选条件下没有远端草稿数据。</p>}
-        </div>
-      </section>
-
-      {pendingRows.length > 0 ? (
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">待核对</p>
-              <h2>本地简报未在微信确认 ({pendingRows.length})</h2>
-            </div>
-            <button
-              type="button"
-              className="ghost-button compact"
-              onClick={() => setShowPending((prev) => !prev)}
-            >
-              {showPending ? "收起" : "展开"}
-            </button>
-          </div>
-          {showPending ? (
-            <div className="intel-list">
-              {pendingRows.map((row, index) => (
-                <article key={`pending-${row.local_brief_id ?? index}`} className="intel-row-card">
+      <div className="intel-list">
+        {filteredRows.length
+            ? filteredRows.map((row, index) => {
+              const remoteKey = String(
+                "browser_row_key" in row
+                  ? row.browser_row_key
+                  : row.remote_key || row.remote_appmsg_id || row.remote_url || `${row.remote_title}-${index}`,
+              );
+              const deleteTarget = String(row.remote_key || row.remote_appmsg_id || row.remote_url || "");
+              const deleting = deletingRemoteId === remoteKey;
+              return (
+                <article key={remoteKey} className="intel-row-card">
                   <div className="intel-card-topline">
-                    <span className="status-badge status-danger">待核对</span>
-                    <span>{row.local_stage || "未知状态"}</span>
+                    <span className={`status-badge status-${statusTone[row.mapping_status]}`}>
+                      {statusLabel[row.mapping_status]}
+                    </span>
+                    <span>{renderRemoteTimeLabel(row)}</span>
                   </div>
-                  <strong>{row.local_brief_title || "未命名简报"}</strong>
-                  <p>微信侧暂未确认到对应稿件，可能尚未同步或已被手动删除。</p>
-                  {row.local_brief_id ? (
-                    <div className="intel-inline-actions">
+                  <strong>{row.remote_title || row.local_brief_title || "未命名远端稿件"}</strong>
+                  <p>
+                    {row.local_brief_title
+                      ? `本地记录：${row.local_brief_title}`
+                      : "当前没有匹配到本地记录。"}
+                  </p>
+                  <div className="intel-score-row">
+                    <span>{row.remote_appmsg_id || "无 appmsg_id"}</span>
+                    <span>{row.local_stage || "无本地状态"}</span>
+                  </div>
+                  <div className="intel-inline-actions">
+                    {row.remote_url ? (
+                      <a className="ghost-button compact" href={row.remote_url} target="_blank" rel="noreferrer">
+                        <ExternalLink size={14} />
+                        {view === "remote_only" ? "打开微信草稿" : "打开编辑页"}
+                      </a>
+                    ) : null}
+                    {view !== "remote_only" && deleteTarget ? (
+                      <button
+                        type="button"
+                        className="ghost-button compact danger"
+                        disabled={deleting}
+                        onClick={() => void onDeleteRemote(deleteTarget)}
+                      >
+                        <Trash2 size={14} />
+                        {deleting ? "删除中..." : "删除远端草稿"}
+                      </button>
+                    ) : null}
+                    {view === "local_records" && row.local_brief_id ? (
                       <button
                         type="button"
                         className="ghost-button compact"
                         onClick={() => {
-                        if (!window.confirm("确认重新同步到微信草稿箱？")) return;
-                        void onSyncBrief(row.local_brief_id!);
-                      }}
+                          const briefId = row.local_brief_id;
+                          if (!briefId) return;
+                          if (!window.confirm("确认重新同步到微信草稿箱？")) return;
+                          void onSyncBrief(briefId);
+                        }}
                       >
                         <RotateCcw size={14} />
                         重新同步
                       </button>
-                    </div>
-                  ) : null}
+                    ) : null}
+                  </div>
                 </article>
-              ))}
-            </div>
-          ) : null}
-        </section>
-      ) : null}
+              );
+            })
+          : <p className="empty-state">当前筛选条件下没有草稿数据。</p>}
+      </div>
 
       <section className="panel">
         <div className="panel-header">

@@ -196,6 +196,21 @@ export interface WeChatDraftSyncCheckResult {
   message: string;
 }
 
+export interface WeChatPublishRecordItem {
+  title: string;
+  url: string;
+  appmsg_id?: string | null;
+  published_at?: string | null;
+  remote_key?: string | null;
+}
+
+export interface WeChatPublishHistorySnapshot {
+  checked_at: string;
+  record_count: number;
+  items: WeChatPublishRecordItem[];
+  message: string;
+}
+
 export type WeChatMappingStatus = "matched" | "remote_only" | "local_only" | "unresolved";
 
 export interface WeChatMappingRow {
@@ -395,6 +410,9 @@ export interface IntelEvent {
   deep_dive_id?: string | null;
   brief_id?: string | null;
   deep_dive_status?: DeepDiveStatus | null;
+  deep_dive_started_at?: string | null;
+  deep_dive_finished_at?: string | null;
+  deep_dive_updated_at?: string | null;
   brief_status?: BriefStage | null;
   deep_dive_summary?: string;
   worth_to_brief?: boolean;

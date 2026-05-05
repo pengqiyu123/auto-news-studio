@@ -17,14 +17,18 @@ type SourceLogGroup = {
 };
 
 function renderLogRow(log: LogItem) {
+  const actorLabel = log.actor === "agent" ? "Agent" : log.actor;
+  const actorTone = log.actor === "agent" ? "log-actor-agent" : "";
   return (
-    <div key={log.id} className={`log-plain-row log-plain-${log.level}`}>
+    <div key={log.id} className={`log-plain-row log-plain-${log.level} ${log.actor === "agent" ? "log-plain-agent" : ""}`}>
       <span className="log-plain-time">{formatDateTime(log.created_at, { fallback: "--:--" })}</span>
       <span className="log-plain-level">{log.level}</span>
       <span className="log-plain-cat">{log.category}</span>
       <div className="log-plain-body">
         <span className="log-plain-msg">{log.message}</span>
-        <span className="log-plain-meta">{log.stream} / {log.actor}</span>
+        <span className="log-plain-meta">
+          {log.stream} / <strong className={actorTone}>{actorLabel}</strong>
+        </span>
         {log.detail ? <pre className="log-plain-detail">{log.detail}</pre> : null}
       </div>
     </div>
@@ -35,6 +39,7 @@ export function LogsPanel({ logs, runtime }: LogsPanelProps) {
   const [levelFilter, setLevelFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [sourceSummaryCollapsed, setSourceSummaryCollapsed] = useState(true);
   const systemLogListRef = useRef<HTMLDivElement>(null);
 
   const filteredLogs = useMemo(() => {
@@ -57,11 +62,7 @@ export function LogsPanel({ logs, runtime }: LogsPanelProps) {
     const grouped = new Map<string, SourceLogGroup>();
     for (const log of filteredLogs) {
       const isSourceLog =
-        log.category === "collection" ||
-        log.category === "source" ||
-        log.actor === "scheduler" ||
-        log.message.includes("来源") ||
-        log.message.includes("同步");
+        log.category === "collection" || log.category === "source";
       if (!isSourceLog) {
         continue;
       }
@@ -163,22 +164,41 @@ export function LogsPanel({ logs, runtime }: LogsPanelProps) {
 
       {cycleSummary ? (
         <section className="intel-runtime-section">
-          <div className="intel-score-row">
-            <span>成功来源 {cycleSummary.success_source_count}</span>
-            <span>失败来源 {cycleSummary.failed_source_count}</span>
-            <span>新增素材 {cycleSummary.new_items_count}</span>
-            <span>新事件 {cycleSummary.new_events_count}</span>
-          </div>
-          {cycleSummary.issues.length ? (
-            <ul className="intel-runtime-issues compact">
-              {cycleSummary.issues.map((item, index) => (
-                <li key={`${item.source_key ?? "runtime"}-${index}`}>
-                  {formatRuntimeIssueLabel(item.source_name, item.message)}
-                </li>
-              ))}
-            </ul>
+          <button
+            type="button"
+            className="logs-group-toggle logs-summary-toggle"
+            onClick={() => setSourceSummaryCollapsed((value) => !value)}
+          >
+            <span className="logs-group-title">
+              {sourceSummaryCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+              <strong>信息源摘要</strong>
+            </span>
+            <span className="subtle">
+              成功 {cycleSummary.success_source_count} / 失败 {cycleSummary.failed_source_count}
+            </span>
+          </button>
+          {!sourceSummaryCollapsed ? (
+            <>
+              <div className="intel-score-row">
+                <span>成功来源 {cycleSummary.success_source_count}</span>
+                <span>失败来源 {cycleSummary.failed_source_count}</span>
+                <span>新增素材 {cycleSummary.new_items_count}</span>
+                <span>新事件 {cycleSummary.new_events_count}</span>
+              </div>
+              {cycleSummary.issues.length ? (
+                <ul className="intel-runtime-issues compact">
+                  {cycleSummary.issues.map((item, index) => (
+                    <li key={`${item.source_key ?? "runtime"}-${index}`}>
+                      {formatRuntimeIssueLabel(item.source_name, item.message)}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="subtle">最近一轮没有记录到异常。</p>
+              )}
+            </>
           ) : (
-            <p className="subtle">最近一轮没有记录到异常。</p>
+            null
           )}
         </section>
       ) : null}

@@ -36,7 +36,8 @@ import type {
   SystemDoctorResult,
   WeChatChannelConfig,
   WeChatDraftSyncCheckResult,
-  WeChatMappingSnapshot
+  WeChatMappingSnapshot,
+  WeChatPublishHistorySnapshot
 } from "../types";
 
 const API_BASE =
@@ -403,6 +404,10 @@ export const api = {
     }),
   checkWeChatDraftBox: () =>
     request<{ item: WeChatDraftSyncCheckResult }>("/api/admin/browser/wechat/check-drafts", {
+      method: "POST"
+    }),
+  checkWeChatPublishHistory: () =>
+    request<{ item: WeChatPublishHistorySnapshot }>("/api/admin/browser/wechat/check-publish-history", {
       method: "POST"
     }),
   getWeChatMapping: () =>

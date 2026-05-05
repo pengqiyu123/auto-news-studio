@@ -16,6 +16,12 @@ interface BriefTableProps {
 
 type BriefWorkbenchView = "all" | "prepared" | "synced" | "failed";
 
+const briefStageLabel: Record<BriefItem["stage"], string> = {
+  prepared: "待同步",
+  synced: "已同步",
+  failed: "失败",
+};
+
 function matchesView(brief: BriefItem, view: BriefWorkbenchView) {
   if (view === "all") return true;
   if (view === "prepared") return brief.stage === "prepared";
@@ -118,7 +124,7 @@ export function BriefTable({
             <article key={brief.id} className="intel-row-card">
               <div className="intel-card-topline">
                 <span className={`status-badge status-${brief.stage === "synced" ? "success" : brief.stage === "failed" ? "danger" : "warning"}`}>
-                  {brief.stage}
+                  {briefStageLabel[brief.stage]}
                 </span>
                 <span>{brief.brief_level === "enhanced" ? "增强简报" : "规则简报"}</span>
               </div>

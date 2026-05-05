@@ -269,6 +269,25 @@ class WeChatDraftSyncCheckResponse(BaseModel):
     item: WeChatDraftSyncCheckResult
 
 
+class WeChatPublishRecordItem(BaseModel):
+    title: str = ""
+    url: str = ""
+    appmsg_id: Optional[str] = None
+    published_at: Optional[str] = None
+    remote_key: Optional[str] = None
+
+
+class WeChatPublishHistorySnapshot(BaseModel):
+    checked_at: str
+    record_count: int = 0
+    items: list[WeChatPublishRecordItem] = Field(default_factory=list)
+    message: str = ""
+
+
+class WeChatPublishHistoryResponse(BaseModel):
+    item: WeChatPublishHistorySnapshot
+
+
 class WeChatMappingStatus(str):
     pass
 
@@ -443,6 +462,9 @@ class IntelEvent(BaseModel):
     deep_dive_id: Optional[str] = None
     brief_id: Optional[str] = None
     deep_dive_status: Optional[DeepDiveStatus] = None
+    deep_dive_started_at: Optional[str] = None
+    deep_dive_finished_at: Optional[str] = None
+    deep_dive_updated_at: Optional[str] = None
     brief_status: Optional[BriefStage] = None
     deep_dive_summary: str = ""
     worth_to_brief: bool = False
@@ -556,6 +578,23 @@ class BriefItem(BaseModel):
     last_successful_upload_at: Optional[str] = None
     last_error: Optional[str] = None
     updated_at: str
+
+
+class AgentArticlePayload(BaseModel):
+    event_id: str
+    title: str
+    article_markdown: str
+    one_line: str = ""
+    why_it_matters: str = ""
+    facts: list[str] = Field(default_factory=list)
+    quotes: list[str] = Field(default_factory=list)
+    timeline: list[str] = Field(default_factory=list)
+    entity_names: list[str] = Field(default_factory=list)
+    source_links: list[str] = Field(default_factory=list)
+    risk_notes: list[str] = Field(default_factory=list)
+    publish_to_wechat_draft: bool = True
+    triggered_by: str = "agent"
+    driver_label: str = "external-ai"
 
 
 class IntelEventHistoryItem(BaseModel):

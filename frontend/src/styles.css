@@ -1784,6 +1784,14 @@ a {
   background: #f8fafc;
 }
 
+.log-plain-agent {
+  background: #f5faff;
+}
+
+.log-plain-agent:hover {
+  background: #edf6ff;
+}
+
 .log-plain-time {
   color: #94a3b8;
 }
@@ -1812,6 +1820,10 @@ a {
 .log-plain-meta {
   color: #94a3b8;
   font-size: 11px;
+}
+
+.log-actor-agent {
+  color: #0f62fe;
 }
 
 .log-plain-detail {
@@ -1898,6 +1910,10 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.logs-group-toggle {
+  cursor: pointer;
 }
 
 .cockpit-layout {
@@ -2141,6 +2157,71 @@ a {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.deep-dive-board {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.deep-dive-section + .deep-dive-section {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 18px;
+}
+
+.deep-dive-section-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.deep-dive-section-head h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #0f172a;
+}
+
+.deep-dive-section-head p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.deep-dive-section-count {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.deep-dive-tabs button {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.deep-dive-tabs button span {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.deep-dive-inline-head {
+  margin-bottom: 12px;
+}
+
+.deep-dive-inline-head h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #0f172a;
+}
+
+.deep-dive-inline-head p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #64748b;
 }
 
 .intel-health-summary {
