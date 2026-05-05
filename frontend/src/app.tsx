@@ -100,12 +100,25 @@ const pageMeta: Record<TabKey, { eyebrow: string; title: string }> = {
   logs: { eyebrow: "运行记录", title: "系统日志与异常" },
 };
 
+const DEFAULT_STREAM_TAB_PAGE_SIZE = 50;
+const DEFAULT_EVENTS_TAB_PAGE_SIZE = 50;
+const WATCHLIST_TAB_PAGE_SIZE = 200;
+const RUNTIME_AWARE_TABS: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "briefs", "logs"];
+const BROWSER_REFRESH_TABS: TabKey[] = ["publish-history", "draft-box"];
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [summary, setSummary] = useState<IntelOverviewSummary | null>(null);
   const [streamItems, setStreamItems] = useState<DiscoveryItem[]>([]);
+  const [streamPage, setStreamPage] = useState(1);
+  const [streamPageSize, setStreamPageSize] = useState(DEFAULT_STREAM_TAB_PAGE_SIZE);
+  const [streamTotal, setStreamTotal] = useState(0);
   const [events, setEvents] = useState<IntelEvent[]>([]);
+  const [eventsPage, setEventsPage] = useState(1);
+  const [eventsPageSize, setEventsPageSize] = useState(DEFAULT_EVENTS_TAB_PAGE_SIZE);
+  const [eventsTotal, setEventsTotal] = useState(0);
+  const [watchlistEvents, setWatchlistEvents] = useState<IntelEvent[]>([]);
   const [eventHistory, setEventHistory] = useState<IntelEventHistoryItem[]>([]);
   const [alerts, setAlerts] = useState<IntelAlert[]>([]);
   const [alertHistory, setAlertHistory] = useState<IntelAlertHistoryItem[]>([]);
@@ -146,24 +159,27 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [pendingDeepDiveTitle, setPendingDeepDiveTitle] = useState<string | null>(null);
   const [pendingBriefTitle, setPendingBriefTitle] = useState<string | null>(null);
+  const [tabLoading, setTabLoading] = useState<Partial<Record<TabKey, boolean>>>({});
+  const [loadedTabs, setLoadedTabs] = useState<Record<TabKey, boolean>>({
+    overview: true,
+    stream: false,
+    events: false,
+    alerts: false,
+    "source-health": false,
+    watchlist: false,
+    briefs: false,
+    "publish-history": false,
+    "draft-box": false,
+    settings: false,
+    logs: false,
+  });
 
   const visibleUpdateInfo =
     updateInfo?.update_available && updateInfo.latest_version && !updateInfo.dismissed
       ? updateInfo
       : null;
 
-  const refreshIntelCore = useCallback(async () => {
-    const [dashboardData, summaryData, streamData, eventData, alertData, sourceData, logData, publishTaskData, mappingData] = await Promise.all([
-      api.getDashboard(),
-      api.getIntelSummary(),
-      api.getDiscoveryItems(),
-      api.getIntelEvents(),
-      api.getIntelAlerts(),
-      api.getIntelSources(),
-      api.getLogs(),
-      api.getPublishTasks(),
-      api.getWeChatMapping(),
-    ]);
+  const applyDashboardSnapshot = useCallback((dashboardData: DashboardResponse) => {
     setDashboard((current) =>
       !current
         ? dashboardData
@@ -172,102 +188,205 @@ export default function App() {
             runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
           },
     );
-    setSummary(summaryData.item);
-    setStreamItems(streamData.items);
-    setEvents(eventData.items);
-    setEventHistory(eventData.history_items ?? []);
-    setAlerts(alertData.items);
-    setAlertHistory(alertData.history_items ?? []);
-    setSources(sourceData.items);
-    setLogs(logData.items);
-    setPublishTasks(publishTaskData.items);
-    setWechatMapping(mappingData.item);
     setBrowserSession(dashboardData.browser_session);
     setAppVersion(dashboardData.app_version);
     setUpdateInfo(dashboardData.update_info);
   }, []);
 
-  const refreshAll = useCallback(async () => {
+  const refreshOverviewData = useCallback(async (includeEntityWatchlist = false) => {
+    const [dashboardData, summaryData] = await Promise.all([
+      api.getDashboard(),
+      api.getIntelSummary(),
+    ]);
+    applyDashboardSnapshot(dashboardData);
+    setSummary(summaryData.item);
+    if (includeEntityWatchlist) {
+      const entityWatchlistData = await api.getEntityWatchlist();
+      setEntityWatchlist(entityWatchlistData.items);
+    }
+  }, [applyDashboardSnapshot]);
+
+  const loadStreamData = useCallback(async (page = streamPage, pageSize = streamPageSize) => {
+    const response = await api.getDiscoveryItems({ page, page_size: pageSize });
+    setStreamItems(response.items);
+    setStreamPage(response.page);
+    setStreamPageSize(response.page_size);
+    setStreamTotal(response.total);
+  }, [streamPage, streamPageSize]);
+
+  const loadEventsData = useCallback(async (page = eventsPage, pageSize = eventsPageSize) => {
+    const response = await api.getIntelEvents({ page, page_size: pageSize });
+    setEvents(response.items);
+    setEventsPage(response.page);
+    setEventsPageSize(response.page_size);
+    setEventsTotal(response.total);
+    setEventHistory(response.history_items ?? []);
+  }, [eventsPage, eventsPageSize]);
+
+  const loadAlertsData = useCallback(async () => {
+    const response = await api.getIntelAlerts();
+    setAlerts(response.items);
+    setAlertHistory(response.history_items ?? []);
+  }, []);
+
+  const loadSourceHealthData = useCallback(async () => {
+    const response = await api.getIntelSources();
+    setSources(response.items);
+  }, []);
+
+  const loadWatchlistData = useCallback(async () => {
+    const response = await api.getIntelEvents({ page: 1, page_size: WATCHLIST_TAB_PAGE_SIZE });
+    setWatchlistEvents(response.items);
+  }, []);
+
+  const loadBriefsData = useCallback(async () => {
+    const response = await api.getBriefs();
+    setBriefs(response.items);
+  }, []);
+
+  const loadPublishHistoryData = useCallback(async (forceBrowserRefresh = true) => {
+    const [publishTaskData, historyData, browserData] = await Promise.all([
+      api.getPublishTasks(),
+      forceBrowserRefresh ? api.checkWeChatPublishHistory() : Promise.resolve({ item: wechatPublishHistory }),
+      api.getBrowserSession(),
+    ]);
+    setPublishTasks(publishTaskData.items);
+    if (historyData.item) {
+      setWechatPublishHistory(historyData.item);
+    }
+    setBrowserSession(browserData.item);
+  }, [wechatPublishHistory]);
+
+  const loadDraftBoxData = useCallback(async (forceBrowserRefresh = true) => {
+    if (forceBrowserRefresh) {
+      await api.checkWeChatDraftBox();
+    }
+    const [mappingData, briefData, publishTaskData, browserData] = await Promise.all([
+      api.getWeChatMapping(),
+      api.getBriefs(),
+      api.getPublishTasks(),
+      api.getBrowserSession(),
+    ]);
+    setWechatMapping(mappingData.item);
+    setBriefs(briefData.items);
+    setPublishTasks(publishTaskData.items);
+    setBrowserSession(browserData.item);
+  }, []);
+
+  const loadSettingsData = useCallback(async () => {
+    const [channelData, browserData, referenceData, llmConfigData, settingsData, doctorData, sourceData] = await Promise.all([
+      api.getWeChatConfig(),
+      api.getBrowserSession(),
+      api.getReferenceProjects(),
+      api.getLLMConfig(),
+      api.getSettings(),
+      api.getSystemDoctor(),
+      api.getIntelSources(),
+    ]);
+    setWechatConfig(channelData.item);
+    setBrowserSession(browserData.item);
+    setReferenceProjects(referenceData.items);
+    setLlmConfig(llmConfigData.item);
+    setAppSettings(settingsData.item);
+    setSystemDoctor(doctorData.item);
+    setSources(sourceData.items);
+  }, []);
+
+  const loadLogsData = useCallback(async () => {
+    const response = await api.getLogs();
+    setLogs(response.items);
+  }, []);
+
+  const markTabLoaded = useCallback((tab: TabKey) => {
+    setLoadedTabs((current) => (current[tab] ? current : { ...current, [tab]: true }));
+  }, []);
+
+  const loadTabData = useCallback(async (
+    tab: TabKey,
+    options: { markLoaded?: boolean; forceBrowserRefresh?: boolean } = {},
+  ) => {
+    const { markLoaded: shouldMarkLoaded = true, forceBrowserRefresh = false } = options;
+    setTabLoading((current) => ({ ...current, [tab]: true }));
+    try {
+      switch (tab) {
+        case "overview":
+          await refreshOverviewData(true);
+          break;
+        case "stream":
+          await loadStreamData();
+          break;
+        case "events":
+          await Promise.all([loadEventsData(), api.getEntityWatchlist().then((response) => setEntityWatchlist(response.items))]);
+          break;
+        case "alerts":
+          await loadAlertsData();
+          break;
+        case "source-health":
+          await loadSourceHealthData();
+          break;
+        case "watchlist":
+          await loadWatchlistData();
+          break;
+        case "briefs":
+          await loadBriefsData();
+          break;
+        case "publish-history":
+          await loadPublishHistoryData(forceBrowserRefresh);
+          break;
+        case "draft-box":
+          await loadDraftBoxData(forceBrowserRefresh);
+          break;
+        case "settings":
+          await loadSettingsData();
+          break;
+        case "logs":
+          await loadLogsData();
+          break;
+        default:
+          break;
+      }
+      if (shouldMarkLoaded) {
+        markTabLoaded(tab);
+      }
+    } finally {
+      setTabLoading((current) => ({ ...current, [tab]: false }));
+    }
+  }, [
+    loadAlertsData,
+    loadBriefsData,
+    loadDraftBoxData,
+    loadEventsData,
+    loadLogsData,
+    loadPublishHistoryData,
+    loadSettingsData,
+    loadSourceHealthData,
+    loadStreamData,
+    loadWatchlistData,
+    markTabLoaded,
+    refreshOverviewData,
+  ]);
+
+  const refreshAll = useCallback(async (options: { refreshActiveTab?: boolean; forceBrowserRefresh?: boolean } = {}) => {
+    const { refreshActiveTab = true, forceBrowserRefresh = false } = options;
     setLoading(true);
     setError(null);
     try {
-      const [
-        dashboardData,
-        summaryData,
-        streamData,
-        eventData,
-        alertData,
-        sourceData,
-        briefData,
-        entityWatchlistData,
-        publishTaskData,
-        logData,
-        mappingData,
-        publishHistoryData,
-        channelData,
-        browserData,
-        referenceData,
-        llmConfigData,
-        settingsData,
-        doctorData,
-      ] = await Promise.all([
-        api.getDashboard(),
-        api.getIntelSummary(),
-        api.getDiscoveryItems(),
-        api.getIntelEvents(),
-        api.getIntelAlerts(),
-        api.getIntelSources(),
-        api.getBriefs(),
-        api.getEntityWatchlist(),
-        api.getPublishTasks(),
-        api.getLogs(),
-        api.getWeChatMapping(),
-        api.checkWeChatPublishHistory(),
-        api.getWeChatConfig(),
-        api.getBrowserSession(),
-        api.getReferenceProjects(),
-        api.getLLMConfig(),
-        api.getSettings(),
-        api.getSystemDoctor(),
-      ]);
-      setDashboard((current) =>
-        !current
-          ? dashboardData
-          : {
-              ...dashboardData,
-              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
-            },
-      );
-      setSummary(summaryData.item);
-      setStreamItems(streamData.items);
-      setEvents(eventData.items);
-      setEventHistory(eventData.history_items ?? []);
-      setAlerts(alertData.items);
-      setAlertHistory(alertData.history_items ?? []);
-      setSources(sourceData.items);
-      setBriefs(briefData.items);
-      setEntityWatchlist(entityWatchlistData.items);
-      setPublishTasks(publishTaskData.items);
-      setLogs(logData.items);
-      setWechatMapping(mappingData.item);
-      setWechatPublishHistory(publishHistoryData.item);
-      setWechatConfig(channelData.item);
-      setBrowserSession(browserData.item);
-      setAppVersion(dashboardData.app_version);
-      setUpdateInfo(dashboardData.update_info);
-      setReferenceProjects(referenceData.items);
-      setLlmConfig(llmConfigData.item);
-      setAppSettings(settingsData.item);
-      setSystemDoctor(doctorData.item);
+      await refreshOverviewData(true);
+      if (refreshActiveTab && activeTab !== "overview") {
+        await loadTabData(activeTab, {
+          markLoaded: true,
+          forceBrowserRefresh,
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeTab, loadTabData, refreshOverviewData]);
 
   useEffect(() => {
-    if (activeTab === "settings") {
+    if (activeTab === "settings" || !systemDoctor) {
       return;
     }
     const llmReady = Boolean(systemDoctor?.items.find((item) => item.key === "llm")?.ok);
@@ -278,26 +397,8 @@ export default function App() {
   }, [systemDoctor, activeTab]);
 
   useEffect(() => {
-    void refreshAll();
+    void refreshAll({ refreshActiveTab: false });
   }, [refreshAll]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const timer = window.setTimeout(async () => {
-      try {
-        const result = await api.getSystemUpdate(true);
-        if (!cancelled) {
-          setUpdateInfo(result.item);
-        }
-      } catch {
-        // Keep startup quiet when release check is temporarily unavailable.
-      }
-    }, 1200);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -335,26 +436,47 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const runtimeAwareTabs: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "briefs", "draft-box", "logs"];
-    if (!runtimeAwareTabs.includes(activeTab)) {
+    if (!RUNTIME_AWARE_TABS.includes(activeTab)) {
       return;
     }
     const isRunning = dashboard?.runtime_status.running;
     const isActiveCycle = dashboard?.runtime_status ? isRuntimeActivelyProcessing(dashboard.runtime_status) : false;
     const intervalMs = isActiveCycle ? 2000 : isRunning ? 6000 : 60000;
     const timer = window.setInterval(() => {
-      void refreshIntelCore().catch((err: unknown) => {
+      const task = activeTab === "overview"
+        ? refreshOverviewData(false)
+        : loadTabData(activeTab, { markLoaded: false, forceBrowserRefresh: false });
+      void task.catch((err: unknown) => {
         setError(err instanceof Error ? err.message : "自动刷新失败");
       });
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [activeTab, dashboard?.runtime_status, refreshIntelCore]);
+  }, [activeTab, dashboard?.runtime_status, loadTabData, refreshOverviewData]);
+
+  useEffect(() => {
+    if (loadedTabs[activeTab]) {
+      return;
+    }
+    void loadTabData(activeTab, {
+      markLoaded: true,
+      forceBrowserRefresh: BROWSER_REFRESH_TABS.includes(activeTab),
+    }).catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : "页面数据加载失败");
+    });
+  }, [activeTab, loadedTabs, loadTabData]);
 
   async function handleSourceSync() {
     setRefreshingSources(true);
     try {
       await api.syncSources();
-      await refreshIntelCore();
+      await Promise.all([
+        refreshOverviewData(true),
+        loadedTabs.stream ? loadStreamData(streamPage, streamPageSize) : Promise.resolve(),
+        loadedTabs.events ? loadEventsData(eventsPage, eventsPageSize) : Promise.resolve(),
+        loadedTabs.watchlist ? loadWatchlistData() : Promise.resolve(),
+        loadedTabs.alerts ? loadAlertsData() : Promise.resolve(),
+        loadedTabs["source-health"] || activeTab === "settings" ? loadSourceHealthData() : Promise.resolve(),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "来源同步失败");
     } finally {
@@ -366,7 +488,14 @@ export default function App() {
     setSyncingSourceKey(sourceKey);
     try {
       await api.syncSource(sourceKey);
-      await refreshIntelCore();
+      await Promise.all([
+        refreshOverviewData(true),
+        loadedTabs.stream ? loadStreamData(streamPage, streamPageSize) : Promise.resolve(),
+        loadedTabs.events ? loadEventsData(eventsPage, eventsPageSize) : Promise.resolve(),
+        loadedTabs.watchlist ? loadWatchlistData() : Promise.resolve(),
+        loadedTabs.alerts ? loadAlertsData() : Promise.resolve(),
+        loadedTabs["source-health"] || activeTab === "settings" ? loadSourceHealthData() : Promise.resolve(),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "单来源重抓失败");
     } finally {
@@ -381,7 +510,10 @@ export default function App() {
     setSavingSourceKey(sourceKey);
     try {
       await api.updateSource(sourceKey, payload);
-      await refreshIntelCore();
+      await Promise.all([
+        refreshOverviewData(false),
+        loadSourceHealthData(),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "来源保存失败");
     } finally {
@@ -392,7 +524,10 @@ export default function App() {
   async function handleSourceCreate(payload: Parameters<typeof api.createSource>[0]) {
     try {
       await api.createSource(payload);
-      await refreshIntelCore();
+      await Promise.all([
+        refreshOverviewData(false),
+        loadSourceHealthData(),
+      ]);
       showToast("来源已添加");
     } catch (err) {
       setError(err instanceof Error ? err.message : "来源添加失败");
@@ -402,7 +537,10 @@ export default function App() {
   async function handleSourceDelete(sourceKey: string) {
     try {
       await api.deleteSource(sourceKey);
-      await refreshIntelCore();
+      await Promise.all([
+        refreshOverviewData(false),
+        loadSourceHealthData(),
+      ]);
       showToast("来源已删除");
     } catch (err) {
       setError(err instanceof Error ? err.message : "来源删除失败");
@@ -412,7 +550,11 @@ export default function App() {
   async function handleWatchEvent(eventId: string) {
     try {
       await api.watchlistEvent(eventId);
-      await refreshIntelCore();
+      await Promise.all([
+        refreshOverviewData(true),
+        loadEventsData(eventsPage, eventsPageSize),
+        loadedTabs.watchlist ? loadWatchlistData() : Promise.resolve(),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加入重点观察失败");
     }
@@ -421,7 +563,12 @@ export default function App() {
   async function handleIgnoreEvent(eventId: string) {
     try {
       await api.ignoreEvent(eventId);
-      await refreshIntelCore();
+      await Promise.all([
+        refreshOverviewData(true),
+        loadEventsData(eventsPage, eventsPageSize),
+        loadedTabs.alerts ? loadAlertsData() : Promise.resolve(),
+        loadedTabs.watchlist ? loadWatchlistData() : Promise.resolve(),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "忽略事件失败");
     }
@@ -431,15 +578,7 @@ export default function App() {
     try {
       const response = await api.updateEntityWatchlist(items);
       setEntityWatchlist(response.items);
-      const dashboardData = await api.getDashboard();
-      setDashboard((current) =>
-        !current
-          ? dashboardData
-          : {
-              ...dashboardData,
-              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
-            },
-      );
+      await refreshOverviewData(false);
       if (selectedEntityId !== "all" && !response.items.some((item) => item.entity_id === selectedEntityId)) {
         setSelectedEntityId("all");
       }
@@ -455,30 +594,25 @@ export default function App() {
   }
 
   async function handleDeepDiveEvent(eventId: string, force = false) {
-    const sourceEvent = events.find((event) => event.id === eventId) ?? alerts.find((alert) => alert.event_id === eventId);
+    const sourceEvent =
+      events.find((event) => event.id === eventId)
+      ?? watchlistEvents.find((event) => event.id === eventId)
+      ?? alerts.find((alert) => alert.event_id === eventId);
     setBusyEventId(eventId);
     setPendingDeepDiveTitle(sourceEvent?.title ?? "当前事件");
     try {
-      const [deepDiveResponse, eventData, alertData, dashboardData] = await Promise.all([
+      const [deepDiveResponse] = await Promise.all([
         api.createEventDeepDive(eventId, force),
-        api.getIntelEvents(),
-        api.getIntelAlerts(),
-        api.getDashboard(),
       ]);
       setSelectedDeepDive((current) => (current?.event_id === eventId ? deepDiveResponse.item : current));
-      setEvents(eventData.items);
-      setEventHistory(eventData.history_items ?? []);
-      setAlerts(alertData.items);
-      setAlertHistory(alertData.history_items ?? []);
-      setDashboard((current) =>
-        !current
-          ? dashboardData
-          : {
-              ...dashboardData,
-              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
-            },
-      );
+      await Promise.all([
+        refreshOverviewData(true),
+        loadEventsData(eventsPage, eventsPageSize),
+        loadedTabs.watchlist ? loadWatchlistData() : Promise.resolve(),
+        loadAlertsData(),
+      ]);
       setActiveTab("watchlist");
+      markTabLoaded("watchlist");
       showToast(`正文深挖已完成：${sourceEvent?.title ?? "当前事件"}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "正文深挖失败");
@@ -503,31 +637,23 @@ export default function App() {
   }
 
   async function handleCreateBrief(eventId: string) {
-    const sourceEvent = events.find((event) => event.id === eventId) ?? alerts.find((alert) => alert.event_id === eventId);
+    const sourceEvent =
+      events.find((event) => event.id === eventId)
+      ?? watchlistEvents.find((event) => event.id === eventId)
+      ?? alerts.find((alert) => alert.event_id === eventId);
     setBusyEventId(eventId);
     setPendingBriefTitle(sourceEvent?.title ?? "当前事件");
     try {
       const response = await api.createBriefFromEvent(eventId);
-      const [briefData, eventData, alertData, dashboardData] = await Promise.all([
-        api.getBriefs(),
-        api.getIntelEvents(),
-        api.getIntelAlerts(),
-        api.getDashboard(),
+      await Promise.all([
+        refreshOverviewData(true),
+        loadBriefsData(),
+        loadEventsData(eventsPage, eventsPageSize),
+        loadedTabs.watchlist ? loadWatchlistData() : Promise.resolve(),
+        loadAlertsData(),
       ]);
-      setBriefs(briefData.items);
-      setEvents(eventData.items);
-      setEventHistory(eventData.history_items ?? []);
-      setAlerts(alertData.items);
-      setAlertHistory(alertData.history_items ?? []);
-      setDashboard((current) =>
-        !current
-          ? dashboardData
-          : {
-              ...dashboardData,
-              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
-            },
-      );
       setActiveTab("briefs");
+      markTabLoaded("briefs");
       showToast(response.item.brief_level === "enhanced" ? `AI增强简报已生成：${response.item.title}` : `规则简报已生成：${response.item.title}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "简报生成失败");
@@ -542,7 +668,12 @@ export default function App() {
     try {
       if (kind === "sync") {
         const response = await api.syncBriefWeChatDraft(brief.id);
-        await refreshAll();
+        await Promise.all([
+          refreshOverviewData(false),
+          loadBriefsData(),
+          loadPublishHistoryData(false),
+          loadDraftBoxData(false),
+        ]);
         const deliveryStatus = response.item.delivery_status;
         const lastError = response.item.last_error;
         if (deliveryStatus === "verified" && !lastError) {
@@ -563,25 +694,12 @@ export default function App() {
       } else {
         await api.createBriefFromEvent(brief.event_id);
       }
-      const [briefData, eventData, alertData, dashboardData] = await Promise.all([
-        api.getBriefs(),
-        api.getIntelEvents(),
-        api.getIntelAlerts(),
-        api.getDashboard(),
+      await Promise.all([
+        refreshOverviewData(true),
+        loadBriefsData(),
+        loadEventsData(eventsPage, eventsPageSize),
+        loadAlertsData(),
       ]);
-      setBriefs(briefData.items);
-      setEvents(eventData.items);
-      setEventHistory(eventData.history_items ?? []);
-      setAlerts(alertData.items);
-      setAlertHistory(alertData.history_items ?? []);
-      setDashboard((current) =>
-        !current
-          ? dashboardData
-          : {
-              ...dashboardData,
-              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
-            },
-      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "简报动作执行失败");
     } finally {
@@ -599,7 +717,12 @@ export default function App() {
     setBusyBriefId(brief.id);
     try {
       await api.deleteBrief(brief.id, "auto");
-      await refreshAll();
+      await Promise.all([
+        refreshOverviewData(true),
+        loadBriefsData(),
+        loadedTabs["draft-box"] ? loadDraftBoxData(false) : Promise.resolve(),
+        loadedTabs["publish-history"] ? loadPublishHistoryData(false) : Promise.resolve(),
+      ]);
       showToast("简报已删除");
     } catch (err) {
       setError(err instanceof Error ? err.message : "简报删除失败");
@@ -707,7 +830,7 @@ export default function App() {
   async function handleImportBackup(file: File) {
     try {
       const result = await api.importSystemBackup(file);
-      await refreshAll();
+      await refreshAll({ refreshActiveTab: true, forceBrowserRefresh: false });
       showToast(result.message || "备份已导入");
     } catch (err) {
       setError(err instanceof Error ? err.message : "导入备份失败");
@@ -719,7 +842,8 @@ export default function App() {
     try {
       await api.updateBrowserSession(payload);
       await api.checkWeChatBrowserSession();
-      await refreshAll();
+      await loadSettingsData();
+      await refreshOverviewData(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "浏览器会话刷新失败");
     } finally {
@@ -732,7 +856,8 @@ export default function App() {
     try {
       await api.updateBrowserSession(payload);
       await api.openWeChatDashboard();
-      await refreshAll();
+      await loadSettingsData();
+      await refreshOverviewData(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "打开公众号后台失败");
     } finally {
@@ -776,7 +901,10 @@ export default function App() {
     setDeletingRemoteId(remoteId);
     try {
       await api.deleteWeChatRemoteDraft(remoteId);
-      await refreshAll();
+      await Promise.all([
+        loadDraftBoxData(false),
+        refreshOverviewData(false),
+      ]);
       showToast("远端草稿已删除");
     } catch (err) {
       setError(err instanceof Error ? err.message : "远端草稿删除失败");
@@ -811,7 +939,7 @@ export default function App() {
             }
           : current
       );
-      await refreshIntelCore();
+      await refreshOverviewData(false);
       showToast("已启动");
     } catch (err) {
       setError(err instanceof Error ? err.message : "启动自动运行失败");
@@ -860,7 +988,7 @@ export default function App() {
             }
           : current
       );
-      await refreshIntelCore();
+      await refreshOverviewData(false);
       showToast("已停止");
     } catch (err) {
       setError(err instanceof Error ? err.message : "停止自动运行失败");
@@ -874,17 +1002,7 @@ export default function App() {
     try {
       const response = await api.updateRuntimePlan(payload);
       setDashboard((current) => current ? { ...current, runtime_plan: response.item } : current);
-      const dashboardData = await api.getDashboard();
-      setDashboard((current) =>
-        !current
-          ? dashboardData
-          : {
-              ...dashboardData,
-              runtime_status: pickNewerRuntimeStatus(current.runtime_status, dashboardData.runtime_status) ?? dashboardData.runtime_status,
-            },
-      );
-      const summaryData = await api.getIntelSummary();
-      setSummary(summaryData.item);
+      await refreshOverviewData(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "工作计划保存失败");
     } finally {
@@ -899,7 +1017,7 @@ export default function App() {
       setDashboard((current) =>
         current ? { ...current, runtime_status: pickNewerRuntimeStatus(current.runtime_status, response.item) ?? response.item } : current
       );
-      await refreshAll();
+      await refreshAll({ refreshActiveTab: true, forceBrowserRefresh: false });
       showToast(intent === "normal_monitoring" ? "已执行一次完整补跑" : `已执行：${RUNTIME_INTENT_LABELS[intent]}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "维护动作执行失败");
@@ -1083,10 +1201,39 @@ export default function App() {
               />
             ) : null}
 
-            {activeTab === "stream" ? <IntelStreamPage items={streamItems} /> : null}
+            {activeTab === "stream" ? (
+              <IntelStreamPage
+                items={streamItems}
+                page={streamPage}
+                pageSize={streamPageSize}
+                total={streamTotal}
+                loading={Boolean(tabLoading.stream)}
+                onPageChange={(page) => {
+                  setTabLoading((current) => ({ ...current, stream: true }));
+                  void loadStreamData(page, streamPageSize).catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : "实时流加载失败");
+                  }).finally(() => {
+                    setTabLoading((current) => ({ ...current, stream: false }));
+                  });
+                }}
+                onPageSizeChange={(pageSize) => {
+                  setStreamPageSize(pageSize);
+                  setStreamPage(1);
+                  setTabLoading((current) => ({ ...current, stream: true }));
+                  void loadStreamData(1, pageSize).catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : "实时流加载失败");
+                  }).finally(() => {
+                    setTabLoading((current) => ({ ...current, stream: false }));
+                  });
+                }}
+              />
+            ) : null}
             {activeTab === "events" ? (
               <IntelEventsPage
                 items={events}
+                page={eventsPage}
+                pageSize={eventsPageSize}
+                total={eventsTotal}
                 historyItems={eventHistory}
                 runtime={dashboard.runtime_status}
                 entityWatchlist={entityWatchlist}
@@ -1099,6 +1246,25 @@ export default function App() {
                 onIgnoreEvent={handleIgnoreEvent}
                 onDeepDive={handleDeepDiveEvent}
                 busyEventId={busyEventId}
+                loading={Boolean(tabLoading.events)}
+                onPageChange={(page) => {
+                  setTabLoading((current) => ({ ...current, events: true }));
+                  void loadEventsData(page, eventsPageSize).catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : "热点簇加载失败");
+                  }).finally(() => {
+                    setTabLoading((current) => ({ ...current, events: false }));
+                  });
+                }}
+                onPageSizeChange={(pageSize) => {
+                  setEventsPageSize(pageSize);
+                  setEventsPage(1);
+                  setTabLoading((current) => ({ ...current, events: true }));
+                  void loadEventsData(1, pageSize).catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : "热点簇加载失败");
+                  }).finally(() => {
+                    setTabLoading((current) => ({ ...current, events: false }));
+                  });
+                }}
               />
             ) : null}
             {activeTab === "alerts" ? (
@@ -1127,7 +1293,7 @@ export default function App() {
 
             {activeTab === "watchlist" ? (
               <DeepDivePoolPanel
-                items={events.filter((event) => (event.watchlisted || event.deep_dive_id || event.brief_id) && !event.ignored)}
+                items={watchlistEvents.filter((event) => (event.watchlisted || event.deep_dive_id || event.brief_id) && !event.ignored)}
                 selectedDeepDive={selectedDeepDive}
                 busyEventId={busyEventId}
                 onDeepDive={handleDeepDiveEvent}

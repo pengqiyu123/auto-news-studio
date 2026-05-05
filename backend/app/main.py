@@ -262,15 +262,31 @@ def get_intel_summary():
 
 
 @app.get("/api/admin/intel/stream", response_model=DiscoveryItemsResponse)
-def get_intel_stream():
-    return DiscoveryItemsResponse(items=store.list_discovery_items())
+def get_intel_stream(page: int = 1, page_size: int = 50):
+    items, total = store.list_discovery_items(page=page, page_size=page_size)
+    safe_page = max(1, page)
+    safe_page_size = max(1, min(page_size, 200))
+    return DiscoveryItemsResponse(
+        items=items,
+        total=total,
+        page=safe_page,
+        page_size=safe_page_size,
+        has_more=(safe_page * safe_page_size) < total,
+    )
 
 
 @app.get("/api/admin/intel/events", response_model=IntelEventsResponse)
-def get_intel_events():
+def get_intel_events(page: int = 1, page_size: int = 50):
+    items, total = store.list_intel_events(page=page, page_size=page_size)
+    safe_page = max(1, page)
+    safe_page_size = max(1, min(page_size, 200))
     return IntelEventsResponse(
-        items=store.list_intel_events(),
+        items=items,
         history_items=store.list_intel_event_history(),
+        total=total,
+        page=safe_page,
+        page_size=safe_page_size,
+        has_more=(safe_page * safe_page_size) < total,
     )
 
 
@@ -583,7 +599,10 @@ async def upload_image(file: UploadFile = File(...)):
 
 @app.get("/api/admin/images/{filename}")
 def serve_image(filename: str):
-    target = IMAGES_DIR / filename
+    images_root = IMAGES_DIR.resolve()
+    target = (IMAGES_DIR / filename).resolve()
+    if images_root not in target.parents and target != images_root:
+        raise HTTPException(status_code=400, detail="Invalid filename")
     if not target.exists():
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(target)

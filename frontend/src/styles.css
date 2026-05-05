@@ -3432,6 +3432,66 @@ button.entity-tag:hover {
   font-size: 13px;
 }
 
+.list-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.list-pagination-summary {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.list-pagination-summary strong {
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.list-pagination-summary span,
+.list-pagination-summary p {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pagination-page-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.pagination-page-size select {
+  min-width: 72px;
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #111827;
+}
+
+.pagination-icon-button {
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+}
+
 /* Cycle progress indicator */
 .intel-cycle-progress {
   display: flex;

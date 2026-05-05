@@ -734,11 +734,19 @@ class IntelSummaryResponse(BaseModel):
 
 class DiscoveryItemsResponse(BaseModel):
     items: list[DiscoveryItem]
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    has_more: bool = False
 
 
 class IntelEventsResponse(BaseModel):
     items: list[IntelEvent]
     history_items: list[IntelEventHistoryItem] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    has_more: bool = False
 
 
 class IntelAlertsResponse(BaseModel):
@@ -924,7 +932,7 @@ class DashboardResponse(BaseModel):
     recent_logs: list[LogItem]
     briefs: list[BriefItem] = Field(default_factory=list)
     deep_dives: list[EventDeepDive] = Field(default_factory=list)
-    sources: list[SourceConnector]
+    sources: list[SourceConnector] = Field(default_factory=list)
     browser_session: BrowserSessionState
     publish_backends: list[PublishBackendStatus]
     setup_status: dict[str, Any] = Field(default_factory=dict)

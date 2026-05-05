@@ -6308,13 +6308,33 @@ class StudioStore:
             source_alerts=source_alerts[:6],
         )
 
-    def list_discovery_items(self) -> list[DiscoveryItem]:
+    def list_discovery_items(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[DiscoveryItem], int]:
         state = self._upgrade_state(self._read())
-        return [DiscoveryItem(**item) for item in state.get("discovery_items", [])]
+        all_items = [DiscoveryItem(**item) for item in state.get("discovery_items", [])]
+        safe_page = max(1, int(page or 1))
+        safe_page_size = max(1, min(int(page_size or 50), 200))
+        start = (safe_page - 1) * safe_page_size
+        end = start + safe_page_size
+        return all_items[start:end], len(all_items)
 
-    def list_intel_events(self) -> list[IntelEvent]:
+    def list_intel_events(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[IntelEvent], int]:
         state = self._upgrade_state(self._read())
-        return [IntelEvent(**self._project_event_runtime_fields(state, item)) for item in state.get("intel_events", [])]
+        all_items = [IntelEvent(**self._project_event_runtime_fields(state, item)) for item in state.get("intel_events", [])]
+        safe_page = max(1, int(page or 1))
+        safe_page_size = max(1, min(int(page_size or 50), 200))
+        start = (safe_page - 1) * safe_page_size
+        end = start + safe_page_size
+        return all_items[start:end], len(all_items)
 
     def list_intel_event_history(self) -> list[dict[str, Any]]:
         state = self._upgrade_state(self._read())
@@ -6700,9 +6720,9 @@ class StudioStore:
             recent_events_24h=recent_events_24h,
             entity_watchlist_summary=[EntityWatchlistSummaryItem(**item) for item in entity_watchlist_summary],
             recent_logs=[LogItem(**item) for item in snapshot["logs"][:8]],
-            briefs=[BriefItem(**item) for item in snapshot.get("briefs", [])[:8]],
-            deep_dives=[EventDeepDive(**item) for item in snapshot.get("event_deep_dives", [])[:8]],
-            sources=[SourceConnector(**item) for item in snapshot["sources"]],
+            briefs=[],
+            deep_dives=[],
+            sources=[],
             browser_session=BrowserSessionState(**browser),
             publish_backends=[PublishBackendStatus(**item) for item in backends],
             setup_status=setup_status,

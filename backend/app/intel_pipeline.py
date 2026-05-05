@@ -65,6 +65,11 @@ def normalize_title(title: str) -> str:
     return lowered
 
 
+def title_dedupe_key(title: str) -> str:
+    compact = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", str(title or "").lower())
+    return compact[:80]
+
+
 def build_dedupe_key(title: str, link: str) -> str:
     normalized = normalize_title(title)
     ascii_tokens = re.findall(r"[a-z0-9]{2,}", normalized)
@@ -198,6 +203,7 @@ def build_discovery_items(
                 "source_kind": raw.get("source_kind"),
                 "platform": _primary_platform(source, raw),
                 "title": title,
+                "title_dedupe_key": title_dedupe_key(title),
                 "summary": str(raw.get("summary") or title).strip(),
                 "content": str(raw.get("content") or raw.get("summary") or title).strip(),
                 "link": str(raw.get("link") or "").strip(),
@@ -242,6 +248,8 @@ def build_discovery_items(
 
 def _should_merge(left: dict[str, Any], right: dict[str, Any]) -> bool:
     if left.get("canonical_link") and left.get("canonical_link") == right.get("canonical_link"):
+        return True
+    if left.get("title_dedupe_key") and left.get("title_dedupe_key") == right.get("title_dedupe_key"):
         return True
     if left.get("dedupe_key") and left.get("dedupe_key") == right.get("dedupe_key"):
         return True

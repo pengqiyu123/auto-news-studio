@@ -8,6 +8,7 @@ import type {
   BriefsResponse,
   ChainStateCard,
   DashboardResponse,
+  DiscoveryItemsResponse,
   DiscoveryItem,
   EntityWatchlistItem,
   EventDeepDive,
@@ -275,8 +276,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   getDashboard: async () => normalizeDashboard(await request<DashboardResponse>("/api/admin/dashboard")),
   getIntelSummary: () => request<{ item: IntelOverviewSummary }>("/api/admin/intel/summary"),
-  getDiscoveryItems: () => request<{ items: DiscoveryItem[] }>("/api/admin/intel/stream"),
-  getIntelEvents: () => request<IntelEventsResponse>("/api/admin/intel/events"),
+  getDiscoveryItems: (params?: { page?: number; page_size?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.page) query.set("page", String(params.page));
+    if (params?.page_size) query.set("page_size", String(params.page_size));
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return request<DiscoveryItemsResponse>(`/api/admin/intel/stream${suffix}`);
+  },
+  getIntelEvents: (params?: { page?: number; page_size?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.page) query.set("page", String(params.page));
+    if (params?.page_size) query.set("page_size", String(params.page_size));
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return request<IntelEventsResponse>(`/api/admin/intel/events${suffix}`);
+  },
   getIntelEvent: (eventId: string) => request<{ item: IntelEvent }>(`/api/admin/intel/events/${eventId}`),
   getIntelAlerts: () => request<IntelAlertsResponse>("/api/admin/intel/alerts"),
   createEventDeepDive: (eventId: string, force = false) =>

@@ -1,10 +1,9 @@
 import { RotateCcw, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
+import { PaginationControls } from "./PaginationControls";
 import { formatDateTime, formatRelativeTime } from "../lib/time";
 import type { DiscoveryItem } from "../types";
-
-const PAGE_SIZE = 20;
 type TimeFilter = "all" | "1h" | "6h" | "24h" | "72h";
 type ChangeFilter = "all" | "new_item" | "updated_item" | "seen_item";
 type HeatFilter = "all" | "none" | "low" | "mid" | "high";
@@ -19,6 +18,12 @@ const SORT_OPTIONS: Array<{ key: SortKey; label: string }> = [
 
 interface IntelStreamPageProps {
   items: DiscoveryItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  loading?: boolean;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
 }
 
 interface GithubMeta {
@@ -69,7 +74,15 @@ function StreamCard({ item }: { item: DiscoveryItem }) {
     </>
   );
 }
-export function IntelStreamPage({ items }: IntelStreamPageProps) {
+export function IntelStreamPage({
+  items,
+  page,
+  pageSize,
+  total,
+  loading = false,
+  onPageChange,
+  onPageSizeChange,
+}: IntelStreamPageProps) {
   const [query, setQuery] = useState("");
   const [timeFilter, setTimeFilter] = useState<TimeFilter>("24h");
   const [platformFilter, setPlatformFilter] = useState("all");
@@ -77,8 +90,6 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
   const [changeFilter, setChangeFilter] = useState<ChangeFilter>("all");
   const [heatFilter, setHeatFilter] = useState<HeatFilter>("all");
   const [sortBy, setSortBy] = useState<SortKey>("collected_at");
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-
   const platformOptions = useMemo(
     () => Array.from(new Set(items.map((item) => item.platform).filter(Boolean))).sort((a, b) => a.localeCompare(b, "zh-CN")),
     [items],
@@ -88,10 +99,6 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
     () => Array.from(new Set(items.map((item) => item.source_name).filter(Boolean))).sort((a, b) => a.localeCompare(b, "zh-CN")),
     [items],
   );
-
-  useEffect(() => {
-    setVisibleCount(PAGE_SIZE);
-  }, [query, timeFilter, platformFilter, sourceFilter, changeFilter, heatFilter, sortBy]);
 
   const filtered = useMemo(() => {
     const now = Date.now();
@@ -143,9 +150,6 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
       return (a[sortBy] ?? "").toString().localeCompare((b[sortBy] ?? "").toString(), "zh-CN");
     });
   }, [filtered, sortBy]);
-
-  const visible = sorted.slice(0, visibleCount);
-  const hasMore = visibleCount < sorted.length;
 
   function resetFilters() {
     setQuery("");
@@ -224,10 +228,23 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
         </div>
       </div>
       <div className="intel-score-row">
-        <span>当前显示 {visible.length}/{sorted.length} 条</span>
-        <span>总素材 {items.length} 条</span>
+        <span>当前页 {items.length} 条</span>
+        <span>筛后 {sorted.length} 条</span>
+        <span>总素材 {total} 条</span>
         <span>排序 {SORT_OPTIONS.find((o) => o.key === sortBy)?.label}</span>
       </div>
+      <PaginationControls
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        currentCount={items.length}
+        filteredCount={sorted.length}
+        itemLabel="条素材"
+        loading={loading}
+        note="筛选和排序当前按本页数据生效，翻页后会继续加载后端真实分页结果。"
+        onPageChange={onPageChange}
+        onPageSizeChange={onPageSizeChange}
+      />
       <div className="intel-list">
         {!items.length ? (
           <div className="skeleton-list">
@@ -239,7 +256,7 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
               </div>
             ))}
           </div>
-        ) : visible.length ? visible.map((item) => (
+        ) : sorted.length ? sorted.map((item) => (
           <article key={item.id} className="intel-row-card">
             <StreamCard item={item} />
           </article>
@@ -249,13 +266,17 @@ export function IntelStreamPage({ items }: IntelStreamPageProps) {
           </p>
         )}
       </div>
-      {hasMore ? (
-        <div className="intel-load-more">
-          <button type="button" className="ghost-button" onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}>
-            加载更多 ({sorted.length - visibleCount} 条)
-          </button>
-        </div>
-      ) : null}
+      <PaginationControls
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        currentCount={items.length}
+        filteredCount={sorted.length}
+        itemLabel="条素材"
+        loading={loading}
+        onPageChange={onPageChange}
+        onPageSizeChange={onPageSizeChange}
+      />
     </section>
   );
 }

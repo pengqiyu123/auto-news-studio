@@ -114,7 +114,7 @@ def _parse_rss_source(source: dict[str, Any], limit: int = 8) -> tuple[list[dict
         if not entries:
             return _warning_only("RSS 源没有返回条目，未写入素材。")
         items: list[dict[str, Any]] = []
-        for index, entry in enumerate(entries, start=1):
+        for entry in entries:
             title = _clean_html(getattr(entry, "title", "") or "")
             link = str(getattr(entry, "link", "") or "").strip()
             summary = _clean_html(getattr(entry, "summary", "") or getattr(entry, "description", ""))[:320]
@@ -136,9 +136,9 @@ def _parse_rss_source(source: dict[str, Any], limit: int = 8) -> tuple[list[dict
                     "author": source["name"],
                     "tags": source.get("tags", []),
                     "engagement": {
-                        "score": 90 + index * 10,
-                        "comments": 12 + index * 2,
-                        "views": 1200 + index * 500,
+                        "score": 0,
+                        "comments": 0,
+                        "views": 0,
                     },
                     "metadata": {"collector": "feedparser"},
                 }

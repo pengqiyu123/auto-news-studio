@@ -663,6 +663,18 @@ export interface IntelOverviewSummary {
 export interface IntelEventsResponse {
   items: IntelEvent[];
   history_items: IntelEventHistoryItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+}
+
+export interface DiscoveryItemsResponse {
+  items: DiscoveryItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
 }
 
 export interface IntelAlertsResponse {

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 
 import { EntityWatchlistPanel } from "./EntityWatchlistPanel";
+import { PaginationControls } from "./PaginationControls";
 import { explainEventsEmptyState } from "../lib/runtimeIntent";
 import { historyStatusLabel, historyStatusTone } from "../lib/eventUtils";
 import { formatDateTime, formatRelativeTime } from "../lib/time";
@@ -23,6 +24,9 @@ const SORT_OPTIONS: Array<{ key: ExtendedSortKey; label: string }> = [
 
 interface IntelEventsPageProps {
   items: IntelEvent[];
+  page: number;
+  pageSize: number;
+  total: number;
   historyItems: IntelEventHistoryItem[];
   runtime: SchedulerStatus;
   entityWatchlist: EntityWatchlistItem[];
@@ -35,10 +39,16 @@ interface IntelEventsPageProps {
   onIgnoreEvent: (eventId: string) => Promise<void>;
   onDeepDive: (eventId: string) => Promise<void>;
   busyEventId?: string | null;
+  loading?: boolean;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
 }
 
 export function IntelEventsPage({
   items,
+  page,
+  pageSize,
+  total,
   historyItems,
   runtime,
   entityWatchlist,
@@ -51,10 +61,12 @@ export function IntelEventsPage({
   onIgnoreEvent,
   onDeepDive,
   busyEventId,
+  loading = false,
+  onPageChange,
+  onPageSizeChange,
 }: IntelEventsPageProps) {
   const [sortBy, setSortBy] = useState<ExtendedSortKey>("composite_score");
   const [historyFilter, setHistoryFilter] = useState<HistoryRecordStatus | "all">("all");
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [historyVisibleCount, setHistoryVisibleCount] = useState(PAGE_SIZE);
   const [expandedCards, setExpandedCards] = useState<Set<string>>(() => new Set());
 
@@ -98,7 +110,6 @@ export function IntelEventsPage({
     });
   }, [filtered, sortBy]);
 
-  const visible = sorted.slice(0, visibleCount);
   const filteredHistory = useMemo(() => {
     return historyItems
       .filter((item) => {
@@ -113,7 +124,6 @@ export function IntelEventsPage({
       });
   }, [historyFilter, historyItems, selectedEntityId]);
   const visibleHistory = filteredHistory.slice(0, historyVisibleCount);
-  const hasMore = visibleCount < sorted.length;
   const hasMoreHistory = historyVisibleCount < filteredHistory.length;
 
   return (
@@ -133,7 +143,7 @@ export function IntelEventsPage({
                 key={opt.key}
                 type="button"
                 className={`filter-chip ${sortBy === opt.key ? "filter-chip-active" : ""}`}
-                onClick={() => { setSortBy(opt.key); setVisibleCount(PAGE_SIZE); }}
+                onClick={() => { setSortBy(opt.key); }}
               >
                 {opt.label}
               </button>
@@ -144,7 +154,6 @@ export function IntelEventsPage({
               value={selectedEntityId}
               onChange={(event) => {
                 onSelectedEntityChange(event.target.value);
-                setVisibleCount(PAGE_SIZE);
                 setHistoryVisibleCount(PAGE_SIZE);
               }}
             >
@@ -157,8 +166,20 @@ export function IntelEventsPage({
             </select>
           </div>
         </div>
+        <PaginationControls
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          currentCount={items.length}
+          filteredCount={sorted.length}
+          itemLabel="个事件"
+          loading={loading}
+          note="热点簇筛选和排序当前按本页数据生效，翻页会继续请求后端分页结果。"
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
         <div className="intel-list">
-          {visible.length ? visible.map((event) => {
+          {sorted.length ? sorted.map((event) => {
             const visibleTags = event.entity_names.slice(0, 3);
             const hiddenTagCount = Math.max(event.entity_names.length - visibleTags.length, 0);
             return (
@@ -230,13 +251,17 @@ export function IntelEventsPage({
             );
           }) : <p className="empty-state">{selectedEntityId !== "all" ? "当前筛选条件下没有匹配的热点事件。" : explainEventsEmptyState(runtime)}</p>}
         </div>
-        {hasMore ? (
-          <div className="intel-load-more">
-            <button type="button" className="ghost-button" onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}>
-              加载更多 ({sorted.length - visibleCount} 个)
-            </button>
-          </div>
-        ) : null}
+        <PaginationControls
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          currentCount={items.length}
+          filteredCount={sorted.length}
+          itemLabel="个事件"
+          loading={loading}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
 
         <div className="intel-subsection-head">
           <div>

@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+.ruff_cache/
 *.py[cod]
 *$py.class
 *.so
@@ -75,7 +76,6 @@ CLAUDE.md
 
 # Root-level research files (not part of studio)
 projects/
-docs/
 *.txt
 
 # Internal reference documents
