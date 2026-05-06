@@ -35,6 +35,11 @@
    - Tag: `v0.2.3`
    - Title: `v0.2.3`
    - Body: 使用 `RELEASE_NOTES_0.2.3.md`
+   - 如本机已安装 `gh` 并已登录，可直接用 `gh release create`
+   - 如本机未安装 `gh`，但 `git push` 已可用，则优先复用 Git 凭据发 Release：
+     - 用 `cmd /c "echo protocol=https&echo host=github.com&echo.&exit" | git credential fill` 读取 GitHub 凭据
+     - 再用 `Invoke-RestMethod` 调 `https://api.github.com/repos/<repo>/releases`
+     - 当前仓库已实测可用，不依赖 `GH_TOKEN` 环境变量
 9. 启动应用检查
    - 首页出现更新横幅
    - 设置页显示更新状态
@@ -54,7 +59,63 @@
 - 旧版更新检测读取的是 `releases/latest`
 - `RELEASE_NOTES_x.y.z.md` 可以直接作为 Release 正文
 - 如果本地已经存在旧 tag（例如 `v0.2.4`），新的上传批次必须升级版本号，不能复用旧 tag
-- 当前机器若未安装 `gh` 且没有 GitHub token，则只能先完成 `push + tag + 分发包`，再到 GitHub 页面手动发布 Release
+- 当前机器即使没有 `gh`、没有显式 `GITHUB_TOKEN`，也可能通过 Git 凭据管理器中的 GitHub 凭据完成 Release API 发布
+- `v0.2.1` 与 `v0.2.5` 已验证过：`git credential fill + Invoke-RestMethod` 可直接创建 Release，`v0.2.5` 还验证了 zip 资产上传
+
+## 无 gh 时的可用发布方式
+
+### 1. 从 Git 凭据中读取 GitHub token
+
+```powershell
+$cred = cmd /c "echo protocol=https&echo host=github.com&echo.&exit" | git credential fill
+$token = ($cred | Select-String '^password=').ToString().Replace('password=', '').Trim()
+```
+
+### 2. 创建 Release
+
+```powershell
+$headers = @{
+  Authorization = "Bearer $token"
+  Accept = "application/vnd.github+json"
+  "User-Agent" = "Auto-News-Studio"
+  "X-GitHub-Api-Version" = "2022-11-28"
+}
+
+$body = @{
+  tag_name = "v0.2.5"
+  target_commitish = "master"
+  name = "v0.2.5"
+  body = (Get-Content "RELEASE_NOTES_0.2.5.md" -Raw)
+  draft = $false
+  prerelease = $false
+  generate_release_notes = $false
+} | ConvertTo-Json -Depth 8
+
+Invoke-RestMethod -Method Post `
+  -Uri "https://api.github.com/repos/pengqiyu123/auto-news-studio/releases" `
+  -Headers $headers `
+  -Body $body `
+  -ContentType "application/json"
+```
+
+### 3. 上传 Windows 分发包
+
+```powershell
+$release = Invoke-RestMethod -Method Get `
+  -Uri "https://api.github.com/repos/pengqiyu123/auto-news-studio/releases/tags/v0.2.5" `
+  -Headers $headers
+
+$assetPath = (Resolve-Path "runtime/release/auto-news-studio-windows.zip").Path
+$assetName = Split-Path $assetPath -Leaf
+$uploadBase = $release.upload_url.Split('{')[0]
+$uploadUri = $uploadBase + '?name=' + [uri]::EscapeDataString($assetName)
+
+Invoke-RestMethod -Method Post `
+  -Uri $uploadUri `
+  -Headers $headers `
+  -InFile $assetPath `
+  -ContentType "application/zip"
+```
 
 ## 为什么旧版本有时检测不到更新
 
