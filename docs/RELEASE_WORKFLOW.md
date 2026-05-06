@@ -6,7 +6,7 @@
 
 ## 已验证版本
 
-- `v0.2.3` 已按本流程完成发布
+- `v0.2.6` 已按本流程完成完整发布（commit + tag + release + zip 资产）
 - 旧版本启动后可通过 GitHub Releases 检测到更新
 - 应用内首页与设置页会显示更新横幅 / 红点
 
@@ -29,12 +29,12 @@
    - 产物位于 `runtime/release/auto-news-studio-windows.zip`
 6. 提交并推送 GitHub
 7. 打 Git tag
-   - 例如：`git tag v0.2.3`
-   - `git push origin v0.2.3`
+   - 例如：`git tag vX.Y.Z`
+   - `git push origin vX.Y.Z`
 8. 在 GitHub 仓库发布 Release
-   - Tag: `v0.2.3`
-   - Title: `v0.2.3`
-   - Body: 使用 `RELEASE_NOTES_0.2.3.md`
+   - Tag: `vX.Y.Z`
+   - Title: `vX.Y.Z`
+   - Body: 使用 `RELEASE_NOTES_X.Y.Z.md`
    - 如本机已安装 `gh` 并已登录，可直接用 `gh release create`
    - 如本机未安装 `gh`，但 `git push` 已可用，则优先复用 Git 凭据发 Release：
      - 用 `cmd /c "echo protocol=https&echo host=github.com&echo.&exit" | git credential fill` 读取 GitHub 凭据
@@ -72,7 +72,7 @@
 - `RELEASE_NOTES_x.y.z.md` 可以直接作为 Release 正文
 - 如果本地已经存在旧 tag（例如 `v0.2.4`），新的上传批次必须升级版本号，不能复用旧 tag
 - 当前机器即使没有 `gh`、没有显式 `GITHUB_TOKEN`，也可能通过 Git 凭据管理器中的 GitHub 凭据完成 Release API 发布
-- `v0.2.1` 与 `v0.2.5` 已验证过：`git credential fill + Invoke-RestMethod` 可直接创建 Release，`v0.2.5` 还验证了 zip 资产上传
+- `v0.2.1`、`v0.2.5`、`v0.2.6` 已验证过：`git credential fill + Invoke-RestMethod` 可直接创建 Release，其中 `v0.2.5` 与 `v0.2.6` 还验证了 zip 资产上传
 
 ## 无 gh 时的可用发布方式
 
@@ -93,11 +93,14 @@ $headers = @{
   "X-GitHub-Api-Version" = "2022-11-28"
 }
 
+$tag = "vX.Y.Z"
+$notes = "RELEASE_NOTES_X.Y.Z.md"
+
 $body = @{
-  tag_name = "v0.2.5"
+  tag_name = $tag
   target_commitish = "master"
-  name = "v0.2.5"
-  body = (Get-Content "RELEASE_NOTES_0.2.5.md" -Raw)
+  name = $tag
+  body = (Get-Content $notes -Raw)
   draft = $false
   prerelease = $false
   generate_release_notes = $false
@@ -113,8 +116,10 @@ Invoke-RestMethod -Method Post `
 ### 3. 上传 Windows 分发包
 
 ```powershell
+$tag = "vX.Y.Z"
+
 $release = Invoke-RestMethod -Method Get `
-  -Uri "https://api.github.com/repos/pengqiyu123/auto-news-studio/releases/tags/v0.2.5" `
+  -Uri "https://api.github.com/repos/pengqiyu123/auto-news-studio/releases/tags/$tag" `
   -Headers $headers
 
 $assetPath = (Resolve-Path "runtime/release/auto-news-studio-windows.zip").Path

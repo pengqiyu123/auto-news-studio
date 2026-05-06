@@ -178,31 +178,57 @@ start.bat                   # Windows（推荐，要求 frontend/dist 已存在�
 ```
 auto-news-studio/
 ├── backend/
-│   └── app/
-│       ├── main.py              # FastAPI 应用入口、路由
-│       ├── store.py             # 数据持久化（JSON + RLock）
-│       ├── models.py            # Pydantic v2 数据模型
-│       ├── intel_pipeline.py    # 情报管道：聚类、评分、预警
-│       ├── connectors.py        # 多源采集驱动
-│       ├── llm.py               # LLM 多提供商路由
-│       ├── publishers.py        # 微信公众号发布自动化
-│       ├── deep_dive.py         # 深度分析模块
-│       ├── briefing.py          # 简报生成模块
-│       ├── entity_extractor.py  # 实体识别与抽取
-│       └── sources/             # 信息源注册
-│           ├── registry.py
-│           ├── rss/
-│           ├── hotlists/
-│           └── monitors/
+│   ├── app/
+│   │   ├── main.py              # FastAPI 应用入口、路由
+│   │   ├── store.py             # 数据持久化（JSON + RLock）
+│   │   ├── store_base.py        # 存储基类
+│   │   ├── store_defaults.py    # 存储默认值
+│   │   ├── store_llm.py         # LLM 配置存储
+│   │   ├── models.py            # Pydantic v2 数据模型
+│   │   ├── models_llm.py        # LLM 配置模型
+│   │   ├── intel_pipeline.py    # 情报管道：聚类、评分、预警
+│   │   ├── connectors.py        # 多源采集驱动
+│   │   ├── llm.py               # LLM 多提供商路由
+│   │   ├── pipeline.py          # 采集结果归一化与入库桥接
+│   │   ├── publishers.py        # 微信公众号发布自动化
+│   │   ├── deep_dive.py         # 深度分析模块
+│   │   ├── briefing.py          # 简报生成模块
+│   │   ├── entity_extractor.py  # 实体识别与抽取
+│   │   ├── entity_aliases.py    # 实体别名
+│   │   ├── entity_types.py      # 实体类型定义
+│   │   ├── cc_switch_bridge.py  # CC-Switch 桥接
+│   │   ├── reference_projects.py # 参考项目管理
+│   │   ├── legacy_sources.py    # 旧版来源兼容
+│   │   └── sources/             # 信息源注册
+│   │       ├── registry.py
+│   │       ├── rss/
+│   │       ├── hotlists/
+│   │       └── monitors/
+│   └── tests/                   # 后端测试
+│       ├── test_intel_pipeline.py
+│       ├── test_admin_pagination.py
+│       └── test_agent_upload_guard.py
 ├── frontend/
 │   └── src/
 │       ├── app.tsx              # 主应用（状态管理）
-│       ├── components/          # 页面组件
+│       ├── components/          # 页面组件（含 .test.tsx 测试）
+│       ├── hooks/               # 自定义 Hooks
+│       │   └── useAdaptivePolling.ts
 │       ├── lib/                 # 工具函数
+│       ├── types.ts             # 共享类型定义
+│       ├── test/                # 测试配置
 │       └── styles.css           # 全局样式
-├── scripts/                     # 启动/停止脚本
+├── docs/                        # 项目文档
+│   ├── DISTRIBUTION.md
+│   └── RELEASE_WORKFLOW.md
+├── scripts/                     # 发布与运维脚本
 ├── AGENT.md                     # 外部 AI 工具的真实操作说明
 ├── start.bat                    # Windows 一键启动
+├── stop.bat                     # Windows 停止
+├── doctor.bat                   # 环境自检
+├── install.bat                  # 分发版安装
+├── pyproject.toml               # Python 项目配置（ruff）
+├── version.json                 # 版本号
 ├── .env.example                 # 环境变量模板
 └── LICENSE                      # MIT License
 ```
@@ -226,7 +252,7 @@ auto-news-studio/
 | POST | `/api/admin/intel/events/{event_id}/deep-dive` | 对指定事件执行正文深挖 |
 | POST | `/api/admin/intel/events/{event_id}/brief` | 用传统流程为事件生成简报 |
 | POST | `/api/admin/agent/articles` | 外部 AI 直接写入完整文章，并可同步微信草稿箱 |
-| POST | `/api/admin/briefs/{brief_id}/wechat-draft` | 将现有文章 / 简报同步进微信草稿箱 |
+| POST | `/api/admin/briefs/{brief_id}/wechat-draft` | 将现有文章 / 简报同步进微信草稿箱（Agent 长文不要走这里） |
 | POST | `/api/admin/browser/wechat/check-drafts` | 检查真实微信草稿箱 |
 | POST | `/api/admin/browser/wechat/check-publish-history` | 检查真实微信发表记录 |
 | PUT | `/api/admin/runtime/plan` | 配置自动化计划 |
