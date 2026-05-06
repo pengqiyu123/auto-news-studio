@@ -89,7 +89,12 @@ cd frontend
 npm run build
 cd ..
 
-# 8. 启动
+# 8. 测试
+.venv/Scripts/python -m pytest          # Windows
+cd frontend && npx vitest --run
+cd ..
+
+# 9. 启动
 start.bat                   # Windows（推荐，要求 frontend/dist 已存在）
 # 或手动启动：
 # cd backend && .venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -195,9 +200,10 @@ auto-news-studio/
 | GET | `/api/admin/intel/events` | 聚合热点事件 |
 | GET | `/api/admin/intel/alerts` | 预警列表 |
 | GET | `/api/admin/intel/deep-dives` | 正文深挖列表 |
-| GET | `/api/admin/briefs` | 共享文章 / 简报记录 |
+| GET | `/api/admin/briefs?page=&page_size=&stage=&q=` | 共享文章 / 简报记录 |
 | GET | `/api/admin/wechat/mapping` | 微信草稿箱映射 |
-| GET | `/api/admin/logs` | 系统日志 |
+| GET | `/api/admin/logs?page=&page_size=&level=&q=` | 系统日志 |
+| GET | `/api/admin/publish-tasks?page=&page_size=` | 上传/删除操作记录 |
 | POST | `/api/admin/sources/sync` | 同步全部来源 |
 | POST | `/api/admin/intel/events/{event_id}/deep-dive` | 对指定事件执行正文深挖 |
 | POST | `/api/admin/intel/events/{event_id}/brief` | 用传统流程为事件生成简报 |
@@ -210,6 +216,22 @@ auto-news-studio/
 | POST | `/api/admin/runtime/stop` | 停止自动化 |
 
 更完整的外部 AI 使用建议，见 [AGENT.md](AGENT.md)。
+
+### 列表分页参数
+
+- `GET /api/admin/briefs?page=&page_size=&stage=&q=`
+  - `stage`: `all | prepared | synced | failed`
+  - `q`: 匹配 `title / one_line / why_it_matters`
+- `GET /api/admin/logs?page=&page_size=&level=&q=`
+  - `level`: `all | info | warning | error`
+  - `q`: 匹配 `message / detail / category / actor`
+- `GET /api/admin/publish-tasks?page=&page_size=`
+- 统一返回：
+  - `items`
+  - `total`
+  - `page`
+  - `page_size`
+  - `has_more`
 
 ## Windows 分发版
 

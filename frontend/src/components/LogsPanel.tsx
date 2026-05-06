@@ -4,10 +4,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { formatDateTime, formatDuration } from "../lib/time";
 import { formatRuntimeIssueLabel } from "../lib/runtimeUtils";
 import type { LogItem, SchedulerStatus } from "../types";
+import { PaginationControls } from "./PaginationControls";
 
 interface LogsPanelProps {
   logs: LogItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  levelFilter: "all" | "info" | "warning" | "error";
+  searchQuery: string;
+  loading?: boolean;
   runtime: SchedulerStatus;
+  onLevelFilterChange: (value: "all" | "info" | "warning" | "error") => void;
+  onSearchChange: (value: string) => void;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
 }
 
 type SourceLogGroup = {
@@ -35,28 +46,31 @@ function renderLogRow(log: LogItem) {
   );
 }
 
-export function LogsPanel({ logs, runtime }: LogsPanelProps) {
-  const [levelFilter, setLevelFilter] = useState("all");
-  const [searchQuery, setSearchQuery] = useState("");
+export function LogsPanel({
+  logs,
+  page,
+  pageSize,
+  total,
+  levelFilter,
+  searchQuery,
+  loading = false,
+  runtime,
+  onLevelFilterChange,
+  onSearchChange,
+  onPageChange,
+  onPageSizeChange,
+}: LogsPanelProps) {
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [sourceSummaryCollapsed, setSourceSummaryCollapsed] = useState(true);
   const systemLogListRef = useRef<HTMLDivElement>(null);
 
   const filteredLogs = useMemo(() => {
-    const keyword = searchQuery.trim().toLowerCase();
-    return [...logs]
-      .filter((log) => {
-        const matchesLevel = levelFilter === "all" || log.level === levelFilter;
-        const haystack = `${log.message}\n${log.detail ?? ""}\n${log.category}\n${log.actor}`.toLowerCase();
-        const matchesSearch = !keyword || haystack.includes(keyword);
-        return matchesLevel && matchesSearch;
-      })
-      .sort((a, b) => {
+    return [...logs].sort((a, b) => {
         const ta = a.created_at ?? "";
         const tb = b.created_at ?? "";
         return ta < tb ? 1 : ta > tb ? -1 : 0;
       });
-  }, [logs, levelFilter, searchQuery]);
+  }, [logs]);
 
   const sourceLogGroups = useMemo<SourceLogGroup[]>(() => {
     const grouped = new Map<string, SourceLogGroup>();
@@ -128,7 +142,7 @@ export function LogsPanel({ logs, runtime }: LogsPanelProps) {
               key={level}
               type="button"
               className={`filter-chip ${levelFilter === level ? "filter-chip-active" : ""}`}
-              onClick={() => setLevelFilter(level)}
+              onClick={() => onLevelFilterChange(level)}
             >
               {level === "all" ? "全部" : level}
             </button>
@@ -139,11 +153,22 @@ export function LogsPanel({ logs, runtime }: LogsPanelProps) {
         <label className="draft-search">
           <input
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => onSearchChange(e.target.value)}
             placeholder="搜索日志内容"
           />
         </label>
       </div>
+
+      <PaginationControls
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        currentCount={filteredLogs.length}
+        itemLabel="条日志"
+        loading={loading}
+        onPageChange={onPageChange}
+        onPageSizeChange={onPageSizeChange}
+      />
 
       <div className="runtime-card-grid">
         <div className="runtime-card">

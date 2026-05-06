@@ -79,6 +79,7 @@ from .models import (
     BriefItem,
     BrowserSessionPayload,
     BrowserSessionState,
+    BriefStageCounts,
     ChannelConfigPayload,
     ChainStateCard,
     DashboardResponse,
@@ -261,8 +262,8 @@ def _wechat_html(markdown: str) -> str:
 
 
 class StudioStore:
-    def __init__(self, data_file: Path = DATA_FILE):
-        self.data_file = data_file
+    def __init__(self, data_file: Path | None = None):
+        self.data_file = data_file or DATA_FILE
         self.config_file = CONFIG_FILE
         self._lock = RLock()
         self._progress_snapshot: dict[str, Any] = {
@@ -5298,11 +5299,74 @@ class StudioStore:
             return self.sync_brief_wechat_draft(brief_id, triggered_by=payload.triggered_by)
         return BriefItem(**brief)
 
-    def list_briefs(self) -> list[BriefItem]:
+    def _paginate_items(
+        self,
+        items: list[Any],
+        *,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[Any], int, int, int, bool]:
+        safe_page = max(1, int(page or 1))
+        safe_page_size = max(1, min(int(page_size or 50), 200))
+        total = len(items)
+        start = (safe_page - 1) * safe_page_size
+        end = start + safe_page_size
+        return items[start:end], total, safe_page, safe_page_size, end < total
+
+    def list_briefs(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        stage: str = "all",
+        q: str = "",
+    ) -> tuple[list[BriefItem], int, int, int, bool, BriefStageCounts]:
         state = self._read_live()
         items = [item for item in state.get("briefs", []) if isinstance(item, dict)]
         items.sort(key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
-        return [BriefItem(**item) for item in items]
+        stage_counts = BriefStageCounts(
+            all=len(items),
+            prepared=sum(1 for item in items if str(item.get("stage") or "") == "prepared"),
+            synced=sum(1 for item in items if str(item.get("stage") or "") == "synced"),
+            failed=sum(
+                1
+                for item in items
+                if str(item.get("stage") or "") == "failed" or bool(str(item.get("last_error") or "").strip())
+            ),
+        )
+        stage_filter = str(stage or "all").strip().lower()
+        keyword = str(q or "").strip().lower()
+
+        def matches_stage(item: dict[str, Any]) -> bool:
+            if stage_filter == "all":
+                return True
+            if stage_filter == "prepared":
+                return str(item.get("stage") or "") == "prepared"
+            if stage_filter == "synced":
+                return str(item.get("stage") or "") == "synced"
+            if stage_filter == "failed":
+                return str(item.get("stage") or "") == "failed" or bool(str(item.get("last_error") or "").strip())
+            return True
+
+        def matches_query(item: dict[str, Any]) -> bool:
+            if not keyword:
+                return True
+            haystack = "\n".join(
+                [
+                    str(item.get("title") or ""),
+                    str(item.get("one_line") or ""),
+                    str(item.get("why_it_matters") or ""),
+                ]
+            ).lower()
+            return keyword in haystack
+
+        filtered = [item for item in items if matches_stage(item) and matches_query(item)]
+        page_items, total, safe_page, safe_page_size, has_more = self._paginate_items(
+            filtered,
+            page=page,
+            page_size=page_size,
+        )
+        return [BriefItem(**item) for item in page_items], total, safe_page, safe_page_size, has_more, stage_counts
 
     def get_brief(self, brief_id: str) -> BriefItem:
         state = self._read_live()
@@ -5513,14 +5577,24 @@ class StudioStore:
         brief = self._find_brief(state, brief_id)
         return str(brief.get("prompt_package_markdown") or "")
 
-    def list_publish_tasks(self) -> list[PublishTask]:
-        state = self._upgrade_state(self._read())
+    def list_publish_tasks(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[PublishTask], int, int, int, bool]:
+        state = self._read_live()
         visible_actions = {"sync_wechat_draft", "delete_wechat_draft", "delete_brief"}
         items = [
             item for item in state["publish_tasks"]
             if isinstance(item, dict) and str(item.get("action") or "") in visible_actions
         ]
-        return [PublishTask(**item) for item in items]
+        page_items, total, safe_page, safe_page_size, has_more = self._paginate_items(
+            items,
+            page=page,
+            page_size=page_size,
+        )
+        return [PublishTask(**item) for item in page_items], total, safe_page, safe_page_size, has_more
 
     def _build_wechat_mapping_snapshot(self, state: dict[str, Any]) -> WeChatMappingSnapshot:
         browser = state.get("browser", {}).get("wechat", {})
@@ -6157,9 +6231,45 @@ class StudioStore:
         self._write(state)
         return [ReferenceProject(**item) for item in state["reference_projects"]]
 
-    def list_logs(self) -> list[LogItem]:
+    def list_logs(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        level: str = "all",
+        q: str = "",
+    ) -> tuple[list[LogItem], int, int, int, bool]:
         state = self._read_live()
-        return [LogItem(**item) for item in state["logs"]]
+        items = [item for item in state["logs"] if isinstance(item, dict)]
+        items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        level_filter = str(level or "all").strip().lower()
+        keyword = str(q or "").strip().lower()
+
+        def matches_level(item: dict[str, Any]) -> bool:
+            if level_filter == "all":
+                return True
+            return str(item.get("level") or "").lower() == level_filter
+
+        def matches_query(item: dict[str, Any]) -> bool:
+            if not keyword:
+                return True
+            haystack = "\n".join(
+                [
+                    str(item.get("message") or ""),
+                    str(item.get("detail") or ""),
+                    str(item.get("category") or ""),
+                    str(item.get("actor") or ""),
+                ]
+            ).lower()
+            return keyword in haystack
+
+        filtered = [item for item in items if matches_level(item) and matches_query(item)]
+        page_items, total, safe_page, safe_page_size, has_more = self._paginate_items(
+            filtered,
+            page=page,
+            page_size=page_size,
+        )
+        return [LogItem(**item) for item in page_items], total, safe_page, safe_page_size, has_more
 
     def _latest_collected_at(self, raw_lookup: dict[str, dict[str, Any]], raw_ids: list[str]) -> str | None:
         times = [raw_lookup[item_id].get("collected_at") for item_id in raw_ids if item_id in raw_lookup]

@@ -54,6 +54,7 @@ If the backend is not reachable:
 Do not guess response shapes. This project does **not** use one universal envelope.
 
 - most list endpoints return `{ "items": [...] }`
+- paginated list endpoints return `{ "items": [...], "total": 0, "page": 1, "page_size": 50, "has_more": false }`
 - most detail endpoints return `{ "item": {...} }`
 - source sync returns a flat object, not `item` or `items`
 
@@ -61,6 +62,18 @@ Do not guess response shapes. This project does **not** use one universal envelo
 
 ```json
 { "items": [] }
+```
+
+### Paginated list responses
+
+```json
+{
+  "items": [],
+  "total": 0,
+  "page": 1,
+  "page_size": 50,
+  "has_more": false
+}
 ```
 
 ### Detail responses
@@ -150,7 +163,7 @@ Key requirements from the guide: 1500-3000 word full article (not a bullet-point
 
 | UI action | Agent API |
 |---|---|
-| Read all articles/briefs | `GET /api/admin/briefs` |
+| Read all articles/briefs | `GET /api/admin/briefs?page=1&page_size=20&stage=all&q=` |
 | Read single article/brief | `GET /api/admin/briefs/{brief_id}` |
 | **Save AI-authored article** | `POST /api/admin/agent/articles` (see detail below) |
 | Upload article to WeChat draft | `POST /api/admin/briefs/{brief_id}/wechat-draft?triggered_by=agent` |
@@ -162,7 +175,7 @@ Key requirements from the guide: 1500-3000 word full article (not a bullet-point
 
 | UI action | Agent API |
 |---|---|
-| Read publish tasks | `GET /api/admin/publish-tasks` |
+| Read publish tasks | `GET /api/admin/publish-tasks?page=1&page_size=20` |
 | Check real WeChat publish history | `POST /api/admin/browser/wechat/check-publish-history?triggered_by=agent` |
 
 ### Tab 9: 微信草稿箱 (Draft Box)
@@ -191,7 +204,7 @@ Key requirements from the guide: 1500-3000 word full article (not a bullet-point
 | Open WeChat dashboard in browser | `POST /api/admin/browser/wechat/open-dashboard` |
 | Check browser session | `POST /api/admin/browser/wechat/check` |
 | System health check | `GET /api/admin/system/doctor` |
-| Read logs | `GET /api/admin/logs` |
+| Read logs | `GET /api/admin/logs?page=1&page_size=50&level=all&q=` |
 
 ### Standalone APIs (no direct tab)
 

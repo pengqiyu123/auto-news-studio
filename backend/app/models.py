@@ -771,8 +771,20 @@ class BriefResponse(BaseModel):
     item: BriefItem
 
 
+class BriefStageCounts(BaseModel):
+    all: int = 0
+    prepared: int = 0
+    synced: int = 0
+    failed: int = 0
+
+
 class BriefsResponse(BaseModel):
     items: list[BriefItem] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    has_more: bool = False
+    stage_counts: BriefStageCounts = Field(default_factory=BriefStageCounts)
 
 
 class DictOkResponse(BaseModel):
@@ -1018,10 +1030,18 @@ class EventDeepDivePayload(BaseModel):
 
 class PublishTasksResponse(BaseModel):
     items: list[PublishTask]
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    has_more: bool = False
 
 
 class LogsResponse(BaseModel):
     items: list[LogItem]
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    has_more: bool = False
 
 
 class BrowserSessionResponse(BaseModel):

@@ -10,6 +10,7 @@ import type {
   WeChatMappingStatus,
 } from "../types";
 import { PublishTaskBadge, SourceHealthBadge } from "./StatusBadge";
+import { PaginationControls } from "./PaginationControls";
 
 type MappingView = "all" | "remote_only" | "local_records" | "unresolved";
 
@@ -59,26 +60,36 @@ const PUBLISH_ACTION_LABELS: Record<string, string> = {
 
 interface WeChatDraftBoxPanelProps {
   mapping: WeChatMappingSnapshot | null;
-  briefs: BriefItem[];
+  localBriefCount: number;
   browserSession: BrowserSessionState | null;
   publishTasks: PublishTask[];
+  publishTasksPage: number;
+  publishTasksPageSize: number;
+  publishTasksTotal: number;
   refreshing: boolean;
   deletingRemoteId?: string | null;
   onRefresh: () => Promise<void>;
   onDeleteRemote: (remoteId: string) => Promise<void>;
   onSyncBrief: (briefId: string) => Promise<void>;
+  onPublishTasksPageChange: (page: number) => void;
+  onPublishTasksPageSizeChange: (pageSize: number) => void;
 }
 
 export function WeChatDraftBoxPanel({
   mapping,
-  briefs,
+  localBriefCount,
   browserSession,
   publishTasks,
+  publishTasksPage,
+  publishTasksPageSize,
+  publishTasksTotal,
   refreshing,
   deletingRemoteId,
   onRefresh,
   onDeleteRemote,
   onSyncBrief,
+  onPublishTasksPageChange,
+  onPublishTasksPageSizeChange,
 }: WeChatDraftBoxPanelProps) {
   const [view, setView] = useState<MappingView>("all");
   const [showRecords, setShowRecords] = useState(false);
@@ -104,15 +115,20 @@ export function WeChatDraftBoxPanel({
   );
 
   const localRows = useMemo(() => {
-    return [...briefs].sort((left, right) => {
-      const leftTime = Date.parse(String(left.updated_at || ""));
-      const rightTime = Date.parse(String(right.updated_at || ""));
-      const safeLeft = Number.isFinite(leftTime) ? leftTime : Number.NEGATIVE_INFINITY;
-      const safeRight = Number.isFinite(rightTime) ? rightTime : Number.NEGATIVE_INFINITY;
-      if (safeRight !== safeLeft) return safeRight - safeLeft;
-      return String(right.id || "").localeCompare(String(left.id || ""));
-    });
-  }, [briefs]);
+    return remoteRows
+      .filter((row) => row.local_brief_id)
+      .map((row) => ({
+        remote_title: row.local_brief_title || row.remote_title,
+        remote_key: row.local_brief_id || row.remote_key || "",
+        remote_appmsg_id: row.remote_appmsg_id ?? null,
+        remote_url: row.remote_url || "",
+        remote_updated_at: row.remote_updated_at ?? null,
+        local_brief_id: row.local_brief_id || "",
+        local_brief_title: row.local_brief_title || "",
+        local_stage: (row.local_stage || "prepared") as BriefItem["stage"],
+        mapping_status: (row.mapping_status === "matched" ? "matched" : "local_only") as WeChatMappingStatus,
+      }));
+  }, [remoteRows]);
 
   const filteredRows = useMemo(() => {
     if (view === "all") {
@@ -121,15 +137,15 @@ export function WeChatDraftBoxPanel({
     if (view === "local_records") {
       return localRows.map(
         (brief): LocalRecordViewRow => ({
-          remote_title: brief.title,
-          remote_key: brief.id,
-          remote_appmsg_id: brief.wechat_remote_appmsg_id ?? null,
-          remote_url: brief.wechat_editor_url ?? "",
-          remote_updated_at: brief.updated_at ?? null,
-          local_brief_id: brief.id,
-          local_brief_title: brief.title,
-          local_stage: brief.stage,
-          mapping_status: brief.stage === "synced" ? "matched" : "local_only",
+          remote_title: brief.remote_title,
+          remote_key: brief.remote_key,
+          remote_appmsg_id: brief.remote_appmsg_id,
+          remote_url: brief.remote_url,
+          remote_updated_at: brief.remote_updated_at,
+          local_brief_id: brief.local_brief_id,
+          local_brief_title: brief.local_brief_title,
+          local_stage: brief.local_stage,
+          mapping_status: brief.mapping_status,
         }),
       );
     }
@@ -143,10 +159,10 @@ export function WeChatDraftBoxPanel({
     () => ({
       all: remoteRows.length,
       remote_only: browserRows.length,
-      local_records: briefs.length,
+      local_records: localBriefCount,
       unresolved: remoteRows.filter((row) => row.mapping_status === "unresolved").length,
     }),
-    [briefs.length, browserRows.length, remoteRows],
+    [browserRows.length, localBriefCount, remoteRows],
   );
 
   const isLoggedIn = Boolean(browserSession?.logged_in);
@@ -211,7 +227,7 @@ export function WeChatDraftBoxPanel({
         <article className="channel-session-stat">
           <span>本地记录</span>
           <strong>{counts.local_records}</strong>
-          {localRows.length > 0 ? <p>本地稿件 {localRows.length}</p> : null}
+          {counts.local_records > 0 ? <p>来自共享 briefs</p> : null}
         </article>
       </div>
 
@@ -309,11 +325,21 @@ export function WeChatDraftBoxPanel({
             className="ghost-button compact"
             onClick={() => setShowRecords((prev) => !prev)}
           >
-            {showRecords ? "收起" : `展开 (${publishTasks.length})`}
+            {showRecords ? "收起" : `展开 (${publishTasksTotal})`}
           </button>
         </div>
         {showRecords ? (
-          <div className="task-list">
+          <>
+            <PaginationControls
+              page={publishTasksPage}
+              pageSize={publishTasksPageSize}
+              total={publishTasksTotal}
+              currentCount={publishTasks.length}
+              itemLabel="条记录"
+              onPageChange={onPublishTasksPageChange}
+              onPageSizeChange={onPublishTasksPageSizeChange}
+            />
+            <div className="task-list">
             {publishTasks.length
               ? publishTasks.map((task) => (
                   <article key={task.id} className="mini-row stacked">
@@ -342,7 +368,8 @@ export function WeChatDraftBoxPanel({
                   </article>
                 ))
               : <p className="empty-state">暂时还没有操作记录。</p>}
-          </div>
+            </div>
+          </>
         ) : null}
       </section>
     </section>

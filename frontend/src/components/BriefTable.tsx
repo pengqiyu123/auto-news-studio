@@ -1,12 +1,24 @@
 import { Copy, FileSearch, RefreshCcw, RadioTower, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import { formatDateTime, formatRelativeTime } from "../lib/time";
-import type { BriefItem } from "../types";
+import type { BriefItem, BriefStageCounts } from "../types";
+import { PaginationControls } from "./PaginationControls";
 
 interface BriefTableProps {
   briefs: BriefItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  view: BriefWorkbenchView;
+  searchTerm: string;
+  stageCounts: BriefStageCounts;
+  loading?: boolean;
   busyBriefId?: string | null;
+  onViewChange: (view: BriefWorkbenchView) => void;
+  onSearchChange: (value: string) => void;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
   onRefreshBrief: (eventId: string) => Promise<void>;
   onCopyBrief: (brief: BriefItem) => Promise<void>;
   onCopyPackage: (briefId: string) => Promise<void>;
@@ -36,42 +48,28 @@ function truncate(text: string, limit: number): string {
 
 export function BriefTable({
   briefs,
+  page,
+  pageSize,
+  total,
+  view,
+  searchTerm,
+  stageCounts,
+  loading = false,
   busyBriefId,
+  onViewChange,
+  onSearchChange,
+  onPageChange,
+  onPageSizeChange,
   onRefreshBrief,
   onCopyBrief,
   onCopyPackage,
   onSyncBrief,
   onDeleteBrief,
 }: BriefTableProps) {
-  const [view, setView] = useState<BriefWorkbenchView>("all");
-  const [searchTerm, setSearchTerm] = useState("");
-
-  const viewCounts = useMemo(() => {
-    let prepared = 0;
-    let synced = 0;
-    let failed = 0;
-    for (const item of briefs) {
-      if (matchesView(item, "prepared")) prepared++;
-      else if (matchesView(item, "synced")) synced++;
-      else if (matchesView(item, "failed")) failed++;
-    }
-    return { all: briefs.length, prepared, synced, failed };
-  }, [briefs]);
-
-  const filtered = useMemo(() => {
-    const keyword = searchTerm.trim().toLowerCase();
-    return briefs
-      .filter((item) => {
-        const matchesStatus = matchesView(item, view);
-        const matchesSearch =
-          !keyword
-          || item.title.toLowerCase().includes(keyword)
-          || item.one_line.toLowerCase().includes(keyword)
-          || item.why_it_matters.toLowerCase().includes(keyword);
-        return matchesStatus && matchesSearch;
-      })
-      .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
-  }, [briefs, searchTerm, view]);
+  const filtered = useMemo(
+    () => [...briefs].sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()),
+    [briefs],
+  );
 
   return (
     <section className="panel">
@@ -83,21 +81,21 @@ export function BriefTable({
       </div>
 
       <div className="segmented-control draft-workbench-tabs">
-        <button type="button" className={view === "all" ? "segment-active" : ""} onClick={() => setView("all")}>
+        <button type="button" className={view === "all" ? "segment-active" : ""} onClick={() => onViewChange("all")}>
           全部
-          <strong>{viewCounts.all}</strong>
+          <strong>{stageCounts.all}</strong>
         </button>
-        <button type="button" className={view === "prepared" ? "segment-active" : ""} onClick={() => setView("prepared")}>
+        <button type="button" className={view === "prepared" ? "segment-active" : ""} onClick={() => onViewChange("prepared")}>
           待同步
-          <strong>{viewCounts.prepared}</strong>
+          <strong>{stageCounts.prepared}</strong>
         </button>
-        <button type="button" className={view === "synced" ? "segment-active" : ""} onClick={() => setView("synced")}>
+        <button type="button" className={view === "synced" ? "segment-active" : ""} onClick={() => onViewChange("synced")}>
           已进草稿箱
-          <strong>{viewCounts.synced}</strong>
+          <strong>{stageCounts.synced}</strong>
         </button>
-        <button type="button" className={view === "failed" ? "segment-active" : ""} onClick={() => setView("failed")}>
+        <button type="button" className={view === "failed" ? "segment-active" : ""} onClick={() => onViewChange("failed")}>
           失败
-          <strong>{viewCounts.failed}</strong>
+          <strong>{stageCounts.failed}</strong>
         </button>
       </div>
 
@@ -106,16 +104,27 @@ export function BriefTable({
           <FileSearch size={16} />
           <input
             value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
+            onChange={(event) => onSearchChange(event.target.value)}
             placeholder="搜索标题、结论、价值判断"
           />
         </label>
         <div className="draft-toolbar-summary">
           <span>当前显示</span>
           <strong>{filtered.length}</strong>
-          <span>/ {briefs.length} 条</span>
+          <span>/ {total} 条</span>
         </div>
       </div>
+
+      <PaginationControls
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        currentCount={filtered.length}
+        itemLabel="条简报"
+        loading={loading}
+        onPageChange={onPageChange}
+        onPageSizeChange={onPageSizeChange}
+      />
 
       <div className="intel-list">
         {filtered.length ? filtered.map((brief) => {

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import { isRuntimeActivelyProcessing } from "../lib/runtimeIntent";
 import type { SchedulerStatus } from "../types";
@@ -25,6 +25,11 @@ export function useAdaptivePolling(
 ) {
   const isRunning = Boolean(runtime?.running);
   const isActiveCycle = runtime ? isRuntimeActivelyProcessing(runtime) : false;
+  const taskRef = useRef<PollTask>(task);
+
+  useEffect(() => {
+    taskRef.current = task;
+  }, [task]);
 
   useEffect(() => {
     if (!isEnabled) {
@@ -32,8 +37,8 @@ export function useAdaptivePolling(
     }
     const intervalMs = isActiveCycle ? intervals.active : isRunning ? intervals.running : intervals.idle;
     const timer = window.setInterval(() => {
-      void task();
+      void taskRef.current();
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [activeTab, intervals.active, intervals.idle, intervals.running, isEnabled, isRunning, isActiveCycle, task]);
+  }, [activeTab, intervals.active, intervals.idle, intervals.running, isEnabled, isRunning, isActiveCycle]);
 }

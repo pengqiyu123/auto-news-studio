@@ -157,7 +157,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Auto News Studio API",
-    version=str(VERSION_MANIFEST.get("version") or "0.2.4"),
+    version=str(VERSION_MANIFEST.get("version") or "0.2.5"),
     description="自动化新闻助手运营后台 API，覆盖信息采集、候选选题、公众号草稿和浏览器会话。",
     lifespan=lifespan,
 )
@@ -543,8 +543,21 @@ async def create_agent_article(request: Request):
 
 
 @app.get("/api/admin/briefs", response_model=BriefsResponse)
-def list_briefs():
-    return BriefsResponse(items=store.list_briefs())
+def list_briefs(page: int = 1, page_size: int = 50, stage: str = "all", q: str = ""):
+    items, total, safe_page, safe_page_size, has_more, stage_counts = store.list_briefs(
+        page=page,
+        page_size=page_size,
+        stage=stage,
+        q=q,
+    )
+    return BriefsResponse(
+        items=items,
+        total=total,
+        page=safe_page,
+        page_size=safe_page_size,
+        has_more=has_more,
+        stage_counts=stage_counts,
+    )
 
 
 @app.get("/api/admin/briefs/{brief_id}", response_model=BriefResponse)
@@ -610,8 +623,15 @@ def serve_image(filename: str):
 
 
 @app.get("/api/admin/publish-tasks", response_model=PublishTasksResponse)
-def list_publish_tasks():
-    return PublishTasksResponse(items=store.list_publish_tasks())
+def list_publish_tasks(page: int = 1, page_size: int = 50):
+    items, total, safe_page, safe_page_size, has_more = store.list_publish_tasks(page=page, page_size=page_size)
+    return PublishTasksResponse(
+        items=items,
+        total=total,
+        page=safe_page,
+        page_size=safe_page_size,
+        has_more=has_more,
+    )
 
 
 @app.get("/api/admin/channels/wechat", response_model=WeChatChannelResponse)
@@ -696,8 +716,20 @@ def list_reference_projects():
 
 
 @app.get("/api/admin/logs", response_model=LogsResponse)
-def list_logs():
-    return LogsResponse(items=store.list_logs())
+def list_logs(page: int = 1, page_size: int = 50, level: str = "all", q: str = ""):
+    items, total, safe_page, safe_page_size, has_more = store.list_logs(
+        page=page,
+        page_size=page_size,
+        level=level,
+        q=q,
+    )
+    return LogsResponse(
+        items=items,
+        total=total,
+        page=safe_page,
+        page_size=safe_page_size,
+        has_more=has_more,
+    )
 
 
 # ── LLM config ──────────────────────────────────────────────────

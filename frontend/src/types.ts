@@ -686,8 +686,36 @@ export interface EventDeepDivesResponse {
   items: EventDeepDive[];
 }
 
+export interface BriefStageCounts {
+  all: number;
+  prepared: number;
+  synced: number;
+  failed: number;
+}
+
 export interface BriefsResponse {
   items: BriefItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+  stage_counts: BriefStageCounts;
+}
+
+export interface PublishTasksResponse {
+  items: PublishTask[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+}
+
+export interface LogsResponse {
+  items: LogItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
 }
 
 export interface HotClusterCard {

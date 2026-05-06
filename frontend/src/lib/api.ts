@@ -25,10 +25,12 @@ import type {
   HotClusterCard,
   IntelStreamItem,
   LogItem,
+  LogsResponse,
   LLMConfig,
   LLMTestResult,
   PublishBackendStatus,
   PublishTask,
+  PublishTasksResponse,
   ReferenceProject,
   RuntimePlan,
   RuntimeIntent,
@@ -303,7 +305,15 @@ export const api = {
     request<{ item: BriefItem }>(`/api/admin/intel/events/${eventId}/brief`, {
       method: "POST"
     }),
-  getBriefs: () => request<BriefsResponse>("/api/admin/briefs"),
+  getBriefs: (params?: { page?: number; page_size?: number; stage?: "all" | "prepared" | "synced" | "failed"; q?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.page) query.set("page", String(params.page));
+    if (params?.page_size) query.set("page_size", String(params.page_size));
+    if (params?.stage && params.stage !== "all") query.set("stage", params.stage);
+    if (params?.q?.trim()) query.set("q", params.q.trim());
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return request<BriefsResponse>(`/api/admin/briefs${suffix}`);
+  },
   getBrief: (briefId: string) => request<{ item: BriefItem }>(`/api/admin/briefs/${briefId}`),
   syncBriefWeChatDraft: (briefId: string) =>
     request<{ item: BriefItem }>(`/api/admin/briefs/${briefId}/wechat-draft`, {
@@ -393,7 +403,13 @@ export const api = {
       `/api/admin/sources/${sourceKey}/sync`,
       { method: "POST" }
     ),
-  getPublishTasks: () => request<{ items: PublishTask[] }>("/api/admin/publish-tasks"),
+  getPublishTasks: (params?: { page?: number; page_size?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.page) query.set("page", String(params.page));
+    if (params?.page_size) query.set("page_size", String(params.page_size));
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return request<PublishTasksResponse>(`/api/admin/publish-tasks${suffix}`);
+  },
   getWeChatConfig: () =>
     request<{ item: WeChatChannelConfig }>("/api/admin/channels/wechat"),
   updateWeChatConfig: (payload: WeChatChannelConfig) =>
@@ -438,7 +454,15 @@ export const api = {
     request<{ items: PublishBackendStatus[] }>("/api/admin/publish/backends"),
   getReferenceProjects: () =>
     request<{ items: ReferenceProject[] }>("/api/admin/reference-projects"),
-  getLogs: () => request<{ items: LogItem[] }>("/api/admin/logs"),
+  getLogs: (params?: { page?: number; page_size?: number; level?: "all" | "info" | "warning" | "error"; q?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.page) query.set("page", String(params.page));
+    if (params?.page_size) query.set("page_size", String(params.page_size));
+    if (params?.level && params.level !== "all") query.set("level", params.level);
+    if (params?.q?.trim()) query.set("q", params.q.trim());
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return request<LogsResponse>(`/api/admin/logs${suffix}`);
+  },
   uploadImage: (file: File) => {
     const formData = new FormData();
     formData.append("file", file);

@@ -31,6 +31,7 @@ import type {
   AppUpdateInfo,
   AppVersionInfo,
   BrowserSessionState,
+  BriefStageCounts,
   BriefItem,
   DashboardResponse,
   DiscoveryItem,
@@ -103,6 +104,9 @@ const pageMeta: Record<TabKey, { eyebrow: string; title: string }> = {
 
 const DEFAULT_STREAM_TAB_PAGE_SIZE = 50;
 const DEFAULT_EVENTS_TAB_PAGE_SIZE = 50;
+const DEFAULT_BRIEFS_PAGE_SIZE = 20;
+const DEFAULT_LOGS_PAGE_SIZE = 50;
+const DEFAULT_PUBLISH_TASKS_PAGE_SIZE = 20;
 const WATCHLIST_TAB_PAGE_SIZE = 200;
 const RUNTIME_AWARE_TABS: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "briefs", "logs"];
 const BROWSER_REFRESH_TABS: TabKey[] = ["publish-history", "draft-box"];
@@ -125,11 +129,25 @@ export default function App() {
   const [alertHistory, setAlertHistory] = useState<IntelAlertHistoryItem[]>([]);
   const [sources, setSources] = useState<SourceConnector[]>([]);
   const [briefs, setBriefs] = useState<BriefItem[]>([]);
+  const [briefsPage, setBriefsPage] = useState(1);
+  const [briefsPageSize, setBriefsPageSize] = useState(DEFAULT_BRIEFS_PAGE_SIZE);
+  const [briefsTotal, setBriefsTotal] = useState(0);
+  const [briefStageFilter, setBriefStageFilter] = useState<"all" | "prepared" | "synced" | "failed">("all");
+  const [briefSearchQuery, setBriefSearchQuery] = useState("");
+  const [briefStageCounts, setBriefStageCounts] = useState<BriefStageCounts>({ all: 0, prepared: 0, synced: 0, failed: 0 });
   const [selectedDeepDive, setSelectedDeepDive] = useState<EventDeepDive | null>(null);
   const [entityWatchlist, setEntityWatchlist] = useState<EntityWatchlistItem[]>([]);
   const [selectedEntityId, setSelectedEntityId] = useState<string>("all");
   const [publishTasks, setPublishTasks] = useState<PublishTask[]>([]);
+  const [publishTasksPage, setPublishTasksPage] = useState(1);
+  const [publishTasksPageSize, setPublishTasksPageSize] = useState(DEFAULT_PUBLISH_TASKS_PAGE_SIZE);
+  const [publishTasksTotal, setPublishTasksTotal] = useState(0);
   const [logs, setLogs] = useState<LogItem[]>([]);
+  const [logsPage, setLogsPage] = useState(1);
+  const [logsPageSize, setLogsPageSize] = useState(DEFAULT_LOGS_PAGE_SIZE);
+  const [logsTotal, setLogsTotal] = useState(0);
+  const [logLevelFilter, setLogLevelFilter] = useState<"all" | "info" | "warning" | "error">("all");
+  const [logSearchQuery, setLogSearchQuery] = useState("");
   const [wechatMapping, setWechatMapping] = useState<WeChatMappingSnapshot | null>(null);
   const [wechatPublishHistory, setWechatPublishHistory] = useState<WeChatPublishHistorySnapshot | null>(null);
   const [wechatConfig, setWechatConfig] = useState<WeChatChannelConfig | null>(null);
@@ -240,39 +258,65 @@ export default function App() {
     setWatchlistEvents(response.items);
   }, []);
 
-  const loadBriefsData = useCallback(async () => {
-    const response = await api.getBriefs();
+  const loadBriefsData = useCallback(async (
+    page = briefsPage,
+    pageSize = briefsPageSize,
+    stage = briefStageFilter,
+    query = briefSearchQuery,
+  ) => {
+    const response = await api.getBriefs({
+      page,
+      page_size: pageSize,
+      stage,
+      q: query,
+    });
     setBriefs(response.items);
-  }, []);
+    setBriefsPage(response.page);
+    setBriefsPageSize(response.page_size);
+    setBriefsTotal(response.total);
+    setBriefStageCounts(response.stage_counts);
+  }, [briefSearchQuery, briefStageFilter, briefsPage, briefsPageSize]);
 
-  const loadPublishHistoryData = useCallback(async (forceBrowserRefresh = true) => {
+  const loadPublishHistoryData = useCallback(async (
+    forceBrowserRefresh = true,
+    page = publishTasksPage,
+    pageSize = publishTasksPageSize,
+  ) => {
     const [publishTaskData, historyData, browserData] = await Promise.all([
-      api.getPublishTasks(),
+      api.getPublishTasks({ page, page_size: pageSize }),
       forceBrowserRefresh ? api.checkWeChatPublishHistory() : Promise.resolve({ item: wechatPublishHistory }),
       api.getBrowserSession(),
     ]);
     setPublishTasks(publishTaskData.items);
+    setPublishTasksPage(publishTaskData.page);
+    setPublishTasksPageSize(publishTaskData.page_size);
+    setPublishTasksTotal(publishTaskData.total);
     if (historyData.item) {
       setWechatPublishHistory(historyData.item);
     }
     setBrowserSession(browserData.item);
-  }, [wechatPublishHistory]);
+  }, [publishTasksPage, publishTasksPageSize, wechatPublishHistory]);
 
-  const loadDraftBoxData = useCallback(async (forceBrowserRefresh = true) => {
+  const loadDraftBoxData = useCallback(async (
+    forceBrowserRefresh = true,
+    page = publishTasksPage,
+    pageSize = publishTasksPageSize,
+  ) => {
     if (forceBrowserRefresh) {
       await api.checkWeChatDraftBox();
     }
-    const [mappingData, briefData, publishTaskData, browserData] = await Promise.all([
+    const [mappingData, publishTaskData, browserData] = await Promise.all([
       api.getWeChatMapping(),
-      api.getBriefs(),
-      api.getPublishTasks(),
+      api.getPublishTasks({ page, page_size: pageSize }),
       api.getBrowserSession(),
     ]);
     setWechatMapping(mappingData.item);
-    setBriefs(briefData.items);
     setPublishTasks(publishTaskData.items);
+    setPublishTasksPage(publishTaskData.page);
+    setPublishTasksPageSize(publishTaskData.page_size);
+    setPublishTasksTotal(publishTaskData.total);
     setBrowserSession(browserData.item);
-  }, []);
+  }, [publishTasksPage, publishTasksPageSize]);
 
   const loadSettingsData = useCallback(async () => {
     const [channelData, browserData, referenceData, llmConfigData, settingsData, doctorData, sourceData] = await Promise.all([
@@ -293,10 +337,23 @@ export default function App() {
     setSources(sourceData.items);
   }, []);
 
-  const loadLogsData = useCallback(async () => {
-    const response = await api.getLogs();
+  const loadLogsData = useCallback(async (
+    page = logsPage,
+    pageSize = logsPageSize,
+    level = logLevelFilter,
+    query = logSearchQuery,
+  ) => {
+    const response = await api.getLogs({
+      page,
+      page_size: pageSize,
+      level,
+      q: query,
+    });
     setLogs(response.items);
-  }, []);
+    setLogsPage(response.page);
+    setLogsPageSize(response.page_size);
+    setLogsTotal(response.total);
+  }, [logLevelFilter, logSearchQuery, logsPage, logsPageSize]);
 
   const markTabLoaded = useCallback((tab: TabKey) => {
     setLoadedTabs((current) => (current[tab] ? current : { ...current, [tab]: true }));
@@ -479,6 +536,34 @@ export default function App() {
       setError(err instanceof Error ? err.message : "页面数据加载失败");
     });
   }, [activeTab, loadedTabs, loadTabData]);
+
+  useEffect(() => {
+    if (!loadedTabs.briefs || activeTab !== "briefs") {
+      return;
+    }
+    setTabLoading((current) => ({ ...current, briefs: true }));
+    void loadBriefsData(1, briefsPageSize, briefStageFilter, briefSearchQuery)
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "简报加载失败");
+      })
+      .finally(() => {
+        setTabLoading((current) => ({ ...current, briefs: false }));
+      });
+  }, [activeTab, briefSearchQuery, briefStageFilter, briefsPageSize, loadBriefsData, loadedTabs.briefs]);
+
+  useEffect(() => {
+    if (!loadedTabs.logs || activeTab !== "logs") {
+      return;
+    }
+    setTabLoading((current) => ({ ...current, logs: true }));
+    void loadLogsData(1, logsPageSize, logLevelFilter, logSearchQuery)
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "日志加载失败");
+      })
+      .finally(() => {
+        setTabLoading((current) => ({ ...current, logs: false }));
+      });
+  }, [activeTab, loadedTabs.logs, loadLogsData, logLevelFilter, logSearchQuery, logsPageSize]);
 
   async function handleSourceSync() {
     setRefreshingSources(true);
@@ -929,12 +1014,15 @@ export default function App() {
   }
 
   async function handleSyncBriefById(briefId: string) {
-    const brief = briefs.find((item) => item.id === briefId);
-    if (!brief) {
-      setError("未找到对应简报，无法重新同步");
-      return;
+    setBusyBriefId(briefId);
+    try {
+      const briefResponse = await api.getBrief(briefId);
+      await handleBriefAction("sync", briefResponse.item);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "未找到对应简报，无法重新同步");
+    } finally {
+      setBusyBriefId(null);
     }
-    await handleBriefAction("sync", brief);
   }
 
   async function handleStartRuntime() {
@@ -1310,7 +1398,34 @@ export default function App() {
             {activeTab === "briefs" ? (
               <BriefTable
                 briefs={briefs}
+                page={briefsPage}
+                pageSize={briefsPageSize}
+                total={briefsTotal}
+                view={briefStageFilter}
+                searchTerm={briefSearchQuery}
+                stageCounts={briefStageCounts}
+                loading={Boolean(tabLoading.briefs)}
                 busyBriefId={busyBriefId}
+                onViewChange={(view) => {
+                  setBriefStageFilter(view);
+                  setBriefsPage(1);
+                }}
+                onSearchChange={(value) => {
+                  setBriefSearchQuery(value);
+                  setBriefsPage(1);
+                }}
+                onPageChange={(page) => {
+                  setTabLoading((current) => ({ ...current, briefs: true }));
+                  void loadBriefsData(page, briefsPageSize, briefStageFilter, briefSearchQuery).catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : "简报加载失败");
+                  }).finally(() => {
+                    setTabLoading((current) => ({ ...current, briefs: false }));
+                  });
+                }}
+                onPageSizeChange={(pageSize) => {
+                  setBriefsPageSize(pageSize);
+                  setBriefsPage(1);
+                }}
                 onRefreshBrief={(eventId) => handleCreateBrief(eventId)}
                 onCopyBrief={handleCopyBrief}
                 onCopyPackage={handleCopyBriefPackage}
@@ -1330,14 +1445,35 @@ export default function App() {
             {activeTab === "draft-box" ? (
               <WeChatDraftBoxPanel
                 mapping={wechatMapping}
-                briefs={briefs}
+                localBriefCount={briefStageCounts.all}
                 browserSession={browserSession}
                 publishTasks={publishTasks}
+                publishTasksPage={publishTasksPage}
+                publishTasksPageSize={publishTasksPageSize}
+                publishTasksTotal={publishTasksTotal}
                 refreshing={refreshingMapping}
                 deletingRemoteId={deletingRemoteId}
                 onRefresh={handleRefreshWeChatMapping}
                 onDeleteRemote={handleDeleteRemoteDraft}
                 onSyncBrief={handleSyncBriefById}
+                onPublishTasksPageChange={(page) => {
+                  setTabLoading((current) => ({ ...current, ["draft-box"]: true }));
+                  void loadDraftBoxData(false, page, publishTasksPageSize).catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : "操作记录加载失败");
+                  }).finally(() => {
+                    setTabLoading((current) => ({ ...current, ["draft-box"]: false }));
+                  });
+                }}
+                onPublishTasksPageSizeChange={(pageSize) => {
+                  setPublishTasksPageSize(pageSize);
+                  setPublishTasksPage(1);
+                  setTabLoading((current) => ({ ...current, ["draft-box"]: true }));
+                  void loadDraftBoxData(false, 1, pageSize).catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : "操作记录加载失败");
+                  }).finally(() => {
+                    setTabLoading((current) => ({ ...current, ["draft-box"]: false }));
+                  });
+                }}
               />
             ) : null}
 
@@ -1377,7 +1513,38 @@ export default function App() {
               />
             ) : null}
 
-            {activeTab === "logs" ? <LogsPanel logs={logs} runtime={dashboard.runtime_status} /> : null}
+            {activeTab === "logs" ? (
+              <LogsPanel
+                logs={logs}
+                page={logsPage}
+                pageSize={logsPageSize}
+                total={logsTotal}
+                levelFilter={logLevelFilter}
+                searchQuery={logSearchQuery}
+                loading={Boolean(tabLoading.logs)}
+                runtime={dashboard.runtime_status}
+                onLevelFilterChange={(value) => {
+                  setLogLevelFilter(value);
+                  setLogsPage(1);
+                }}
+                onSearchChange={(value) => {
+                  setLogSearchQuery(value);
+                  setLogsPage(1);
+                }}
+                onPageChange={(page) => {
+                  setTabLoading((current) => ({ ...current, logs: true }));
+                  void loadLogsData(page, logsPageSize, logLevelFilter, logSearchQuery).catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : "日志加载失败");
+                  }).finally(() => {
+                    setTabLoading((current) => ({ ...current, logs: false }));
+                  });
+                }}
+                onPageSizeChange={(pageSize) => {
+                  setLogsPageSize(pageSize);
+                  setLogsPage(1);
+                }}
+              />
+            ) : null}
           </div>
         ) : null}
       </main>
