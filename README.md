@@ -89,9 +89,9 @@ cd frontend
 npm run build
 cd ..
 
-# 8. 测试
-.venv/Scripts/python -m pytest          # Windows
-cd frontend && npx vitest --run
+# 8. 测试（推荐最小回归集）
+.venv/Scripts/python -m pytest backend/tests/test_intel_pipeline.py backend/tests/test_admin_pagination.py backend/tests/test_agent_upload_guard.py
+cd frontend && npm run test -- --run
 cd ..
 
 # 9. 启动
@@ -102,6 +102,11 @@ start.bat                   # Windows（推荐，要求 frontend/dist 已存在�
 
 启动后会检查 `frontend/dist` 是否存在；若前端已完成构建，会启动后端并自动打开浏览器访问 `http://127.0.0.1:8000`。
 
+说明：
+
+- 本地开发、分发打包、发版前回归，统一使用项目 `.venv`，不要依赖机器全局 `pytest`
+- 只要改了后端 Python 代码，手工 API 验证前都先执行一次 `stop.bat` 再 `start.bat`，避免误打到旧进程
+
 ## 外部 AI 驱动
 
 如果你希望使用 Codex、Claude Code 或其他可读取项目文件的 AI 工具驱动工作流：
@@ -111,6 +116,19 @@ start.bat                   # Windows（推荐，要求 frontend/dist 已存在�
 3. 所有结果继续写回同一个 `data/state.json`
 
 这条路径不会创建第二套数据库，也不会引入第二套 Agent 产品壳。外部 AI 负责判断和写作，项目负责真实数据、真实浏览器链和真实日志。
+
+### Agent 手工回归清单
+
+1. 先执行 `stop.bat`，再执行 `start.bat`
+2. `GET /api/health`，确认后端在线
+3. `GET /api/admin/runtime/status`，确认传统调度器已停止
+4. `POST /api/admin/sources/sync?triggered_by=agent`
+5. `GET /api/admin/intel/events?page=1&page_size=50`
+6. `POST /api/admin/intel/events/{event_id}/deep-dive?triggered_by=agent`
+7. `POST /api/admin/intel/events/{event_id}/brief?triggered_by=agent`，这里只生成本地素材记录
+8. `POST /api/admin/agent/articles`，并设置 `publish_to_wechat_draft=true`
+9. 不要对传统简报调用 `POST /api/admin/briefs/{brief_id}/wechat-draft`
+10. 如需检查微信端，`check-drafts` 和 `check-publish-history` 必须串行执行，不能并发抢浏览器锁
 
 ## 配置说明
 
@@ -240,6 +258,14 @@ auto-news-studio/
 - 自检方式：运行 `doctor.bat`
 - 备份恢复：见 [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)
 - 更新提示：项目发布新 GitHub Release 后，应用首页与设置页会提示新版本；若匿名请求遇到限流，可在 `.env` 中配置 `GITHUB_TOKEN`
+
+## 声明
+
+- 本项目面向**本地、自有账号、自担责任**的内容运营场景，不提供第三方托管服务，也不代替平台官方审核。
+- 项目会调用真实外部服务，包括 LLM API、公开信息源与微信公众号后台。请确认你有权访问和使用这些服务，并自行遵守对应平台的条款、频率限制与内容规范。
+- 微信相关能力依赖浏览器自动化与当前页面结构。若公众号后台页面改版、账号权限变化、登录状态失效，相关操作可能失败，项目不会把失败伪装成成功。
+- AI 生成内容仅提供辅助，不构成事实保证、投资建议、医疗建议或法律意见。正式发布前，请自行复核事实、引文、时效性与合规性。
+- 仓库默认按真实数据链路工作；当上游不可用时，系统应报告失败而不是伪造成功结果。
 
 ## 发布流程
 

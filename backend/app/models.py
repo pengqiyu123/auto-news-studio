@@ -68,7 +68,7 @@ HistoryRecordStatus = Literal["active", "cooled", "source_uncertain"]
 DeepDiveStatus = Literal["pending", "running", "partial", "ready", "failed"]
 DeepDiveFetchStatus = Literal["pending", "fetched", "fetch_failed", "fetch_blocked", "non_html"]
 DeepDiveExtractStatus = Literal["pending", "extracted", "extract_failed", "too_short"]
-BriefLevel = Literal["rule", "enhanced"]
+BriefLevel = Literal["rule", "enhanced", "article"]
 BriefStage = Literal["prepared", "synced", "failed"]
 DeliveryMode = Literal["immediate", "scheduled_batch"]
 AdmissionStrategy = Literal["conservative", "balanced", "aggressive"]
@@ -241,6 +241,7 @@ class BrowserSessionState(BaseModel):
     last_action_phase: Optional[str] = None
     is_session_level_error: bool = False
     last_draft_check: Optional["WeChatDraftSyncCheckResult"] = None
+    last_publish_history_check: Optional["WeChatPublishHistorySnapshot"] = None
 
 
 class BrowserSessionPayload(BaseModel):
@@ -579,6 +580,7 @@ class BriefItem(BaseModel):
     last_successful_upload_at: Optional[str] = None
     last_error: Optional[str] = None
     updated_at: str
+    driver_label: str = ""
 
 
 class AgentArticlePayload(BaseModel):

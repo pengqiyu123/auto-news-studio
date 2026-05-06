@@ -47,7 +47,7 @@ export type HistoryRecordStatus = "active" | "cooled" | "source_uncertain";
 export type DeepDiveStatus = "pending" | "running" | "partial" | "ready" | "failed";
 export type DeepDiveFetchStatus = "pending" | "fetched" | "fetch_failed" | "fetch_blocked" | "non_html";
 export type DeepDiveExtractStatus = "pending" | "extracted" | "extract_failed" | "too_short";
-export type BriefLevel = "rule" | "enhanced";
+export type BriefLevel = "rule" | "enhanced" | "article";
 export type BriefStage = "prepared" | "synced" | "failed";
 
 export interface AutomationModeDefinition {
@@ -177,6 +177,7 @@ export interface BrowserSessionState {
   last_action_phase?: string | null;
   is_session_level_error?: boolean;
   last_draft_check?: WeChatDraftSyncCheckResult | null;
+  last_publish_history_check?: WeChatPublishHistorySnapshot | null;
 }
 
 export interface WeChatRemoteDraftItem {
@@ -527,6 +528,7 @@ export interface BriefItem {
   last_successful_upload_at?: string | null;
   last_error?: string | null;
   updated_at: string;
+  driver_label?: string;
 }
 
 export interface IntelEventHistoryItem {

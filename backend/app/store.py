@@ -595,7 +595,7 @@ class StudioStore:
     def get_app_version_info(self) -> AppVersionInfo:
         manifest = self.version_manifest
         return AppVersionInfo(
-            version=str(manifest.get("version") or "0.2.4"),
+            version=str(manifest.get("version") or "0.2.6"),
             release_channel=str(manifest.get("release_channel") or "stable"),
             release_repo=str(manifest.get("release_repo") or DEFAULT_RELEASE_REPO),
             release_notes_url=str(manifest.get("release_notes_url") or DEFAULT_RELEASE_NOTES_URL),
@@ -1128,6 +1128,7 @@ class StudioStore:
             brief.setdefault("needs_resync", False)
             brief.setdefault("last_synced_revision", None)
             brief.setdefault("last_successful_upload_at", None)
+            brief.setdefault("driver_label", "")
             brief.setdefault("updated_at", now_iso())
             brief.pop("wechat_draft_id", None)
 
@@ -1479,6 +1480,7 @@ class StudioStore:
             brief.setdefault("needs_resync", False)
             brief.setdefault("last_synced_revision", None)
             brief.setdefault("last_successful_upload_at", None)
+            brief.setdefault("driver_label", "")
             brief.setdefault("updated_at", now_iso())
             brief.pop("wechat_draft_id", None)
         profiles_by_mode = {item["mode"]: item for item in state.get("automation_profiles", []) if isinstance(item, dict)}
@@ -1927,6 +1929,28 @@ class StudioStore:
         brief_lookup: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         return (brief_lookup or self._brief_lookup(state)).get(event_id)
+
+    def _find_brief_record_for_event_by_level(
+        self,
+        state: dict[str, Any],
+        event_id: str,
+        *,
+        brief_level: str,
+    ) -> dict[str, Any] | None:
+        matched: dict[str, Any] | None = None
+        matched_updated = datetime.min.replace(tzinfo=UTC)
+        for item in state.get("briefs", []):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("event_id") or "").strip() != str(event_id or "").strip():
+                continue
+            if str(item.get("brief_level") or "rule").strip() != brief_level:
+                continue
+            item_updated = parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC)
+            if matched is None or item_updated >= matched_updated:
+                matched = item
+                matched_updated = item_updated
+        return matched
 
     def _summarize_deep_dive(self, deep_dive: dict[str, Any] | None) -> str:
         if not deep_dive:
@@ -5114,6 +5138,7 @@ class StudioStore:
                 "last_synced_revision": existing.get("last_synced_revision") if existing else None,
                 "last_successful_upload_at": existing.get("last_successful_upload_at") if existing else None,
                 "updated_at": now_iso(),
+                "driver_label": str(existing.get("driver_label") or ""),
             }
             if existing:
                 index = next(
@@ -5147,6 +5172,11 @@ class StudioStore:
                 seen.add(compact)
                 result.append(compact)
             return result
+
+        if payload.publish_to_wechat_draft:
+            with self._lock:
+                state = self._upgrade_state(self._read())
+                self._ensure_agent_upload_allowed(state, actor=payload.triggered_by)
 
         with self._lock:
             state = self._upgrade_state(self._read())
@@ -5215,14 +5245,14 @@ class StudioStore:
                 + article_markdown
             ).strip()
 
-            existing = self._find_brief_for_event(state, payload.event_id)
+            existing = self._find_brief_record_for_event_by_level(state, payload.event_id, brief_level="article")
             existing_revision = self._brief_revision(existing) if existing else None
             brief_id = str(existing.get("id") or "") if existing else f"brief-{uuid4().hex[:12]}"
             brief = {
                 "id": brief_id,
                 "event_id": payload.event_id,
                 "deep_dive_id": str(deep_dive.get("id") or ""),
-                "brief_level": "enhanced",
+                "brief_level": "article",
                 "stage": existing.get("stage") if existing else "prepared",
                 "title": title,
                 "one_line": one_line,
@@ -5250,6 +5280,7 @@ class StudioStore:
                 "last_synced_revision": existing.get("last_synced_revision") if existing else None,
                 "last_successful_upload_at": existing.get("last_successful_upload_at") if existing else None,
                 "updated_at": now_iso(),
+                "driver_label": str(payload.driver_label or "").strip(),
             }
             if not brief.get("wechat_target_id"):
                 brief["wechat_target_id"] = build_wechat_target_id(brief_id)
@@ -5284,7 +5315,6 @@ class StudioStore:
                 state["briefs"][index] = brief
             else:
                 state.setdefault("briefs", []).insert(0, brief)
-            event["brief_id"] = brief["id"]
             self._append_log(
                 state,
                 "success",
@@ -5298,6 +5328,31 @@ class StudioStore:
         if payload.publish_to_wechat_draft:
             return self.sync_brief_wechat_draft(brief_id, triggered_by=payload.triggered_by)
         return BriefItem(**brief)
+
+    def _ensure_agent_upload_allowed(self, state: dict[str, Any], actor: str = "agent") -> None:
+        runtime = self._runtime(state)
+        run = self._runtime_run(runtime)
+        control_state = str(runtime.get("control_state") or "stopped")
+        run_status = str(run.get("status") or "idle")
+        current_cycle = str(runtime.get("current_cycle") or "idle")
+        scheduler_running = bool(runtime.get("scheduler_running"))
+        scheduler_active = scheduler_running or control_state in {"armed", "waiting", "running"} or (
+            run_status == "running" and not self._runtime_run_is_stale(run)
+        )
+        if not scheduler_active:
+            return
+        message = "当前自动调度器正在运行，请先停止传统模式，再执行 Agent 上传微信草稿箱。"
+        self._append_log(
+            state,
+            "warning",
+            "wechat",
+            message,
+            stream="business_event",
+            actor=actor,
+            detail=f"control_state={control_state} | run_status={run_status} | current_cycle={current_cycle}",
+        )
+        self._write(state)
+        raise ValueError(message)
 
     def _paginate_items(
         self,
@@ -5437,7 +5492,11 @@ class StudioStore:
     def sync_brief_wechat_draft(self, brief_id: str, triggered_by: str = "dashboard") -> BriefItem:
         with self._lock:
             state = self._upgrade_state(self._read())
+            if triggered_by == "agent":
+                self._ensure_agent_upload_allowed(state, actor=triggered_by)
             brief = self._find_brief(state, brief_id)
+            if triggered_by == "agent" and str(brief.get("brief_level") or "rule") != "article":
+                raise ValueError("Agent 模式禁止上传传统简报，请使用 /api/admin/agent/articles 保存并上传长文。")
             current_revision = self._brief_revision(brief)
             already_synced_same_revision = (
                 str(brief.get("stage") or "") == "synced"

@@ -399,6 +399,10 @@ def _build_client(tmp_root: Path) -> TestClient:
         openai_stub.OpenAI = _OpenAIClient
         openai_stub.RateLimitError = _OpenAIError
         sys.modules["openai"] = openai_stub
+    if "python_multipart" not in sys.modules:
+        python_multipart_stub = types.ModuleType("python_multipart")
+        python_multipart_stub.__version__ = "0.0.20"
+        sys.modules["python_multipart"] = python_multipart_stub
 
     import backend.app.reference_projects as reference_projects
     import backend.app.store as store_module
@@ -497,6 +501,26 @@ def test_get_event_deep_dive_keeps_article_writing_guide() -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_agent_can_create_local_brief_record_without_upload() -> None:
+    temp_dir = _make_repo_temp_dir()
+    try:
+        client = _build_client(temp_dir)
+
+        response = client.post("/api/admin/intel/events/evt-1/brief?triggered_by=agent")
+        assert response.status_code == 200
+        payload = response.json()
+
+        assert payload["item"]["event_id"] == "evt-1"
+        assert payload["item"]["brief_level"] in {"rule", "enhanced"}
+
+        briefs_response = client.get("/api/admin/briefs?q=OpenAI Health")
+        assert briefs_response.status_code == 200
+        briefs_payload = briefs_response.json()
+        assert briefs_payload["total"] >= 1
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def test_create_agent_article_still_saves_into_shared_briefs() -> None:
     temp_dir = _make_repo_temp_dir()
     try:
@@ -525,11 +549,24 @@ def test_create_agent_article_still_saves_into_shared_briefs() -> None:
         payload = response.json()
 
         assert payload["item"]["title"].startswith("OpenAI Health 正式发布")
+        assert payload["item"]["brief_level"] == "article"
 
         briefs_response = client.get("/api/admin/briefs?q=商业化")
         assert briefs_response.status_code == 200
         briefs_payload = briefs_response.json()
         assert briefs_payload["total"] == 1
         assert briefs_payload["items"][0]["title"].startswith("OpenAI Health 正式发布")
+        assert briefs_payload["items"][0]["brief_level"] == "article"
+
+        all_briefs_response = client.get("/api/admin/briefs?page=1&page_size=20")
+        assert all_briefs_response.status_code == 200
+        all_briefs_payload = all_briefs_response.json()
+        titles = [item["title"] for item in all_briefs_payload["items"]]
+        levels = {item["title"]: item["brief_level"] for item in all_briefs_payload["items"]}
+        assert "OpenAI Health 正式发布" in titles
+        assert any(title.startswith("OpenAI Health 正式发布，医疗 AI 商业化进入新阶段") for title in titles)
+        assert levels["OpenAI Health 正式发布"] == "enhanced"
+        agent_article_title = next(title for title in titles if title.startswith("OpenAI Health 正式发布，医疗 AI 商业化进入新阶段"))
+        assert levels[agent_article_title] == "article"
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)

@@ -157,7 +157,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Auto News Studio API",
-    version=str(VERSION_MANIFEST.get("version") or "0.2.5"),
+    version=str(VERSION_MANIFEST.get("version") or "0.2.6"),
     description="自动化新闻助手运营后台 API，覆盖信息采集、候选选题、公众号草稿和浏览器会话。",
     lifespan=lifespan,
 )
@@ -176,7 +176,14 @@ if FRONTEND_DIST.exists():
 
 def _http_from_value_error(exc: ValueError) -> HTTPException:
     message = str(exc)
-    status_code = 404 if message.startswith("未找到") else 400
+    if message.startswith("未找到"):
+        status_code = 404
+    elif message.startswith("当前自动调度器正在运行"):
+        status_code = 409
+    elif message.startswith("Agent 模式禁止上传传统简报"):
+        status_code = 409
+    else:
+        status_code = 400
     return HTTPException(status_code=status_code, detail=message)
 
 

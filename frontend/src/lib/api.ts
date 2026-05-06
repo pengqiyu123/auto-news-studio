@@ -199,7 +199,7 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
   };
 
   const appVersion = dashboard.app_version ?? {
-    version: "0.2.4",
+    version: "0.2.6",
     release_channel: "stable",
     release_repo: "pengqiyu123/auto-news-studio",
     release_notes_url: "https://github.com/pengqiyu123/auto-news-studio/releases"

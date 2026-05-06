@@ -13,16 +13,16 @@ Do not create a second Agent database, Agent console runtime, MCP sidecar, or fa
 - The shared information layer, deep dives, article records, WeChat draft mapping, and publish tasks all live in the same state.
 - Traditional mode is the built-in script/rule-driven workflow.
 - Agent mode is external-AI-driven workflow.
-- Agent mode does **not** need an extra "brief first, article second" step.
 - For the Agent path, you should:
   1. collect and inspect shared intel
   2. decide what is worth writing
   3. deep-dive and verify
-  4. write the full article directly
-  5. save the full article into the shared article store
-  6. upload to WeChat draft box
+  4. create one local brief/material record for tracking and source packaging
+  5. write the full article yourself
+  6. save the full article into the shared article store
+  7. upload to WeChat draft box
 
-The shared article container is still the existing `briefs` collection in `state.json`, but in Agent usage it should be treated as the shared article record, not as a mandatory intermediate summary workflow.
+The shared article container is still the existing `briefs` collection in `state.json`. In Agent usage, the traditional brief record is a local material record, and the final long article is stored as a separate `article` record in that same shared collection.
 
 ## Real API surface
 
@@ -166,7 +166,7 @@ Key requirements from the guide: 1500-3000 word full article (not a bullet-point
 | Read all articles/briefs | `GET /api/admin/briefs?page=1&page_size=20&stage=all&q=` |
 | Read single article/brief | `GET /api/admin/briefs/{brief_id}` |
 | **Save AI-authored article** | `POST /api/admin/agent/articles` (see detail below) |
-| Upload article to WeChat draft | `POST /api/admin/briefs/{brief_id}/wechat-draft?triggered_by=agent` |
+| Upload article to WeChat draft | Do **not** use this row for Agent longform uploads. Use `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true`. |
 | Get copy package (for clipboard) | `POST /api/admin/briefs/{brief_id}/copy-package` |
 | **Delete article/brief** | `DELETE /api/admin/briefs/{brief_id}?triggered_by=agent` |
 | Regenerate rule-based brief | `POST /api/admin/intel/events/{event_id}/brief?triggered_by=agent` |
@@ -186,7 +186,7 @@ Key requirements from the guide: 1500-3000 word full article (not a bullet-point
 | Refresh mapping from remote | `POST /api/admin/wechat/mapping/refresh?triggered_by=agent` |
 | Check remote draft box | `POST /api/admin/browser/wechat/check-drafts?triggered_by=agent` |
 | **Delete remote WeChat draft** | `DELETE /api/admin/wechat/remote-drafts/{remote_id}` |
-| Re-sync brief to draft | `POST /api/admin/briefs/{brief_id}/wechat-draft?triggered_by=agent` |
+| Re-sync brief to draft | Reserved for the dedicated article record created by `POST /api/admin/agent/articles`. Do **not** use it on traditional brief records. |
 
 ### Tab 10: 设置 (Settings)
 
@@ -313,6 +313,8 @@ WeChat browser operations (check-drafts, check-publish-history, delete remote dr
 10. Respect the current duplicate-upload guard. If the same revision is already synced, do not try to bypass it.
 11. **Do not directly edit `data/state.json`.** All state mutations must go through the API endpoints listed above. The backend handles thread safety (RLock) and atomic writes — direct file edits bypass these guarantees and corrupt data. Read `state.json` for investigation only.
 12. **Before deleting a remote draft**, always call `GET /api/admin/wechat/mapping` first to get the correct `remote_key` for the target brief. The `remote_id` in `DELETE /api/admin/wechat/remote-drafts/{remote_id}` must exactly match the `remote_key` from the mapping (URL-encode `|`, Chinese characters, etc.).
+13. **Do NOT start the traditional runtime.** `POST /api/admin/runtime/start` launches a 60-second scheduler that autonomously generates briefs and uploads them to WeChat draft — this conflicts with Agent-authored articles. Use `POST /api/admin/sources/sync` for manual one-shot collection instead. If the runtime is already running, stop it with `POST /api/admin/runtime/stop` before writing articles.
+14. **Do NOT use `POST /api/admin/briefs/{id}/wechat-draft` to upload a traditional brief.** Agent-authored articles must go through `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true`. The backend will reject `triggered_by=agent` if the target record is still a traditional brief.
 
 ## Basic error-handling rules
 
@@ -325,15 +327,19 @@ WeChat browser operations (check-drafts, check-publish-history, delete remote dr
 
 ## Suggested Agent workflow
 
-1. `POST /api/admin/runtime/start` — start the monitoring runtime
-2. `POST /api/admin/sources/sync?triggered_by=agent` — collect fresh intel
+**Do NOT start the traditional runtime (`POST /api/admin/runtime/start`).** The traditional scheduler runs every 60 seconds and will autonomously generate briefs and upload them to WeChat draft, overwriting or conflicting with your Agent-authored articles. If the runtime is already running, stop it first with `POST /api/admin/runtime/stop`.
+
+1. `POST /api/admin/runtime/stop` — stop the traditional scheduler if it is running (avoid conflicts)
+2. `POST /api/admin/sources/sync?triggered_by=agent` — collect fresh intel (manual one-shot, not scheduler-driven)
 3. `GET /api/admin/intel/events` — read hot events
 4. choose up to 5 high-value events
 5. for each chosen event:
-   - `POST /api/admin/intel/events/{event_id}/deep-dive?triggered_by=agent`
+   - `POST /api/admin/intel/events/{event_id}/deep-dive?triggered_by=agent` — deep-dive to get verified material
    - read the response, follow `article_writing_guide` for writing style
+   - `POST /api/admin/intel/events/{event_id}/brief?triggered_by=agent` — generate a local brief record for material tracking only
    - do extra online verification yourself
-   - `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true`
+   - write a 1500-3000 word full article following the `article_writing_guide`
+   - `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true` — save the article and upload to WeChat draft in one step
 6. after upload, optionally verify:
    - `POST /api/admin/browser/wechat/check-drafts?triggered_by=agent`
    - `POST /api/admin/browser/wechat/check-publish-history?triggered_by=agent`
@@ -342,6 +348,8 @@ WeChat browser operations (check-drafts, check-publish-history, delete remote dr
    - `DELETE /api/admin/briefs/{brief_id}?remote=false&triggered_by=agent` — then delete local record (use `remote=false` since remote is already gone)
    - re-write and re-submit via `POST /api/admin/agent/articles`
    - `POST /api/admin/wechat/mapping/refresh?triggered_by=agent` — refresh mapping to verify consistency
+
+**Key distinction:** The brief record from step 5 is a local material record. The article from `POST /api/admin/agent/articles` is your own full-length piece and is stored as a separate article record in the shared `briefs` collection. Never use `POST /api/admin/briefs/{id}/wechat-draft` on a traditional brief record — that is not the final Agent article. Always use `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true` for the final upload.
 
 ## Logging expectation
 

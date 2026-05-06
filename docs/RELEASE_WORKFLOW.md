@@ -20,10 +20,10 @@
 3. 编写本次更新说明
    - 新建 `RELEASE_NOTES_x.y.z.md`
 4. 构建验证
-   - `.\.venv\Scripts\python.exe -m pytest backend/tests/test_admin_pagination.py backend/tests/test_intel_pipeline.py`
+   - `.\.venv\Scripts\python.exe -m pytest backend/tests/test_intel_pipeline.py backend/tests/test_admin_pagination.py backend/tests/test_agent_upload_guard.py`
    - `.\.venv\Scripts\python.exe -m compileall backend/app`
    - `cd frontend && npm run build`
-   - `cd frontend && npx vitest --run`
+   - `cd frontend && npm run test -- --run`
 5. 生成 Windows 分发包
    - 运行 `powershell -ExecutionPolicy Bypass -File scripts/build_release.ps1`
    - 产物位于 `runtime/release/auto-news-studio-windows.zip`
@@ -44,6 +44,18 @@
    - 首页出现更新横幅
    - 设置页显示更新状态
    - 侧栏“设置”出现红点
+
+## 本地验证注意事项
+
+- 发版前的 Python 测试、打包、自检都应使用项目 `.venv`，不要依赖机器全局环境。
+- 只要改过后端代码，手工 API 验证前必须先 `stop.bat`，再 `start.bat`。否则很容易命中旧的常驻进程，看到“代码已改、接口没变”的假象。
+- Agent 回归时，先确认 `GET /api/admin/runtime/status` 显示传统调度器已停止，再做：
+  1. `POST /api/admin/sources/sync?triggered_by=agent`
+  2. `POST /api/admin/intel/events/{event_id}/deep-dive?triggered_by=agent`
+  3. `POST /api/admin/intel/events/{event_id}/brief?triggered_by=agent`
+  4. `POST /api/admin/agent/articles`
+- Agent 长文上传只走 `/api/admin/agent/articles`；不要拿传统简报去调 `/api/admin/briefs/{brief_id}/wechat-draft`。
+- 微信浏览器链回归时，`check-drafts`、`check-publish-history`、`sync to draft`、`delete remote draft` 共享同一把浏览器锁，必须串行验证。
 
 ## 分发包约定
 

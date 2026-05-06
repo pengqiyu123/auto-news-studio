@@ -34,6 +34,22 @@ const briefStageLabel: Record<BriefItem["stage"], string> = {
   failed: "失败",
 };
 
+const briefLevelLabel: Record<BriefItem["brief_level"], string> = {
+  rule: "规则简报",
+  enhanced: "增强简报",
+  article: "AI文章",
+};
+
+function briefLevelDescription(brief: BriefItem): string {
+  if (brief.brief_level === "article") {
+    return brief.driver_label ? `AI 已生成长文，驱动器：${brief.driver_label}。` : "AI 已生成可上传的长文记录。";
+  }
+  if (brief.brief_level === "enhanced") {
+    return "AI 已基于正文全文生成增强简报。";
+  }
+  return "当前为规则简报，AI 未参与或增强失败。";
+}
+
 function matchesView(brief: BriefItem, view: BriefWorkbenchView) {
   if (view === "all") return true;
   if (view === "prepared") return brief.stage === "prepared";
@@ -135,11 +151,9 @@ export function BriefTable({
                 <span className={`status-badge status-${brief.stage === "synced" ? "success" : brief.stage === "failed" ? "danger" : "warning"}`}>
                   {briefStageLabel[brief.stage]}
                 </span>
-                <span>{brief.brief_level === "enhanced" ? "增强简报" : "规则简报"}</span>
+                <span>{briefLevelLabel[brief.brief_level]}</span>
               </div>
-              <p className="subtle">
-                {brief.brief_level === "enhanced" ? "AI 已基于正文全文生成增强简报。" : "当前为规则简报，AI 未参与或增强失败。"}
-              </p>
+              <p className="subtle">{briefLevelDescription(brief)}</p>
               <strong>{brief.title}</strong>
               <p>{truncate(brief.one_line || "尚未生成一句话结论。", 160)}</p>
               <div className="intel-score-row">

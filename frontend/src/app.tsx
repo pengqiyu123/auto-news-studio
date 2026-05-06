@@ -11,7 +11,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { BriefTable } from "./components/BriefTable";
 import { DeepDivePoolPanel } from "./components/DeepDivePoolPanel";
@@ -111,6 +111,35 @@ const WATCHLIST_TAB_PAGE_SIZE = 200;
 const RUNTIME_AWARE_TABS: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "briefs", "logs"];
 const BROWSER_REFRESH_TABS: TabKey[] = ["publish-history", "draft-box"];
 
+type ToastTone = "success" | "info" | "warning";
+
+interface ToastState {
+  id: number;
+  message: string;
+  tone: ToastTone;
+}
+
+function shouldSurfaceBackgroundLog(log: LogItem): boolean {
+  if (log.stream !== "business_event" || log.category !== "browser") {
+    return false;
+  }
+  if (log.actor !== "dashboard" && log.actor !== "scheduler" && log.actor !== "runtime_start") {
+    return false;
+  }
+  return (
+    log.message.includes("已检查微信草稿箱")
+    || log.message.includes("已检查微信发表记录")
+    || log.message.includes("本次检查失败")
+  );
+}
+
+function toastToneForLog(log: LogItem): ToastTone {
+  if (log.level === "warning" || log.level === "error") {
+    return "warning";
+  }
+  return "info";
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
@@ -175,7 +204,7 @@ export default function App() {
   const [busyRuntimeAction, setBusyRuntimeAction] = useState<"start" | "stop" | null>(null);
   const [busyMaintenanceIntent, setBusyMaintenanceIntent] = useState<RuntimeIntent | null>(null);
   const [savingRuntimePlan, setSavingRuntimePlan] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
   const [pendingDeepDiveTitle, setPendingDeepDiveTitle] = useState<string | null>(null);
   const [pendingBriefTitle, setPendingBriefTitle] = useState<string | null>(null);
   const [tabLoading, setTabLoading] = useState<Partial<Record<TabKey, boolean>>>({});
@@ -197,6 +226,15 @@ export default function App() {
     updateInfo?.update_available && updateInfo.latest_version && !updateInfo.dismissed
       ? updateInfo
       : null;
+
+  const toastSeqRef = useRef(0);
+  const lastBackgroundToastKeyRef = useRef("");
+  const hasSeenInitialBackgroundLogsRef = useRef(false);
+
+  const showToast = useCallback((message: string, tone: ToastTone = "success") => {
+    toastSeqRef.current += 1;
+    setToast({ id: toastSeqRef.current, message, tone });
+  }, []);
 
   const applyDashboardSnapshot = useCallback((dashboardData: DashboardResponse) => {
     setDashboard((current) =>
@@ -477,21 +515,39 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const newestLog = dashboard?.recent_logs?.find(shouldSurfaceBackgroundLog);
+    if (!newestLog) {
+      return;
+    }
+    const toastKey = `${newestLog.id}:${newestLog.created_at}`;
+    if (!hasSeenInitialBackgroundLogsRef.current) {
+      hasSeenInitialBackgroundLogsRef.current = true;
+      lastBackgroundToastKeyRef.current = toastKey;
+      return;
+    }
+    if (lastBackgroundToastKeyRef.current === toastKey) {
+      return;
+    }
+    lastBackgroundToastKeyRef.current = toastKey;
+    showToast(newestLog.message, toastToneForLog(newestLog));
+  }, [dashboard?.recent_logs, showToast]);
+
   const handleCheckUpdate = useCallback(async () => {
     const response = await api.getSystemUpdate(true);
     setUpdateInfo(response.item);
     if (response.item.update_available && response.item.latest_version) {
-      setToast(`发现新版本 ${response.item.latest_version}`);
+      showToast(`发现新版本 ${response.item.latest_version}`, "info");
     } else if (!response.item.error) {
-      setToast("当前已经是最新版本");
+      showToast("当前已经是最新版本", "info");
     }
-  }, []);
+  }, [showToast]);
 
   const handleDismissUpdate = useCallback(async (version: string) => {
     const response = await api.dismissSystemUpdate(version);
     setUpdateInfo(response.item);
-    setToast(`已忽略版本 ${version}`);
-  }, []);
+    showToast(`已忽略版本 ${version}`, "info");
+  }, [showToast]);
 
   const runtimeStatus = dashboard?.runtime_status ?? null;
   const runtimeRunning = Boolean(runtimeStatus?.running);
@@ -754,7 +810,13 @@ export default function App() {
       ]);
       setActiveTab("briefs");
       markTabLoaded("briefs");
-      showToast(response.item.brief_level === "enhanced" ? `AI增强简报已生成：${response.item.title}` : `规则简报已生成：${response.item.title}`);
+      showToast(
+        response.item.brief_level === "article"
+          ? `AI文章已生成：${response.item.title}`
+          : response.item.brief_level === "enhanced"
+            ? `AI增强简报已生成：${response.item.title}`
+            : `规则简报已生成：${response.item.title}`,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "简报生成失败");
     } finally {
@@ -1059,10 +1121,15 @@ export default function App() {
     { active: 2000, running: 10000, idle: 10000 },
   );
 
-  function showToast(message: string) {
-    setToast(message);
-    window.setTimeout(() => setToast(null), 3000);
-  }
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setToast((current) => (current?.id === toast.id ? null : current));
+    }, 3200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   async function handleStopRuntime() {
     setBusyRuntimeAction("stop");
@@ -1208,9 +1275,9 @@ export default function App() {
         {error ? <div className="error-banner">{error}</div> : null}
 
         {toast ? (
-          <div className="toast-banner" onClick={dismissToast}>
-            <CheckCircle size={14} />
-            <span>{toast}</span>
+          <div className={`toast-banner toast-${toast.tone}`} onClick={dismissToast}>
+            {toast.tone === "warning" ? <AlertCircle size={14} /> : <CheckCircle size={14} />}
+            <span>{toast.message}</span>
             <X size={14} className="toast-dismiss" />
           </div>
         ) : null}

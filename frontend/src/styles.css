@@ -3617,6 +3617,18 @@ button.entity-tag:hover {
   animation: toast-in 0.2s ease-out;
 }
 
+.toast-success {
+  background: #065f46;
+}
+
+.toast-info {
+  background: #1d4ed8;
+}
+
+.toast-warning {
+  background: #b45309;
+}
+
 .toast-dismiss {
   opacity: 0.6;
   margin-left: 4px;
