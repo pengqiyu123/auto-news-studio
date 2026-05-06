@@ -48,3 +48,4 @@ Windows 分发包默认包含：
 - 分发包由 `scripts/build_release.ps1` 生成
 - 该脚本会把 `.venv` 一并打入包内，保持 offline-ready
 - 如果本机没有 `.venv`，则分发包需要在目标机器上联网安装依赖
+- 建议在 GitHub Release 前先完成打包并检查 `runtime/release/auto-news-studio-windows.zip`

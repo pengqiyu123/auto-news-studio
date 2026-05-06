@@ -20,18 +20,21 @@
 3. 编写本次更新说明
    - 新建 `RELEASE_NOTES_x.y.z.md`
 4. 构建验证
-   - `python -m compileall backend/app`
+   - `.\.venv\Scripts\python.exe -m pytest backend/tests/test_admin_pagination.py backend/tests/test_intel_pipeline.py`
+   - `.\.venv\Scripts\python.exe -m compileall backend/app`
    - `cd frontend && npm run build`
-5. 提交并推送 GitHub
-6. 打 Git tag
+   - `cd frontend && npx vitest --run`
+5. 生成 Windows 分发包
+   - 运行 `powershell -ExecutionPolicy Bypass -File scripts/build_release.ps1`
+   - 产物位于 `runtime/release/auto-news-studio-windows.zip`
+6. 提交并推送 GitHub
+7. 打 Git tag
    - 例如：`git tag v0.2.3`
    - `git push origin v0.2.3`
-7. 在 GitHub 仓库发布 Release
+8. 在 GitHub 仓库发布 Release
    - Tag: `v0.2.3`
    - Title: `v0.2.3`
    - Body: 使用 `RELEASE_NOTES_0.2.3.md`
-8. 如需 Windows 分发包
-   - 运行 `powershell -ExecutionPolicy Bypass -File scripts/build_release.ps1`
 9. 启动应用检查
    - 首页出现更新横幅
    - 设置页显示更新状态
@@ -42,6 +45,7 @@
 - 分发包默认是 offline-ready
 - `scripts/build_release.ps1` 会把项目 `.venv` 一起打包进去
 - 目标是让 Windows 用户解压后直接安装、直接启动
+- 正式发布前应先生成并检查分发包，再执行 GitHub Release
 
 ## 本次实测结果
 
@@ -49,6 +53,8 @@
 - 必须同步创建并发布 GitHub Release
 - 旧版更新检测读取的是 `releases/latest`
 - `RELEASE_NOTES_x.y.z.md` 可以直接作为 Release 正文
+- 如果本地已经存在旧 tag（例如 `v0.2.4`），新的上传批次必须升级版本号，不能复用旧 tag
+- 当前机器若未安装 `gh` 且没有 GitHub token，则只能先完成 `push + tag + 分发包`，再到 GitHub 页面手动发布 Release
 
 ## 为什么旧版本有时检测不到更新
 
