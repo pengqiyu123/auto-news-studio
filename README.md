@@ -173,6 +173,35 @@ start.bat                   # Windows（推荐，要求 frontend/dist 已存在�
 
 每个来源有独立权重（0.6-0.9），影响评分中的覆盖度计算。
 
+### 传统模式补源
+
+传统模式优先使用稳定、低维护的 `RSS/Atom` 源，不把需要登录、纯 HTML 页面解析、社媒时间线当作常规自动化输入。
+
+项目内提供了一个品牌官方源审计脚本，用于：
+
+- 扫描品牌官网、新闻页、博客页
+- 探测 `RSS/Atom` 与 `WordPress REST` 线索
+- 直接复用当前采集逻辑验证候选源
+- 输出结构化报告，帮助筛选“当前可直连”的传统模式源
+
+常用命令：
+
+```bash
+.venv/Scripts/python scripts/validate_brand_sources.py
+.venv/Scripts/python scripts/validate_brand_sources.py --brand OpenAI --brand Apple
+```
+
+输出位置：
+
+- `runtime/brand-source-audit/brand_sources_latest.json`
+- `runtime/brand-source-audit/brand_sources_latest.md`
+
+说明：
+
+- “有用”严格指当前项目驱动可直连成功
+- “没有”可能是没有 RSS，也可能是站点证书、超时、403/404 等导致当前环境不可用
+- 经过验证可用的新传统源，可再通过 `/api/admin/sources` 写入项目状态
+
 ## 目录结构
 
 ```
@@ -220,8 +249,10 @@ auto-news-studio/
 │       └── styles.css           # 全局样式
 ├── docs/                        # 项目文档
 │   ├── DISTRIBUTION.md
+│   ├── BRAND_SOURCE_AUDIT.md
 │   └── RELEASE_WORKFLOW.md
 ├── scripts/                     # 发布与运维脚本
+│   ├── validate_brand_sources.py # 品牌官方 RSS / WordPress 源验证脚本
 ├── AGENT.md                     # 外部 AI 工具的真实操作说明
 ├── start.bat                    # Windows 一键启动
 ├── stop.bat                     # Windows 停止
