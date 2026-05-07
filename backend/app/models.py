@@ -68,6 +68,13 @@ HistoryRecordStatus = Literal["active", "cooled", "source_uncertain"]
 DeepDiveStatus = Literal["pending", "running", "partial", "ready", "failed"]
 DeepDiveFetchStatus = Literal["pending", "fetched", "fetch_failed", "fetch_blocked", "non_html"]
 DeepDiveExtractStatus = Literal["pending", "extracted", "extract_failed", "too_short"]
+AgentHtmlTargetType = Literal["newsroom", "blog", "updates", "press", "custom"]
+AgentHtmlRunStatus = Literal["pending", "running", "completed", "partial", "failed"]
+AgentHtmlItemState = Literal["new_item", "seen_item", "updated_item"]
+AgentHtmlDiscoverMode = Literal["rule_only", "rule_with_ai_fallback", "ai_only"]
+AgentHtmlExtractMode = Literal["best_effort_html"]
+AgentHtmlAlertState = Literal["watch", "rising", "breakout", "cooling"]
+AgentHtmlEventChangeState = Literal["new_event", "growing_event", "stable_event", "cooling_event"]
 BriefLevel = Literal["rule", "enhanced", "article"]
 BriefStage = Literal["prepared", "synced", "failed"]
 DeliveryMode = Literal["immediate", "scheduled_batch"]
@@ -546,6 +553,233 @@ class EventDeepDive(BaseModel):
     worthiness: dict[str, Any] = Field(default_factory=dict)
     last_error: Optional[str] = None
     article_writing_guide: str = ""
+
+
+class AgentHtmlDiscoveryRules(BaseModel):
+    link_selector: str = ""
+    title_selector: str = ""
+    time_selector: str = ""
+    summary_selector: str = ""
+    link_allow_patterns: list[str] = Field(default_factory=list)
+    link_deny_patterns: list[str] = Field(default_factory=list)
+
+
+class AgentHtmlTarget(BaseModel):
+    id: str
+    brand: str
+    name: str
+    entry_url: str
+    target_type: AgentHtmlTargetType = "newsroom"
+    enabled: bool = True
+    tags: list[str] = Field(default_factory=list)
+    discover_mode: AgentHtmlDiscoverMode = "rule_with_ai_fallback"
+    extract_mode: AgentHtmlExtractMode = "best_effort_html"
+    discovery_rules: AgentHtmlDiscoveryRules = Field(default_factory=AgentHtmlDiscoveryRules)
+    last_run_at: Optional[str] = None
+    last_success_at: Optional[str] = None
+    last_error: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class AgentHtmlTargetCreatePayload(BaseModel):
+    brand: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=120)
+    entry_url: str = Field(min_length=1, max_length=1000)
+    target_type: AgentHtmlTargetType = "newsroom"
+    enabled: bool = True
+    tags: list[str] = Field(default_factory=list)
+    discover_mode: AgentHtmlDiscoverMode = "rule_with_ai_fallback"
+    extract_mode: AgentHtmlExtractMode = "best_effort_html"
+    discovery_rules: AgentHtmlDiscoveryRules = Field(default_factory=AgentHtmlDiscoveryRules)
+
+
+class AgentHtmlTargetUpdatePayload(BaseModel):
+    brand: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    entry_url: Optional[str] = Field(default=None, min_length=1, max_length=1000)
+    target_type: Optional[AgentHtmlTargetType] = None
+    enabled: Optional[bool] = None
+    tags: Optional[list[str]] = None
+    discover_mode: Optional[AgentHtmlDiscoverMode] = None
+    extract_mode: Optional[AgentHtmlExtractMode] = None
+    discovery_rules: Optional[AgentHtmlDiscoveryRules] = None
+
+
+class AgentHtmlRun(BaseModel):
+    id: str
+    target_id: str
+    status: AgentHtmlRunStatus = "pending"
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    discovered_count: int = 0
+    new_discovery_count: int = 0
+    updated_discovery_count: int = 0
+    fetched_count: int = 0
+    extracted_count: int = 0
+    failed_count: int = 0
+    list_fetch_status: str = "pending"
+    ai_fallback_used: bool = False
+    error_summary: Optional[str] = None
+    triggered_by: str = "dashboard"
+    created_at: str
+    updated_at: str
+
+
+class AgentHtmlRunBatchPayload(BaseModel):
+    target_ids: list[str] = Field(default_factory=list)
+    triggered_by: str = "dashboard"
+
+
+class AgentHtmlMainlineBatchPayload(BaseModel):
+    target_ids: list[str] = Field(default_factory=list)
+    triggered_by: str = "dashboard"
+
+
+class AgentHtmlRunResponse(BaseModel):
+    item: AgentHtmlRun
+
+
+class AgentHtmlRunsResponse(BaseModel):
+    items: list[AgentHtmlRun] = Field(default_factory=list)
+
+
+class AgentHtmlDiscoveryItem(BaseModel):
+    id: str
+    target_id: str
+    run_id: str
+    source_name: str
+    title: str
+    summary: str
+    link: str
+    canonical_link: str
+    published_at: Optional[str] = None
+    collected_at: str
+    dedupe_key: str
+    content_hash: str = ""
+    item_state: AgentHtmlItemState = "new_item"
+    document_id: Optional[str] = None
+    event_id: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentHtmlDocumentRevision(BaseModel):
+    id: str
+    document_id: str
+    run_id: str
+    source_url: str
+    title: str = ""
+    content_text: str = ""
+    excerpt: str = ""
+    content_hash: str = ""
+    word_count: int = 0
+    extractor: str = ""
+    published_at: Optional[str] = None
+    fetched_at: str
+    revision_index: int = 1
+    change_summary: str = ""
+
+
+class AgentHtmlDocument(BaseModel):
+    id: str
+    target_id: str
+    canonical_url: str
+    current_revision_id: str
+    title: str = ""
+    published_at: Optional[str] = None
+    latest_seen_at: Optional[str] = None
+    current_content_hash: str = ""
+    word_count: int = 0
+    extractor: str = ""
+    first_seen_at: str
+    updated_at: str
+    revisions: list[AgentHtmlDocumentRevision] = Field(default_factory=list)
+
+
+class AgentHtmlEvent(BaseModel):
+    id: str
+    title: str
+    summary: str
+    representative_document_id: Optional[str] = None
+    representative_link: str = ""
+    discovery_item_ids: list[str] = Field(default_factory=list)
+    document_ids: list[str] = Field(default_factory=list)
+    member_count: int = 0
+    source_count: int = 0
+    first_seen_at: Optional[str] = None
+    last_seen_at: Optional[str] = None
+    change_state: AgentHtmlEventChangeState = "new_event"
+    alert_state: AgentHtmlAlertState = "watch"
+    entity_names: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+
+
+class AgentHtmlEventSnapshot(BaseModel):
+    id: str
+    event_id: str
+    captured_at: str
+    member_count: int = 0
+    document_count: int = 0
+    source_count: int = 0
+    freshness_score: float = 0.0
+    coverage_score: float = 0.0
+    composite_score: float = 0.0
+    change_state: AgentHtmlEventChangeState = "new_event"
+
+
+class AgentHtmlEventHistoryItem(BaseModel):
+    history_id: str
+    event_id: str
+    title: str
+    first_seen_at: str
+    last_seen_at: str
+    expires_at: str
+    status: HistoryRecordStatus = "active"
+    latest_alert_state: AgentHtmlAlertState = "watch"
+    member_count: int = 0
+    source_count: int = 0
+    composite_score: float = 0.0
+
+
+class AgentHtmlTargetResponse(BaseModel):
+    item: AgentHtmlTarget
+
+
+class AgentHtmlTargetsResponse(BaseModel):
+    items: list[AgentHtmlTarget] = Field(default_factory=list)
+
+
+class AgentHtmlDiscoveryResponse(BaseModel):
+    items: list[AgentHtmlDiscoveryItem] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    has_more: bool = False
+
+
+class AgentHtmlEventResponse(BaseModel):
+    item: AgentHtmlEvent
+
+
+class AgentHtmlEventsResponse(BaseModel):
+    items: list[AgentHtmlEvent] = Field(default_factory=list)
+    history_items: list[AgentHtmlEventHistoryItem] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    has_more: bool = False
+
+
+class AgentHtmlDocumentResponse(BaseModel):
+    item: AgentHtmlDocument
+
+
+class AgentHtmlDocumentsResponse(BaseModel):
+    items: list[AgentHtmlDocument] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    has_more: bool = False
 
 
 class BriefItem(BaseModel):

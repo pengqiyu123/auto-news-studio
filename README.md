@@ -9,6 +9,10 @@
 - **传统模式**：项目内置的脚本 / 规则驱动三档自动化
 - **Agent 模式**：外部 AI 工具读取仓库与 `AGENT.md` 后，直接调用项目真实接口驱动工作流
 
+另外，Agent 模式下现已支持一条**独立的 HTML 结构化采集链**：
+
+- **Agent HTML 模式**：用于品牌新闻页、博客页、更新页的 HTML 持续抓取、结构化存储、版本追踪与独立事件历史
+
 ## 功能特性
 
 ### 情报层
@@ -22,6 +26,8 @@
 ### 内容层
 
 - **深度分析**：LLM 驱动的正文抓取与分析，生成事件深度摘要
+- **Agent HTML 采集**：独立抓取 HTML 列表页与详情页，支持规则优先、AI 兜底的文章发现
+- **结构化版本链**：同一 HTML 文档支持 revision 历史，便于判断新消息、旧消息与内容更新
 - **共享文章记录**：事件可整理为共享文章 / 简报记录，复用同一套主数据与交付链
 - **TipTap 编辑器**：富文本编辑，支持 Markdown 序列化与微信 HTML 预览
 
@@ -130,6 +136,18 @@ start.bat                   # Windows（推荐，要求 frontend/dist 已存在�
 9. 不要对传统简报调用 `POST /api/admin/briefs/{brief_id}/wechat-draft`
 10. 如需检查微信端，`check-drafts` 和 `check-publish-history` 必须串行执行，不能并发抢浏览器锁
 
+### Agent HTML 手工回归清单
+
+1. `POST /api/admin/agent-html/targets`
+2. `GET /api/admin/agent-html/targets`
+3. `POST /api/admin/agent-html/targets/{target_id}/run`
+4. `POST /api/admin/agent-html/mainline-sync`
+5. `GET /api/admin/agent-html/runs`
+6. `GET /api/admin/agent-html/discovery`
+7. `GET /api/admin/intel/events`
+8. `GET /api/admin/agent-html/documents`
+9. 如页面结构变更，使用 `POST /api/admin/agent-html/documents/{document_id}/reextract`
+
 ## 配置说明
 
 ### LLM 配置
@@ -201,6 +219,30 @@ start.bat                   # Windows（推荐，要求 frontend/dist 已存在�
 - “有用”严格指当前项目驱动可直连成功
 - “没有”可能是没有 RSS，也可能是站点证书、超时、403/404 等导致当前环境不可用
 - 经过验证可用的新传统源，可再通过 `/api/admin/sources` 写入项目状态
+
+### Agent HTML 模式
+
+Agent HTML 模式是独立于传统 RSS 的结构化采集链，适合以下场景：
+
+- 品牌官方新闻页没有 RSS，但页面结构稳定
+- 需要判断同一篇官方文章后续是否更新
+- 需要让多篇相关文章形成独立发展轨迹
+- 需要把 HTML 文章补充进现有 `raw_items -> discovery -> events -> alerts` 主链
+
+关键特性：
+
+- 与传统 `raw_items / intel_events` 完全分离
+- 采集与维护使用独立接口 `/api/admin/agent-html/...`
+- 已支持将 HTML 成果写入主链：`POST /api/admin/agent-html/mainline-sync`
+- 列表页与详情页 HTML 都会缓存到 `runtime/agent_html_cache/`
+- 同一文档优先使用 `canonical_url + content_hash` 判定
+- 同一文档更新时追加 revision，不覆盖旧内容
+- HTML 成功写入主链后，会按 RSS 风格 `raw_items` 参与统一事件、预警、深挖与简报流程
+
+详细设计与维护说明见：
+
+- `PLAN.md`
+- `docs/AGENT_HTML_MODE.md`
 
 ## 目录结构
 
