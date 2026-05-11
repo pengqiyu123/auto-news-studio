@@ -91,9 +91,11 @@ from .models import (
     AutomationModeDefinition,
     AutomationModeProfile,
     BriefItem,
+    DouyinArticleFillPayload,
     BrowserSessionPayload,
     BrowserSessionState,
     BriefStageCounts,
+    BriefRecordCounts,
     ChannelConfigPayload,
     ChainStateCard,
     DashboardResponse,
@@ -133,6 +135,8 @@ from .models import (
     SourceSyncResponse,
     SystemDoctorResult,
     SystemCheckItem,
+    DouyinChannelConfig,
+    DouyinArticleStructureSnapshot,
     WeChatDraftSyncCheckResult,
     WeChatMappingResponse,
     WeChatMappingRow,
@@ -163,17 +167,25 @@ from .publishers import (
     build_remote_draft_key,
     build_preview_url,
     build_wechat_target_id,
+    collect_douyin_backend_status,
     collect_backend_status,
     create_publish_task,
     delete_wechat_remote_draft,
     default_browser_profile_path,
     ensure_channel_defaults,
+    ensure_douyin_channel_defaults,
     extract_wechat_appmsg_id,
+    fill_douyin_article_from_brief,
     inspect_wechat_draft_box,
+    inspect_douyin_session,
+    inspect_douyin_article_structure,
+    open_douyin_article_publish,
     inspect_wechat_publish_history,
     inspect_wechat_session,
+    launch_douyin_dashboard,
     launch_wechat_dashboard,
     refresh_browser_session,
+    refresh_douyin_browser_session,
     run_browser_action,
 )
 from .reference_projects import write_reference_baseline
@@ -197,6 +209,23 @@ class _AgentHtmlTextExtractor(HTMLParser):
 
     def text(self) -> str:
         return " ".join(self._parts)
+
+
+def _normalize_wechat_title(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip().lower()
+
+
+def _wechat_title_matches(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+    if len(shorter) >= 18 and longer.startswith(shorter):
+        return True
+    if len(shorter) >= 18 and shorter in longer:
+        return True
+    return False
 
 
 def _migrate_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -388,6 +417,13 @@ class StudioStore:
                     "publish_entry_url": "https://mp.weixin.qq.com/",
                     "selectors_version": "wechat-mp-v1",
                     "sidecar_url": "http://127.0.0.1:8091",
+                },
+                "douyin": {
+                    "browser_name": "edge",
+                    "browser_profile_path": str(default_browser_profile_path("edge")).replace("wechat-", "douyin-"),
+                    "publish_entry_url": "https://creator.douyin.com/",
+                    "selectors_version": "douyin-creator-v1",
+                    "sidecar_url": "http://127.0.0.1:8091",
                 }
             },
             "browser": {
@@ -414,7 +450,31 @@ class StudioStore:
                 "last_action_phase": None,
                 "is_session_level_error": False,
                 "last_draft_check": None,
-                }
+                },
+                "douyin": {
+                    "platform": "douyin_creator",
+                    "browser_name": "edge",
+                    "user_data_dir": str(default_browser_profile_path("edge")).replace("wechat-", "douyin-"),
+                    "logged_in": False,
+                    "last_checked_at": None,
+                    "last_opened_url": None,
+                    "last_error": None,
+                    "selectors_version": "douyin-creator-v1",
+                    "last_screenshot": None,
+                    "last_selector_check": None,
+                    "current_page": "https://creator.douyin.com/",
+                    "sidecar_health": "offline",
+                    "manager_alive": False,
+                    "window_state": "unknown",
+                    "resident_page": None,
+                    "busy": False,
+                    "last_reset_reason": None,
+                    "session_generation": 0,
+                    "last_action": None,
+                    "last_action_phase": None,
+                    "is_session_level_error": False,
+                    "last_draft_check": None,
+                },
             },
             "llm": default_llm_state(),
             "settings": {
@@ -636,7 +696,7 @@ class StudioStore:
     def get_app_version_info(self) -> AppVersionInfo:
         manifest = self.version_manifest
         return AppVersionInfo(
-            version=str(manifest.get("version") or "0.2.6"),
+            version=str(manifest.get("version") or "0.2.8"),
             release_channel=str(manifest.get("release_channel") or "stable"),
             release_repo=str(manifest.get("release_repo") or DEFAULT_RELEASE_REPO),
             release_notes_url=str(manifest.get("release_notes_url") or DEFAULT_RELEASE_NOTES_URL),
@@ -1022,6 +1082,7 @@ class StudioStore:
 
         channels = state.setdefault("channels", {})
         channels["wechat"] = ensure_channel_defaults(channels.get("wechat", {}))
+        channels["douyin"] = ensure_douyin_channel_defaults(channels.get("douyin", {}))
 
         browser = state.setdefault("browser", {})
         browser_wechat = browser.setdefault("wechat", {})
@@ -1047,6 +1108,29 @@ class StudioStore:
         browser_wechat.setdefault("last_action_phase", None)
         browser_wechat.setdefault("is_session_level_error", False)
         browser_wechat.setdefault("last_draft_check", None)
+
+        browser_douyin = browser.setdefault("douyin", {})
+        browser_douyin.setdefault("platform", "douyin_creator")
+        browser_douyin["browser_name"] = channels["douyin"]["browser_name"]
+        browser_douyin["user_data_dir"] = channels["douyin"]["browser_profile_path"]
+        browser_douyin.setdefault("logged_in", False)
+        browser_douyin.setdefault("last_checked_at", None)
+        browser_douyin.setdefault("last_opened_url", None)
+        browser_douyin.setdefault("last_error", None)
+        browser_douyin["selectors_version"] = channels["douyin"]["selectors_version"]
+        browser_douyin.setdefault("last_screenshot", None)
+        browser_douyin.setdefault("last_selector_check", None)
+        browser_douyin.setdefault("current_page", channels["douyin"]["publish_entry_url"])
+        browser_douyin.setdefault("sidecar_health", "offline")
+        browser_douyin.setdefault("manager_alive", False)
+        browser_douyin.setdefault("window_state", "unknown")
+        browser_douyin.setdefault("resident_page", None)
+        browser_douyin.setdefault("busy", False)
+        browser_douyin.setdefault("last_reset_reason", None)
+        browser_douyin.setdefault("session_generation", 0)
+        browser_douyin.setdefault("last_action", None)
+        browser_douyin.setdefault("last_action_phase", None)
+        browser_douyin.setdefault("is_session_level_error", False)
 
         runtime = state.setdefault("runtime", {})
         runtime.setdefault("scheduler_running", False)
@@ -1441,6 +1525,7 @@ class StudioStore:
         })
         channels = state.setdefault("channels", {})
         raw_wechat_channel = dict(config.get("wechat", channels.setdefault("wechat", {})))
+        raw_douyin_channel = dict(config.get("douyin", channels.setdefault("douyin", {})))
         raw_browser_name = str(raw_wechat_channel.get("browser_name") or "").strip().lower()
         raw_profile_path = str(raw_wechat_channel.get("browser_profile_path") or "").strip()
         if raw_browser_name == "chrome" and (
@@ -1451,6 +1536,9 @@ class StudioStore:
         wechat_channel = ensure_channel_defaults(channels.setdefault("wechat", {}))
         wechat_channel.update(ensure_channel_defaults(raw_wechat_channel))
         channels["wechat"] = wechat_channel
+        douyin_channel = ensure_douyin_channel_defaults(channels.setdefault("douyin", {}))
+        douyin_channel.update(ensure_douyin_channel_defaults(raw_douyin_channel))
+        channels["douyin"] = douyin_channel
         browser = state.setdefault("browser", {})
         browser_wechat = browser.setdefault("wechat", {})
         browser_wechat.setdefault("platform", "wechat_mp")
@@ -1475,6 +1563,28 @@ class StudioStore:
         browser_wechat.setdefault("last_action_phase", None)
         browser_wechat.setdefault("is_session_level_error", False)
         browser_wechat.setdefault("last_draft_check", None)
+        browser_douyin = browser.setdefault("douyin", {})
+        browser_douyin.setdefault("platform", "douyin_creator")
+        browser_douyin["browser_name"] = douyin_channel["browser_name"]
+        browser_douyin["user_data_dir"] = douyin_channel["browser_profile_path"]
+        browser_douyin.setdefault("logged_in", False)
+        browser_douyin.setdefault("last_checked_at", None)
+        browser_douyin.setdefault("last_opened_url", None)
+        browser_douyin.setdefault("last_error", None)
+        browser_douyin["selectors_version"] = douyin_channel["selectors_version"]
+        browser_douyin.setdefault("last_screenshot", None)
+        browser_douyin.setdefault("last_selector_check", None)
+        browser_douyin.setdefault("current_page", douyin_channel["publish_entry_url"])
+        browser_douyin.setdefault("sidecar_health", "offline")
+        browser_douyin.setdefault("manager_alive", False)
+        browser_douyin.setdefault("window_state", "unknown")
+        browser_douyin.setdefault("resident_page", None)
+        browser_douyin.setdefault("busy", False)
+        browser_douyin.setdefault("last_reset_reason", None)
+        browser_douyin.setdefault("session_generation", 0)
+        browser_douyin.setdefault("last_action", None)
+        browser_douyin.setdefault("last_action_phase", None)
+        browser_douyin.setdefault("is_session_level_error", False)
         runtime = state.setdefault("runtime", {})
         runtime.setdefault("scheduler_running", False)
         runtime.setdefault("control_state", "stopped")
@@ -2779,6 +2889,13 @@ class StudioStore:
         channel = state["channels"]["wechat"]
         next_state = refresh_browser_session(channel, current)
         state["browser"]["wechat"] = next_state
+        return next_state
+
+    def _refresh_douyin_browser_session(self, state: dict[str, Any]) -> dict[str, Any]:
+        current = state["browser"]["douyin"]
+        channel = state["channels"]["douyin"]
+        next_state = refresh_douyin_browser_session(channel, current)
+        state["browser"]["douyin"] = next_state
         return next_state
 
     def _runtime(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -4095,7 +4212,10 @@ class StudioStore:
         )
 
     def _publish_backends(self, state: dict[str, Any]) -> list[dict[str, Any]]:
-        return collect_backend_status(state["channels"]["wechat"], state["browser"]["wechat"])
+        return [
+            *collect_backend_status(state["channels"]["wechat"], state["browser"]["wechat"]),
+            *collect_douyin_backend_status(state["channels"]["douyin"], state["browser"]["douyin"]),
+        ]
 
     def list_automation_modes(self) -> list[AutomationModeDefinition]:
         state = self._upgrade_state(self._read())
@@ -5500,6 +5620,159 @@ class StudioStore:
         end = start + safe_page_size
         return items[start:end], total, safe_page, safe_page_size, end < total
 
+    def _match_brief_to_wechat_remote(
+        self,
+        brief: dict[str, Any],
+        remote_items: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        brief_remote_id = str(brief.get("wechat_remote_appmsg_id") or "").strip()
+        brief_remote_url = str(brief.get("wechat_editor_url") or "").strip()
+        brief_title = _normalize_wechat_title(brief.get("title"))
+        for item in remote_items:
+            if not isinstance(item, dict):
+                continue
+            remote_appmsg_id = str(item.get("appmsg_id") or "").strip()
+            remote_url = str(item.get("url") or "").strip()
+            remote_title = _normalize_wechat_title(item.get("title"))
+            if brief_remote_id and remote_appmsg_id and brief_remote_id == remote_appmsg_id:
+                return item
+            if brief_remote_url and remote_url and brief_remote_url == remote_url:
+                return item
+            if brief_title and remote_title and _wechat_title_matches(brief_title, remote_title):
+                return item
+        return None
+
+    def _brief_record_exception(
+        self,
+        brief: dict[str, Any],
+        *,
+        draft_match: dict[str, Any] | None,
+        publish_match: dict[str, Any] | None,
+        last_draft_check: dict[str, Any],
+        last_publish_check: dict[str, Any],
+    ) -> str | None:
+        draft_check_ok = bool(last_draft_check.get("check_ok", True))
+        publish_check_ok = bool(last_publish_check.get("check_ok", True))
+        if not draft_check_ok:
+            return "draft_check_failed"
+        if not publish_check_ok:
+            return "publish_check_failed"
+        if publish_match:
+            return None
+
+        has_upload_trace = any(
+            bool(str(brief.get(field) or "").strip())
+            for field in (
+                "wechat_remote_appmsg_id",
+                "wechat_editor_url",
+                "last_synced_revision",
+                "last_successful_upload_at",
+                "last_delivery_attempt_at",
+            )
+        ) or int(brief.get("delivery_attempt_count", 0) or 0) > 0
+
+        previous_synced_signal = (
+            str(brief.get("stage") or "") == "synced"
+            or str(brief.get("delivery_status") or "") in {"verified", "uploaded_unverified", "check_failed", "target_missing"}
+        )
+        hard_upload_failed = (
+            str(brief.get("stage") or "") == "failed"
+            and str(brief.get("last_delivery_error_kind") or "") in {"upload", "session"}
+            and not any(
+                bool(str(brief.get(field) or "").strip())
+                for field in ("wechat_remote_appmsg_id", "wechat_editor_url", "last_synced_revision", "last_successful_upload_at")
+            )
+        )
+        latest_upload_at = (
+            parse_time(brief.get("last_successful_upload_at"))
+            or parse_time(brief.get("last_delivery_attempt_at"))
+        )
+        latest_draft_checked_at = parse_time(last_draft_check.get("checked_at"))
+        latest_publish_checked_at = parse_time(last_publish_check.get("checked_at"))
+
+        if draft_match:
+            return None
+
+        if hard_upload_failed:
+            return None
+
+        if latest_upload_at and (
+            (not latest_draft_checked_at or latest_upload_at > latest_draft_checked_at)
+            and (not latest_publish_checked_at or latest_upload_at > latest_publish_checked_at)
+        ):
+            return "pending_confirmation"
+
+        if has_upload_trace and previous_synced_signal:
+            return "draft_missing"
+
+        if has_upload_trace:
+            return "pending_confirmation"
+
+        return None
+
+    def _project_brief_record(
+        self,
+        brief: dict[str, Any],
+        *,
+        last_draft_check: dict[str, Any],
+        last_publish_check: dict[str, Any],
+    ) -> dict[str, Any]:
+        draft_items = last_draft_check.get("items", []) if isinstance(last_draft_check.get("items"), list) else []
+        publish_items = last_publish_check.get("items", []) if isinstance(last_publish_check.get("items"), list) else []
+
+        draft_match = self._match_brief_to_wechat_remote(brief, draft_items)
+        publish_match = self._match_brief_to_wechat_remote(brief, publish_items)
+
+        if publish_match:
+            record_status = "published"
+        elif draft_match:
+            record_status = "draft_synced"
+        else:
+            record_status = "local_only"
+
+        projected = dict(brief)
+        projected["record_status"] = record_status
+        projected["record_exception"] = self._brief_record_exception(
+            brief,
+            draft_match=draft_match,
+            publish_match=publish_match,
+            last_draft_check=last_draft_check,
+            last_publish_check=last_publish_check,
+        )
+        projected["draft_remote_updated_at"] = (
+            str(draft_match.get("updated_at") or "").strip() or None
+            if isinstance(draft_match, dict)
+            else None
+        )
+        projected["publish_record_published_at"] = (
+            str(publish_match.get("published_at") or "").strip() or None
+            if isinstance(publish_match, dict)
+            else None
+        )
+        return projected
+
+    def _project_briefs(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        browser = state.get("browser", {}).get("wechat", {})
+        last_draft_check = (
+            browser.get("last_draft_check")
+            if isinstance(browser, dict) and isinstance(browser.get("last_draft_check"), dict)
+            else {}
+        )
+        last_publish_check = (
+            browser.get("last_publish_history_check")
+            if isinstance(browser, dict) and isinstance(browser.get("last_publish_history_check"), dict)
+            else {}
+        )
+        return [
+            self._project_brief_record(
+                item,
+                last_draft_check=last_draft_check,
+                last_publish_check=last_publish_check,
+            )
+            for item in state.get("briefs", [])
+            if isinstance(item, dict)
+        ]
+
     def list_briefs(
         self,
         *,
@@ -5507,9 +5780,9 @@ class StudioStore:
         page_size: int = 50,
         stage: str = "all",
         q: str = "",
-    ) -> tuple[list[BriefItem], int, int, int, bool, BriefStageCounts]:
+    ) -> tuple[list[BriefItem], int, int, int, bool, BriefStageCounts, BriefRecordCounts]:
         state = self._read_live()
-        items = [item for item in state.get("briefs", []) if isinstance(item, dict)]
+        items = self._project_briefs(state)
         items.sort(key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
         stage_counts = BriefStageCounts(
             all=len(items),
@@ -5521,18 +5794,27 @@ class StudioStore:
                 if str(item.get("stage") or "") == "failed" or bool(str(item.get("last_error") or "").strip())
             ),
         )
+        record_counts = BriefRecordCounts(
+            all=len(items),
+            local_only=sum(1 for item in items if str(item.get("record_status") or "") == "local_only"),
+            draft_synced=sum(1 for item in items if str(item.get("record_status") or "") == "draft_synced"),
+            published=sum(1 for item in items if str(item.get("record_status") or "") == "published"),
+            exceptions=sum(1 for item in items if item.get("record_exception")),
+        )
         stage_filter = str(stage or "all").strip().lower()
         keyword = str(q or "").strip().lower()
 
         def matches_stage(item: dict[str, Any]) -> bool:
             if stage_filter == "all":
                 return True
-            if stage_filter == "prepared":
-                return str(item.get("stage") or "") == "prepared"
-            if stage_filter == "synced":
-                return str(item.get("stage") or "") == "synced"
-            if stage_filter == "failed":
-                return str(item.get("stage") or "") == "failed" or bool(str(item.get("last_error") or "").strip())
+            if stage_filter == "local_only":
+                return str(item.get("record_status") or "") == "local_only"
+            if stage_filter == "draft_synced":
+                return str(item.get("record_status") or "") == "draft_synced"
+            if stage_filter == "published":
+                return str(item.get("record_status") or "") == "published"
+            if stage_filter == "exceptions":
+                return bool(item.get("record_exception"))
             return True
 
         def matches_query(item: dict[str, Any]) -> bool:
@@ -5553,11 +5835,13 @@ class StudioStore:
             page=page,
             page_size=page_size,
         )
-        return [BriefItem(**item) for item in page_items], total, safe_page, safe_page_size, has_more, stage_counts
+        return [BriefItem(**item) for item in page_items], total, safe_page, safe_page_size, has_more, stage_counts, record_counts
 
     def get_brief(self, brief_id: str) -> BriefItem:
         state = self._read_live()
-        return BriefItem(**self._find_brief(state, brief_id))
+        brief = self._find_brief(state, brief_id)
+        projected = next((item for item in self._project_briefs(state) if str(item.get("id") or "") == brief_id), None)
+        return BriefItem(**(projected or brief))
 
     def _brief_revision(self, brief: dict[str, Any]) -> str:
         stable_payload = {
@@ -5794,21 +6078,6 @@ class StudioStore:
         if not isinstance(remote_items, list):
             remote_items = []
 
-        def normalize_title(value: Any) -> str:
-            return re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip().lower()
-
-        def title_matches(left: str, right: str) -> bool:
-            if not left or not right:
-                return False
-            if left == right:
-                return True
-            shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
-            if len(shorter) >= 18 and longer.startswith(shorter):
-                return True
-            if len(shorter) >= 18 and shorter in longer:
-                return True
-            return False
-
         mapping_rows: list[WeChatMappingRow] = []
         matched_brief_ids: set[str] = set()
         remote_index: dict[str, dict[str, Any]] = {}
@@ -5826,7 +6095,7 @@ class StudioStore:
             )
             appmsg_id = str(item.get("appmsg_id") or "").strip() or None
             url = str(item.get("url") or "").strip()
-            remote_index[f"title:{normalize_title(title)}"] = item
+            remote_index[f"title:{_normalize_wechat_title(title)}"] = item
             remote_key_index[remote_key] = item
             if appmsg_id:
                 remote_index[f"appmsg:{appmsg_id}"] = item
@@ -5856,14 +6125,14 @@ class StudioStore:
                     continue
                 brief_remote_id = str(brief.get("wechat_remote_appmsg_id") or "").strip()
                 brief_remote_url = str(brief.get("wechat_editor_url") or "").strip()
-                brief_title = normalize_title(brief.get("title"))
+                brief_title = _normalize_wechat_title(brief.get("title"))
                 if remote_appmsg_id and brief_remote_id == remote_appmsg_id:
                     matched_brief = brief
                     break
                 if remote_url and brief_remote_url == remote_url:
                     matched_brief = brief
                     break
-                if remote_title and brief_title and title_matches(brief_title, normalize_title(remote_title)):
+                if remote_title and brief_title and _wechat_title_matches(brief_title, _normalize_wechat_title(remote_title)):
                     matched_brief = brief
                     break
             if matched_brief:
@@ -6049,6 +6318,10 @@ class StudioStore:
         config = self._upgrade_user_settings(self._read_config())
         return WeChatChannelConfig(**ensure_channel_defaults(config.get("wechat", {})))
 
+    def get_douyin_config(self) -> DouyinChannelConfig:
+        config = self._upgrade_user_settings(self._read_config())
+        return DouyinChannelConfig(**ensure_douyin_channel_defaults(config.get("douyin", {})))
+
     def update_wechat_config(self, payload: ChannelConfigPayload) -> WeChatChannelConfig:
         state = self._upgrade_state(self._read())
         state["channels"]["wechat"].update(payload.model_dump())
@@ -6068,6 +6341,12 @@ class StudioStore:
         self._write(state)
         return BrowserSessionState(**browser)
 
+    def get_douyin_browser_session(self) -> BrowserSessionState:
+        state = self._read_live()
+        browser = self._refresh_douyin_browser_session(state)
+        self._write(state)
+        return BrowserSessionState(**browser)
+
     def update_browser_session(self, payload: BrowserSessionPayload) -> BrowserSessionState:
         state = self._upgrade_state(self._read())
         state["channels"]["wechat"]["browser_name"] = payload.browser_name
@@ -6080,6 +6359,21 @@ class StudioStore:
         WECHAT_BROWSER_MANAGER.reset("browser_session_updated")
         browser = self._refresh_browser_session(state)
         self._append_log(state, "info", "browser", "已刷新浏览器会话配置。")
+        self._write_config(self._upgrade_user_settings(config))
+        self._write(state)
+        return BrowserSessionState(**browser)
+
+    def update_douyin_browser_session(self, payload: BrowserSessionPayload) -> BrowserSessionState:
+        state = self._upgrade_state(self._read())
+        state["channels"]["douyin"]["browser_name"] = payload.browser_name
+        state["channels"]["douyin"]["browser_profile_path"] = payload.user_data_dir
+        state["channels"]["douyin"] = ensure_douyin_channel_defaults(state["channels"]["douyin"])
+        config = self._read_config()
+        config.setdefault("douyin", {})
+        config["douyin"]["browser_name"] = state["channels"]["douyin"]["browser_name"]
+        config["douyin"]["browser_profile_path"] = state["channels"]["douyin"]["browser_profile_path"]
+        browser = self._refresh_douyin_browser_session(state)
+        self._append_log(state, "info", "browser", "已刷新抖音浏览器会话配置。")
         self._write_config(self._upgrade_user_settings(config))
         self._write(state)
         return BrowserSessionState(**browser)
@@ -6107,6 +6401,36 @@ class StudioStore:
                 "已打开公众号后台登录窗口。",
                 "dashboard",
                 str(state["channels"]["wechat"]["selectors_version"]),
+                artifacts=artifacts,
+                step_logs=step_logs,
+            ),
+        )
+        self._write(state)
+        return BrowserSessionState(**browser)
+
+    def open_douyin_browser_dashboard(self) -> BrowserSessionState:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_douyin_browser_session(state)
+        browser, artifacts, step_logs = launch_douyin_dashboard(state["channels"]["douyin"], browser)
+        state["browser"]["douyin"] = browser
+        self._append_log(
+            state,
+            "info",
+            "browser",
+            "已打开抖音创作者中心窗口。",
+            stream="business_event",
+            actor="dashboard",
+            detail=" | ".join(step_logs[:3]),
+        )
+        state["publish_tasks"].insert(
+            0,
+            create_publish_task(
+                "session-douyin",
+                "open_douyin_dashboard",
+                "completed" if not browser.get("last_error") else "failed",
+                "已打开抖音创作者中心窗口。",
+                "dashboard",
+                str(state["channels"]["douyin"]["selectors_version"]),
                 artifacts=artifacts,
                 step_logs=step_logs,
             ),
@@ -6143,6 +6467,147 @@ class StudioStore:
         )
         self._write(state)
         return BrowserSessionState(**browser)
+
+    def check_douyin_browser_session(self) -> BrowserSessionState:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_douyin_browser_session(state)
+        browser, artifacts, step_logs = inspect_douyin_session(state["channels"]["douyin"], browser)
+        state["browser"]["douyin"] = browser
+        self._append_log(
+            state,
+            "success" if browser.get("logged_in") else "warning",
+            "browser",
+            "已完成抖音浏览器会话检查。" if browser.get("logged_in") else "抖音浏览器会话未通过检查。",
+            stream="business_event",
+            actor="dashboard",
+            detail=" | ".join(step_logs[-2:]),
+        )
+        state["publish_tasks"].insert(
+            0,
+            create_publish_task(
+                "session-douyin",
+                "check_douyin_browser",
+                "completed" if browser.get("logged_in") else "blocked",
+                "已完成抖音浏览器会话检查。",
+                "dashboard",
+                str(state["channels"]["douyin"]["selectors_version"]),
+                artifacts=artifacts,
+                step_logs=step_logs,
+            ),
+        )
+        self._write(state)
+        return BrowserSessionState(**browser)
+
+    def open_douyin_article_publish(self) -> BrowserSessionState:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_douyin_browser_session(state)
+        browser, artifacts, step_logs = open_douyin_article_publish(state["channels"]["douyin"], browser)
+        state["browser"]["douyin"] = browser
+        self._append_log(
+            state,
+            "success" if not browser.get("last_error") else "warning",
+            "browser",
+            "已打开抖音发布文章页。" if not browser.get("last_error") else "打开抖音发布文章页失败。",
+            stream="business_event",
+            actor="dashboard",
+            detail=" | ".join(step_logs[-2:]),
+        )
+        state["publish_tasks"].insert(
+            0,
+            create_publish_task(
+                "session-douyin",
+                "open_douyin_article_publish",
+                "completed" if not browser.get("last_error") else "failed",
+                "已打开抖音发布文章页。",
+                "dashboard",
+                str(state["channels"]["douyin"]["selectors_version"]),
+                artifacts=artifacts,
+                step_logs=step_logs,
+            ),
+        )
+        self._write(state)
+        return BrowserSessionState(**browser)
+
+    def inspect_douyin_article_structure(self) -> DouyinArticleStructureSnapshot:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_douyin_browser_session(state)
+        browser, snapshot, artifacts, step_logs = inspect_douyin_article_structure(state["channels"]["douyin"], browser)
+        state["browser"]["douyin"] = browser
+        self._append_log(
+            state,
+            "success" if not browser.get("last_error") else "warning",
+            "browser",
+            "已探测抖音文章发布页结构。" if not browser.get("last_error") else "探测抖音文章发布页结构失败。",
+            stream="business_event",
+            actor="dashboard",
+            detail=" | ".join(step_logs[-2:]),
+        )
+        state["publish_tasks"].insert(
+            0,
+            create_publish_task(
+                "session-douyin",
+                "inspect_douyin_article_structure",
+                "completed" if not browser.get("last_error") else "failed",
+                "已探测抖音文章发布页结构。",
+                "dashboard",
+                str(state["channels"]["douyin"]["selectors_version"]),
+                artifacts=artifacts,
+                step_logs=step_logs,
+            ),
+        )
+        self._write(state)
+        return DouyinArticleStructureSnapshot(**snapshot)
+
+    def fill_douyin_article(self, payload: DouyinArticleFillPayload) -> BriefItem:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_douyin_browser_session(state)
+
+        brief: dict[str, Any] | None = None
+        brief_id = str(payload.brief_id or "").strip()
+        if brief_id:
+            brief = self._find_brief(state, brief_id)
+        else:
+            briefs = [item for item in state.get("briefs", []) if isinstance(item, dict)]
+            briefs.sort(key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
+            if briefs:
+                brief = briefs[0]
+        if not brief:
+            raise ValueError("未找到可用于抖音填充的本地简报。")
+
+        browser_payload = {
+            "id": str(brief.get("id") or ""),
+            "title": str(brief.get("title") or ""),
+            "summary": str(brief.get("one_line") or ""),
+            "markdown": str(brief.get("wechat_markdown") or ""),
+        }
+        browser, artifacts, step_logs = fill_douyin_article_from_brief(
+            state["channels"]["douyin"], browser, browser_payload
+        )
+        state["browser"]["douyin"] = browser
+        self._append_log(
+            state,
+            "success" if not browser.get("last_error") else "warning",
+            "browser",
+            "已填充抖音文章页内容。" if not browser.get("last_error") else "填充抖音文章页内容失败。",
+            stream="business_event",
+            actor="dashboard",
+            detail=" | ".join(step_logs[-3:]),
+        )
+        state["publish_tasks"].insert(
+            0,
+            create_publish_task(
+                str(brief.get("id") or "session-douyin"),
+                "fill_douyin_article",
+                "completed" if not browser.get("last_error") else "failed",
+                "已填充抖音文章页内容。",
+                "dashboard",
+                str(state["channels"]["douyin"]["selectors_version"]),
+                artifacts=artifacts,
+                step_logs=step_logs,
+            ),
+        )
+        self._write(state)
+        return BriefItem(**brief)
 
     def check_wechat_draft_box(self, triggered_by: str = "dashboard") -> WeChatDraftSyncCheckResult:
         with self._lock:
@@ -6293,6 +6758,7 @@ class StudioStore:
                     "items": previous_items[:30],
                     "message": fallback_message if previous_items else str(browser.get("last_error") or "微信草稿箱检查失败。"),
                     "empty_confirmations": int(previous_check.get("empty_confirmations", 0) or 0),
+                    "check_ok": False,
                 }
                 for brief in state.get("briefs", []):
                     if not isinstance(brief, dict):
@@ -6309,6 +6775,7 @@ class StudioStore:
                     "items": remote_items[:30],
                     "message": message,
                     "empty_confirmations": empty_confirmations,
+                    "check_ok": True,
                 }
             state["browser"]["wechat"]["last_draft_check"] = result_payload
             self._append_log(
@@ -6342,6 +6809,7 @@ class StudioStore:
                 missing_count=int(result_payload["missing_count"]),
                 items=[WeChatRemoteDraftItem(**item) for item in result_payload["items"]],
                 message=str(result_payload["message"]),
+                check_ok=bool(result_payload.get("check_ok", True)),
             )
 
     def check_wechat_publish_history(self, triggered_by: str = "dashboard") -> WeChatPublishHistorySnapshot:
@@ -6367,6 +6835,7 @@ class StudioStore:
                         if previous_items
                         else str(browser.get("last_error") or "微信发表记录检查失败。")
                     ),
+                    "check_ok": False,
                 }
             else:
                 result_payload = {
@@ -6374,6 +6843,7 @@ class StudioStore:
                     "record_count": len(remote_items),
                     "items": remote_items[:50],
                     "message": f"已检查微信发表记录，共读取 {len(remote_items)} 条远端记录。",
+                    "check_ok": True,
                 }
 
             state["browser"]["wechat"]["last_publish_history_check"] = result_payload
@@ -6406,6 +6876,7 @@ class StudioStore:
                 record_count=int(result_payload["record_count"]),
                 items=[WeChatPublishRecordItem(**item) for item in result_payload["items"]],
                 message=str(result_payload["message"]),
+                check_ok=bool(result_payload.get("check_ok", True)),
             )
 
     def get_publish_backends(self) -> list[PublishBackendStatus]:

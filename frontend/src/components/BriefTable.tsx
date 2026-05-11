@@ -2,7 +2,7 @@ import { Copy, FileSearch, RefreshCcw, RadioTower, Trash2 } from "lucide-react";
 import { useMemo } from "react";
 
 import { formatDateTime, formatRelativeTime } from "../lib/time";
-import type { BriefItem, BriefStageCounts } from "../types";
+import type { BriefItem, BriefRecordCounts, BriefRecordException, BriefRecordStatus } from "../types";
 import { PaginationControls } from "./PaginationControls";
 
 interface BriefTableProps {
@@ -12,7 +12,7 @@ interface BriefTableProps {
   total: number;
   view: BriefWorkbenchView;
   searchTerm: string;
-  stageCounts: BriefStageCounts;
+  recordCounts: BriefRecordCounts;
   loading?: boolean;
   busyBriefId?: string | null;
   onViewChange: (view: BriefWorkbenchView) => void;
@@ -26,40 +26,47 @@ interface BriefTableProps {
   onDeleteBrief: (brief: BriefItem) => Promise<void>;
 }
 
-type BriefWorkbenchView = "all" | "prepared" | "synced" | "failed";
+type BriefWorkbenchView = "all" | "local_only" | "draft_synced" | "published" | "exceptions";
 
-const briefStageLabel: Record<BriefItem["stage"], string> = {
-  prepared: "待同步",
-  synced: "已同步",
-  failed: "失败",
+const recordStatusLabel: Record<BriefRecordStatus, string> = {
+  local_only: "仅本地",
+  draft_synced: "已同步草稿箱",
+  published: "已同步发表记录",
 };
 
 const briefLevelLabel: Record<BriefItem["brief_level"], string> = {
-  rule: "规则简报",
+  rule: "传统简报",
   enhanced: "增强简报",
-  article: "AI文章",
+  article: "AI 长文",
 };
 
-function briefLevelDescription(brief: BriefItem): string {
-  if (brief.brief_level === "article") {
-    return brief.driver_label ? `AI 已生成长文，驱动器：${brief.driver_label}。` : "AI 已生成可上传的长文记录。";
-  }
-  if (brief.brief_level === "enhanced") {
-    return "AI 已基于正文全文生成增强简报。";
-  }
-  return "当前为规则简报，AI 未参与或增强失败。";
-}
+const recordStatusTone: Record<BriefRecordStatus, "success" | "warning" | "info"> = {
+  local_only: "warning",
+  draft_synced: "info",
+  published: "success",
+};
+
+const recordExceptionLabel: Record<BriefRecordException, string> = {
+  pending_confirmation: "待确认",
+  draft_check_failed: "草稿箱检查失败",
+  publish_check_failed: "发表记录检查失败",
+  draft_missing: "草稿已丢失",
+};
 
 function matchesView(brief: BriefItem, view: BriefWorkbenchView) {
   if (view === "all") return true;
-  if (view === "prepared") return brief.stage === "prepared";
-  if (view === "synced") return brief.stage === "synced";
-  return brief.stage === "failed" || Boolean(brief.last_error);
+  if (view === "exceptions") return Boolean(brief.record_exception);
+  return brief.record_status === view;
 }
 
 function truncate(text: string, limit: number): string {
   if (text.length <= limit) return text;
   return `${text.slice(0, limit).trim()}...`;
+}
+
+function detailExcerpt(brief: BriefItem): string {
+  const text = brief.wechat_markdown || brief.one_line || "";
+  return truncate(text.replace(/^#+\s*/gm, "").replace(/\s+/g, " ").trim(), 240) || "暂无正文摘要。";
 }
 
 export function BriefTable({
@@ -69,7 +76,7 @@ export function BriefTable({
   total,
   view,
   searchTerm,
-  stageCounts,
+  recordCounts,
   loading = false,
   busyBriefId,
   onViewChange,
@@ -99,19 +106,23 @@ export function BriefTable({
       <div className="segmented-control draft-workbench-tabs">
         <button type="button" className={view === "all" ? "segment-active" : ""} onClick={() => onViewChange("all")}>
           全部
-          <strong>{stageCounts.all}</strong>
+          <strong>{recordCounts.all}</strong>
         </button>
-        <button type="button" className={view === "prepared" ? "segment-active" : ""} onClick={() => onViewChange("prepared")}>
-          待同步
-          <strong>{stageCounts.prepared}</strong>
+        <button type="button" className={view === "local_only" ? "segment-active" : ""} onClick={() => onViewChange("local_only")}>
+          仅本地
+          <strong>{recordCounts.local_only}</strong>
         </button>
-        <button type="button" className={view === "synced" ? "segment-active" : ""} onClick={() => onViewChange("synced")}>
-          已进草稿箱
-          <strong>{stageCounts.synced}</strong>
+        <button type="button" className={view === "draft_synced" ? "segment-active" : ""} onClick={() => onViewChange("draft_synced")}>
+          已同步草稿箱
+          <strong>{recordCounts.draft_synced}</strong>
         </button>
-        <button type="button" className={view === "failed" ? "segment-active" : ""} onClick={() => onViewChange("failed")}>
-          失败
-          <strong>{stageCounts.failed}</strong>
+        <button type="button" className={view === "published" ? "segment-active" : ""} onClick={() => onViewChange("published")}>
+          已同步发表记录
+          <strong>{recordCounts.published}</strong>
+        </button>
+        <button type="button" className={view === "exceptions" ? "segment-active" : ""} onClick={() => onViewChange("exceptions")}>
+          待确认
+          <strong>{recordCounts.exceptions}</strong>
         </button>
       </div>
 
@@ -148,19 +159,25 @@ export function BriefTable({
           return (
             <article key={brief.id} className="intel-row-card">
               <div className="intel-card-topline">
-                <span className={`status-badge status-${brief.stage === "synced" ? "success" : brief.stage === "failed" ? "danger" : "warning"}`}>
-                  {briefStageLabel[brief.stage]}
+                <span className={`status-badge status-${recordStatusTone[brief.record_status]}`}>
+                  {recordStatusLabel[brief.record_status]}
                 </span>
+                {brief.record_exception ? (
+                  <span className="status-badge status-danger">{recordExceptionLabel[brief.record_exception]}</span>
+                ) : null}
                 <span>{briefLevelLabel[brief.brief_level]}</span>
               </div>
-              <p className="subtle">{briefLevelDescription(brief)}</p>
               <strong>{brief.title}</strong>
               <p>{truncate(brief.one_line || "尚未生成一句话结论。", 160)}</p>
+              <div className="intel-score-row">
+                <span>{formatRelativeTime(brief.updated_at, "刚更新")}</span>
+                <span>草稿箱: {brief.draft_remote_updated_at ? `已命中 ${formatDateTime(brief.draft_remote_updated_at, { fallback: "暂无" })}` : "未命中"}</span>
+                <span>发表记录: {brief.publish_record_published_at ? brief.publish_record_published_at : "未命中"}</span>
+              </div>
               <div className="intel-score-row">
                 <span>{brief.facts.length} 条事实</span>
                 <span>{brief.source_links.length} 条来源</span>
                 <span>{brief.quotes.length} 条引文</span>
-                <span>{formatRelativeTime(brief.updated_at, "刚更新")}</span>
               </div>
               <div className="draft-list-block">
                 <span>为什么值得关注</span>
@@ -176,6 +193,10 @@ export function BriefTable({
                   </ul>
                 </div>
               ) : null}
+              <details className="draft-list-block">
+                <summary>文章详情</summary>
+                <p>{detailExcerpt(brief)}</p>
+              </details>
               {brief.last_error ? <span className="error-note">{brief.last_error}</span> : null}
               <div className="intel-inline-actions">
                 <span>{formatDateTime(brief.updated_at, { fallback: "暂无" })}</span>

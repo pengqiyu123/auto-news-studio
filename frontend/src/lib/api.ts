@@ -199,7 +199,7 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
   };
 
   const appVersion = dashboard.app_version ?? {
-    version: "0.2.6",
+    version: "0.2.8",
     release_channel: "stable",
     release_repo: "pengqiyu123/auto-news-studio",
     release_notes_url: "https://github.com/pengqiyu123/auto-news-studio/releases"
@@ -305,7 +305,7 @@ export const api = {
     request<{ item: BriefItem }>(`/api/admin/intel/events/${eventId}/brief`, {
       method: "POST"
     }),
-  getBriefs: (params?: { page?: number; page_size?: number; stage?: "all" | "prepared" | "synced" | "failed"; q?: string }) => {
+  getBriefs: (params?: { page?: number; page_size?: number; stage?: "all" | "local_only" | "draft_synced" | "published" | "exceptions"; q?: string }) => {
     const query = new URLSearchParams();
     if (params?.page) query.set("page", String(params.page));
     if (params?.page_size) query.set("page_size", String(params.page_size));

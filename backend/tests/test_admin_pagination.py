@@ -344,7 +344,38 @@ def _build_state() -> dict[str, Any]:
                 "last_action": None,
                 "last_action_phase": None,
                 "is_session_level_error": False,
-                "last_draft_check": None,
+                "last_draft_check": {
+                    "checked_at": "2026-05-05T12:20:00+00:00",
+                    "remote_count": 1,
+                    "matched_count": 1,
+                    "missing_count": 0,
+                    "message": "已检查微信草稿箱。",
+                    "check_ok": True,
+                    "items": [
+                        {
+                            "title": "DeepSeek TUI update",
+                            "url": "https://mp.weixin.qq.com/draft2",
+                            "appmsg_id": "appmsg-2",
+                            "updated_at": "2026-05-05T12:10:00+00:00",
+                            "remote_key": "appmsg:appmsg-2",
+                        }
+                    ],
+                },
+                "last_publish_history_check": {
+                    "checked_at": "2026-05-05T12:30:00+00:00",
+                    "record_count": 1,
+                    "message": "已检查微信发表记录。",
+                    "check_ok": True,
+                    "items": [
+                        {
+                            "title": "OpenAI Health 正式发布",
+                            "url": "https://mp.weixin.qq.com/s/health",
+                            "appmsg_id": "appmsg-1",
+                            "published_at": "2026-05-05 20:00",
+                            "remote_key": "appmsg:appmsg-1",
+                        }
+                    ],
+                },
             }
         },
         "reference_projects": [],
@@ -434,7 +465,7 @@ def test_list_briefs_supports_pagination_and_filters() -> None:
     try:
         client = _build_client(temp_dir)
 
-        response = client.get("/api/admin/briefs?page=1&page_size=2&stage=prepared&q=health")
+        response = client.get("/api/admin/briefs?page=1&page_size=2&stage=local_only&q=uber")
         assert response.status_code == 200
         payload = response.json()
 
@@ -442,13 +473,88 @@ def test_list_briefs_supports_pagination_and_filters() -> None:
         assert payload["page"] == 1
         assert payload["page_size"] == 2
         assert payload["has_more"] is False
-        assert [item["id"] for item in payload["items"]] == ["brief-1"]
+        assert [item["id"] for item in payload["items"]] == ["brief-3"]
         assert payload["stage_counts"] == {
             "all": 3,
             "prepared": 1,
             "synced": 1,
             "failed": 1,
         }
+        assert payload["record_counts"] == {
+            "all": 3,
+            "local_only": 1,
+            "draft_synced": 1,
+            "published": 1,
+            "exceptions": 0,
+        }
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_briefs_projection_reports_record_statuses_and_filters() -> None:
+    temp_dir = _make_repo_temp_dir()
+    try:
+        client = _build_client(temp_dir)
+
+        response = client.get("/api/admin/briefs?page=1&page_size=10")
+        assert response.status_code == 200
+        payload = response.json()
+        statuses = {item["id"]: item["record_status"] for item in payload["items"]}
+
+        assert statuses["brief-1"] == "published"
+        assert statuses["brief-2"] == "draft_synced"
+        assert statuses["brief-3"] == "local_only"
+        published_at = {item["id"]: item["publish_record_published_at"] for item in payload["items"]}
+        draft_times = {item["id"]: item["draft_remote_updated_at"] for item in payload["items"]}
+        assert published_at["brief-1"] == "2026-05-05 20:00"
+        assert draft_times["brief-2"] == "2026-05-05T12:10:00+00:00"
+
+        published_only = client.get("/api/admin/briefs?stage=published")
+        assert published_only.status_code == 200
+        assert [item["id"] for item in published_only.json()["items"]] == ["brief-1"]
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_briefs_projection_marks_check_failures_and_pending_confirmation() -> None:
+    temp_dir = _make_repo_temp_dir()
+    try:
+        client = _build_client(temp_dir)
+        state_file = temp_dir / "data" / "state.json"
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        state["browser"]["wechat"]["last_draft_check"]["check_ok"] = False
+        state["browser"]["wechat"]["last_publish_history_check"]["check_ok"] = False
+        state["briefs"][2]["delivery_attempt_count"] = 1
+        state["briefs"][2]["last_delivery_attempt_at"] = "2026-05-05T13:00:00+00:00"
+        _write_json(state_file, state)
+
+        response = client.get("/api/admin/briefs")
+        assert response.status_code == 200
+        payload = response.json()
+        exceptions = {item["id"]: item["record_exception"] for item in payload["items"]}
+        assert exceptions["brief-1"] == "draft_check_failed"
+        assert exceptions["brief-2"] == "draft_check_failed"
+        assert exceptions["brief-3"] == "draft_check_failed"
+
+        state["browser"]["wechat"]["last_draft_check"]["check_ok"] = True
+        state["browser"]["wechat"]["last_publish_history_check"]["check_ok"] = True
+        state["browser"]["wechat"]["last_draft_check"]["items"] = []
+        state["browser"]["wechat"]["last_publish_history_check"]["items"] = []
+        state["browser"]["wechat"]["last_publish_history_check"]["record_count"] = 0
+        state["briefs"][1]["stage"] = "prepared"
+        state["briefs"][1]["delivery_status"] = "idle"
+        state["briefs"][1]["last_synced_revision"] = None
+        state["briefs"][1]["last_successful_upload_at"] = None
+        state["briefs"][1]["wechat_editor_url"] = None
+        state["briefs"][1]["wechat_remote_appmsg_id"] = None
+        state["briefs"][0]["last_delivery_attempt_at"] = "2026-05-05T13:40:00+00:00"
+        _write_json(state_file, state)
+
+        response = client.get("/api/admin/briefs")
+        assert response.status_code == 200
+        payload = response.json()
+        exceptions = {item["id"]: item["record_exception"] for item in payload["items"]}
+        assert exceptions["brief-1"] == "pending_confirmation"
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 

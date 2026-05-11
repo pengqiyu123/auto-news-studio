@@ -31,6 +31,7 @@ import type {
   AppUpdateInfo,
   AppVersionInfo,
   BrowserSessionState,
+  BriefRecordCounts,
   BriefStageCounts,
   BriefItem,
   DashboardResponse,
@@ -161,9 +162,16 @@ export default function App() {
   const [briefsPage, setBriefsPage] = useState(1);
   const [briefsPageSize, setBriefsPageSize] = useState(DEFAULT_BRIEFS_PAGE_SIZE);
   const [briefsTotal, setBriefsTotal] = useState(0);
-  const [briefStageFilter, setBriefStageFilter] = useState<"all" | "prepared" | "synced" | "failed">("all");
+  const [briefStageFilter, setBriefStageFilter] = useState<"all" | "local_only" | "draft_synced" | "published" | "exceptions">("all");
   const [briefSearchQuery, setBriefSearchQuery] = useState("");
   const [briefStageCounts, setBriefStageCounts] = useState<BriefStageCounts>({ all: 0, prepared: 0, synced: 0, failed: 0 });
+  const [briefRecordCounts, setBriefRecordCounts] = useState<BriefRecordCounts>({
+    all: 0,
+    local_only: 0,
+    draft_synced: 0,
+    published: 0,
+    exceptions: 0,
+  });
   const [selectedDeepDive, setSelectedDeepDive] = useState<EventDeepDive | null>(null);
   const [entityWatchlist, setEntityWatchlist] = useState<EntityWatchlistItem[]>([]);
   const [selectedEntityId, setSelectedEntityId] = useState<string>("all");
@@ -313,6 +321,7 @@ export default function App() {
     setBriefsPageSize(response.page_size);
     setBriefsTotal(response.total);
     setBriefStageCounts(response.stage_counts);
+    setBriefRecordCounts(response.record_counts);
   }, [briefSearchQuery, briefStageFilter, briefsPage, briefsPageSize]);
 
   const loadPublishHistoryData = useCallback(async (
@@ -871,7 +880,7 @@ export default function App() {
 
   async function handleDeleteBrief(brief: BriefItem) {
     const confirmed = window.confirm(
-      brief.stage === "synced"
+      brief.record_status === "draft_synced"
         ? `确定删除《${brief.title}》吗？这会默认尝试先删除微信草稿箱里的远端稿件，再删除本地简报。`
         : `确定删除《${brief.title}》吗？这会直接删除本地简报。`,
     );
@@ -1470,7 +1479,7 @@ export default function App() {
                 total={briefsTotal}
                 view={briefStageFilter}
                 searchTerm={briefSearchQuery}
-                stageCounts={briefStageCounts}
+                recordCounts={briefRecordCounts}
                 loading={Boolean(tabLoading.briefs)}
                 busyBriefId={busyBriefId}
                 onViewChange={(view) => {
@@ -1512,7 +1521,8 @@ export default function App() {
             {activeTab === "draft-box" ? (
               <WeChatDraftBoxPanel
                 mapping={wechatMapping}
-                localBriefCount={briefStageCounts.all}
+                briefs={briefs}
+                localBriefCount={briefRecordCounts.all}
                 browserSession={browserSession}
                 publishTasks={publishTasks}
                 publishTasksPage={publishTasksPage}

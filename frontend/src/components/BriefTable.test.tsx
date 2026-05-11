@@ -23,6 +23,10 @@ const brief: BriefItem = {
   wechat_markdown: "# article",
   wechat_html: "<h1>article</h1>",
   updated_at: "2026-05-05T12:00:00+00:00",
+  record_status: "local_only",
+  record_exception: null,
+  draft_remote_updated_at: null,
+  publish_record_published_at: null,
 };
 
 describe("BriefTable", () => {
@@ -40,7 +44,7 @@ describe("BriefTable", () => {
         total={50}
         view="all"
         searchTerm=""
-        stageCounts={{ all: 50, prepared: 20, synced: 20, failed: 10 }}
+        recordCounts={{ all: 50, local_only: 20, draft_synced: 20, published: 8, exceptions: 2 }}
         onViewChange={onViewChange}
         onSearchChange={onSearchChange}
         onPageChange={onPageChange}
@@ -53,8 +57,8 @@ describe("BriefTable", () => {
       />,
     );
 
-    fireEvent.click(screen.getAllByRole("button", { name: /待同步/ })[0]);
-    expect(onViewChange).toHaveBeenCalledWith("prepared");
+    fireEvent.click(screen.getAllByRole("button", { name: /仅本地/ })[0]);
+    expect(onViewChange).toHaveBeenCalledWith("local_only");
 
     fireEvent.change(screen.getByPlaceholderText("搜索标题、结论、价值判断"), { target: { value: "OpenAI" } });
     expect(onSearchChange).toHaveBeenCalledWith("OpenAI");

@@ -49,6 +49,8 @@ export type DeepDiveFetchStatus = "pending" | "fetched" | "fetch_failed" | "fetc
 export type DeepDiveExtractStatus = "pending" | "extracted" | "extract_failed" | "too_short";
 export type BriefLevel = "rule" | "enhanced" | "article";
 export type BriefStage = "prepared" | "synced" | "failed";
+export type BriefRecordStatus = "local_only" | "draft_synced" | "published";
+export type BriefRecordException = "pending_confirmation" | "draft_check_failed" | "publish_check_failed" | "draft_missing";
 
 export interface AutomationModeDefinition {
   key: AutomationMode;
@@ -195,6 +197,7 @@ export interface WeChatDraftSyncCheckResult {
   missing_count: number;
   items: WeChatRemoteDraftItem[];
   message: string;
+  check_ok?: boolean;
 }
 
 export interface WeChatPublishRecordItem {
@@ -210,6 +213,7 @@ export interface WeChatPublishHistorySnapshot {
   record_count: number;
   items: WeChatPublishRecordItem[];
   message: string;
+  check_ok?: boolean;
 }
 
 export type WeChatMappingStatus = "matched" | "remote_only" | "local_only" | "unresolved";
@@ -529,6 +533,10 @@ export interface BriefItem {
   last_error?: string | null;
   updated_at: string;
   driver_label?: string;
+  record_status: BriefRecordStatus;
+  record_exception?: BriefRecordException | null;
+  draft_remote_updated_at?: string | null;
+  publish_record_published_at?: string | null;
 }
 
 export interface IntelEventHistoryItem {
@@ -695,6 +703,14 @@ export interface BriefStageCounts {
   failed: number;
 }
 
+export interface BriefRecordCounts {
+  all: number;
+  local_only: number;
+  draft_synced: number;
+  published: number;
+  exceptions: number;
+}
+
 export interface BriefsResponse {
   items: BriefItem[];
   total: number;
@@ -702,6 +718,7 @@ export interface BriefsResponse {
   page_size: number;
   has_more: boolean;
   stage_counts: BriefStageCounts;
+  record_counts: BriefRecordCounts;
 }
 
 export interface PublishTasksResponse {

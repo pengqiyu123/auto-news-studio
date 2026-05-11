@@ -77,6 +77,8 @@ AgentHtmlAlertState = Literal["watch", "rising", "breakout", "cooling"]
 AgentHtmlEventChangeState = Literal["new_event", "growing_event", "stable_event", "cooling_event"]
 BriefLevel = Literal["rule", "enhanced", "article"]
 BriefStage = Literal["prepared", "synced", "failed"]
+BriefRecordStatus = Literal["local_only", "draft_synced", "published"]
+BriefRecordException = Literal["pending_confirmation", "draft_check_failed", "publish_check_failed", "draft_missing"]
 DeliveryMode = Literal["immediate", "scheduled_batch"]
 AdmissionStrategy = Literal["conservative", "balanced", "aggressive"]
 
@@ -226,7 +228,7 @@ class PublishTask(BaseModel):
 
 
 class BrowserSessionState(BaseModel):
-    platform: Literal["wechat_mp"] = "wechat_mp"
+    platform: Literal["wechat_mp", "douyin_creator"] = "wechat_mp"
     browser_name: str = "edge"
     user_data_dir: str = ""
     logged_in: bool = False
@@ -271,6 +273,7 @@ class WeChatDraftSyncCheckResult(BaseModel):
     missing_count: int = 0
     items: list[WeChatRemoteDraftItem] = Field(default_factory=list)
     message: str = ""
+    check_ok: bool = True
 
 
 class WeChatDraftSyncCheckResponse(BaseModel):
@@ -290,10 +293,40 @@ class WeChatPublishHistorySnapshot(BaseModel):
     record_count: int = 0
     items: list[WeChatPublishRecordItem] = Field(default_factory=list)
     message: str = ""
+    check_ok: bool = True
 
 
 class WeChatPublishHistoryResponse(BaseModel):
     item: WeChatPublishHistorySnapshot
+
+
+class DouyinArticleStructureField(BaseModel):
+    key: str
+    label: str
+    found: bool = False
+    visible: bool = False
+    selector: Optional[str] = None
+    count: int = 0
+    sample_text: str = ""
+    sample_html: str = ""
+
+
+class DouyinArticleStructureSnapshot(BaseModel):
+    checked_at: str
+    url: str = ""
+    page_title: str = ""
+    body_excerpt: str = ""
+    message: str = ""
+    items: list[DouyinArticleStructureField] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
+
+
+class DouyinArticleStructureResponse(BaseModel):
+    item: DouyinArticleStructureSnapshot
+
+
+class DouyinArticleFillPayload(BaseModel):
+    brief_id: Optional[str] = None
 
 
 class WeChatMappingStatus(str):
@@ -368,6 +401,14 @@ class WeChatChannelConfig(BaseModel):
     browser_profile_path: str = ""
     publish_entry_url: str = "https://mp.weixin.qq.com/"
     selectors_version: str = "wechat-mp-v1"
+    sidecar_url: str = "http://127.0.0.1:8091"
+
+
+class DouyinChannelConfig(BaseModel):
+    browser_name: str = "edge"
+    browser_profile_path: str = ""
+    publish_entry_url: str = "https://creator.douyin.com/"
+    selectors_version: str = "douyin-creator-v1"
     sidecar_url: str = "http://127.0.0.1:8091"
 
 
@@ -815,6 +856,10 @@ class BriefItem(BaseModel):
     last_error: Optional[str] = None
     updated_at: str
     driver_label: str = ""
+    record_status: BriefRecordStatus = "local_only"
+    record_exception: Optional[BriefRecordException] = None
+    draft_remote_updated_at: Optional[str] = None
+    publish_record_published_at: Optional[str] = None
 
 
 class AgentArticlePayload(BaseModel):
@@ -1014,6 +1059,14 @@ class BriefStageCounts(BaseModel):
     failed: int = 0
 
 
+class BriefRecordCounts(BaseModel):
+    all: int = 0
+    local_only: int = 0
+    draft_synced: int = 0
+    published: int = 0
+    exceptions: int = 0
+
+
 class BriefsResponse(BaseModel):
     items: list[BriefItem] = Field(default_factory=list)
     total: int = 0
@@ -1021,6 +1074,7 @@ class BriefsResponse(BaseModel):
     page_size: int = 50
     has_more: bool = False
     stage_counts: BriefStageCounts = Field(default_factory=BriefStageCounts)
+    record_counts: BriefRecordCounts = Field(default_factory=BriefRecordCounts)
 
 
 class DictOkResponse(BaseModel):
@@ -1286,6 +1340,10 @@ class BrowserSessionResponse(BaseModel):
 
 class WeChatChannelResponse(BaseModel):
     item: WeChatChannelConfig
+
+
+class DouyinChannelResponse(BaseModel):
+    item: DouyinChannelConfig
 
 
 class SystemCheckItem(BaseModel):

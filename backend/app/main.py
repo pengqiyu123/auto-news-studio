@@ -37,6 +37,7 @@ from .models import (
     BriefCopyPackageResponse,
     BriefResponse,
     BriefsResponse,
+    DouyinArticleFillPayload,
     BrowserSessionPayload,
     BrowserSessionResponse,
     ChannelConfigPayload,
@@ -72,6 +73,8 @@ from .models import (
     SourceSyncResponse,
     SystemDoctorResponse,
     SourcesResponse,
+    DouyinArticleStructureResponse,
+    DouyinChannelResponse,
     WeChatChannelResponse,
     WeChatDraftSyncCheckResponse,
     WeChatMappingResponse,
@@ -170,7 +173,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Auto News Studio API",
-    version=str(VERSION_MANIFEST.get("version") or "0.2.6"),
+    version=str(VERSION_MANIFEST.get("version") or "0.2.8"),
     description="自动化新闻助手运营后台 API，覆盖信息采集、候选选题、公众号草稿和浏览器会话。",
     lifespan=lifespan,
 )
@@ -681,7 +684,7 @@ def reextract_agent_html_document(document_id: str, triggered_by: str = "dashboa
 
 @app.get("/api/admin/briefs", response_model=BriefsResponse)
 def list_briefs(page: int = 1, page_size: int = 50, stage: str = "all", q: str = ""):
-    items, total, safe_page, safe_page_size, has_more, stage_counts = store.list_briefs(
+    items, total, safe_page, safe_page_size, has_more, stage_counts, record_counts = store.list_briefs(
         page=page,
         page_size=page_size,
         stage=stage,
@@ -694,6 +697,7 @@ def list_briefs(page: int = 1, page_size: int = 50, stage: str = "all", q: str =
         page_size=safe_page_size,
         has_more=has_more,
         stage_counts=stage_counts,
+        record_counts=record_counts,
     )
 
 
@@ -781,6 +785,11 @@ def update_wechat_channel(payload: ChannelConfigPayload):
     return {"item": store.update_wechat_config(payload)}
 
 
+@app.get("/api/admin/channels/douyin", response_model=DouyinChannelResponse)
+def get_douyin_channel():
+    return DouyinChannelResponse(item=store.get_douyin_config())
+
+
 @app.get("/api/admin/browser/wechat/session", response_model=BrowserSessionResponse)
 def get_browser_session():
     return BrowserSessionResponse(item=store.get_browser_session())
@@ -799,6 +808,44 @@ def open_browser_dashboard():
 @app.post("/api/admin/browser/wechat/check", response_model=BrowserSessionResponse)
 def check_browser_session():
     return BrowserSessionResponse(item=store.check_browser_session())
+
+
+@app.get("/api/admin/browser/douyin/session", response_model=BrowserSessionResponse)
+def get_douyin_browser_session():
+    return BrowserSessionResponse(item=store.get_douyin_browser_session())
+
+
+@app.put("/api/admin/browser/douyin/session")
+def update_douyin_browser_session(payload: BrowserSessionPayload):
+    return {"item": store.update_douyin_browser_session(payload)}
+
+
+@app.post("/api/admin/browser/douyin/open-dashboard", response_model=BrowserSessionResponse)
+def open_douyin_browser_dashboard():
+    return BrowserSessionResponse(item=store.open_douyin_browser_dashboard())
+
+
+@app.post("/api/admin/browser/douyin/check", response_model=BrowserSessionResponse)
+def check_douyin_browser_session():
+    return BrowserSessionResponse(item=store.check_douyin_browser_session())
+
+
+@app.post("/api/admin/browser/douyin/open-article-publish", response_model=BrowserSessionResponse)
+def open_douyin_article_publish():
+    return BrowserSessionResponse(item=store.open_douyin_article_publish())
+
+
+@app.post("/api/admin/browser/douyin/inspect-article-structure", response_model=DouyinArticleStructureResponse)
+def inspect_douyin_article_structure():
+    return DouyinArticleStructureResponse(item=store.inspect_douyin_article_structure())
+
+
+@app.post("/api/admin/browser/douyin/fill-article", response_model=BriefResponse)
+def fill_douyin_article(payload: DouyinArticleFillPayload):
+    try:
+        return BriefResponse(item=store.fill_douyin_article(payload))
+    except ValueError as exc:
+        raise _http_from_value_error(exc) from exc
 
 
 @app.post("/api/admin/browser/wechat/check-drafts", response_model=WeChatDraftSyncCheckResponse)
