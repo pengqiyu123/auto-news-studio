@@ -51,6 +51,16 @@ export type BriefLevel = "rule" | "enhanced" | "article";
 export type BriefStage = "prepared" | "synced" | "failed";
 export type BriefRecordStatus = "local_only" | "draft_synced" | "published";
 export type BriefRecordException = "pending_confirmation" | "draft_check_failed" | "publish_check_failed" | "draft_missing";
+export type WorkflowMode = "traditional" | "agent";
+export type AgentWorkflowStatus = "running" | "completed" | "failed" | "abandoned";
+export type AgentWorkflowStep =
+  | "sources_sync"
+  | "event_selected"
+  | "deep_dive_ready"
+  | "material_brief_ready"
+  | "article_saved"
+  | "wechat_uploaded"
+  | "douyin_uploaded";
 
 export interface AutomationModeDefinition {
   key: AutomationMode;
@@ -537,6 +547,22 @@ export interface BriefItem {
   record_exception?: BriefRecordException | null;
   draft_remote_updated_at?: string | null;
   publish_record_published_at?: string | null;
+  workflow_mode: WorkflowMode;
+  workflow_session_id?: string | null;
+}
+
+export interface AgentWorkflowItem {
+  workflow_session_id: string;
+  status: AgentWorkflowStatus;
+  current_step: AgentWorkflowStep;
+  event_id?: string | null;
+  material_brief_id?: string | null;
+  article_brief_id?: string | null;
+  target_platforms: Array<"wechat" | "douyin">;
+  last_error?: string | null;
+  started_at: string;
+  updated_at: string;
+  finished_at?: string | null;
 }
 
 export interface IntelEventHistoryItem {

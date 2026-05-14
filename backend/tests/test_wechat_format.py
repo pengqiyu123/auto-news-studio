@@ -1,4 +1,10 @@
-from backend.app.briefing import optimize_wechat_article_title, rewrite_markdown_title
+from backend.app.briefing import (
+    build_agent_article_writing_guide,
+    build_brief_summary,
+    build_prompt_package_markdown,
+    optimize_wechat_article_title,
+    rewrite_markdown_title,
+)
 from backend.app.wechat_format import markdown_to_plain_text, markdown_to_wechat_html, strip_markdown_title
 
 
@@ -51,3 +57,38 @@ def test_rewrite_markdown_title_updates_first_heading_only() -> None:
 
     assert rewritten.startswith("# 原标题：新高")
     assert "## 小标题" in rewritten
+
+
+def test_build_agent_article_writing_guide_contains_new_required_sections() -> None:
+    guide = build_agent_article_writing_guide()
+
+    assert "### 标题策略" in guide
+    assert "### 摘要" in guide
+    assert "### 引文与事实底线" in guide
+    assert "### 自检清单" in guide
+    assert "禁止出现这些高频 AI 味词" in guide
+
+
+def test_build_prompt_package_markdown_includes_writing_guide_before_material_sections() -> None:
+    markdown = build_prompt_package_markdown(
+        title="测试标题",
+        one_line="一句话结论",
+        why_it_matters="为什么值得关注",
+        facts=["事实 1"],
+        full_text_sources=[],
+        source_quotes=[],
+        timeline=[],
+        risk_notes=[],
+        source_links=[],
+        article_writing_guide="## 公众号文章写作规范\n\n### 标题策略\n说明",
+    )
+
+    assert "## 写作要求" in markdown
+    assert markdown.index("## 写作要求") < markdown.index("## 事件标题")
+
+
+def test_build_brief_summary_falls_back_in_expected_order() -> None:
+    assert build_brief_summary(summary="显式摘要", one_line="一句话", facts=["事实"], event_summary="事件摘要") == "显式摘要"
+    assert build_brief_summary(summary="", one_line="一句话", facts=["事实"], event_summary="事件摘要") == "一句话"
+    assert build_brief_summary(summary="", one_line="", facts=["事实"], event_summary="事件摘要") == "事实"
+    assert build_brief_summary(summary="", one_line="", facts=[], event_summary="事件摘要") == "事件摘要"

@@ -56,6 +56,7 @@ frontend/=1.0.0
 
 # Local test utilities
 llm_live_test.py
+test_editor_write.py
 
 # Codex / agent temp files
 frontend/src/_*.py

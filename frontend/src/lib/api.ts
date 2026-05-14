@@ -1,5 +1,6 @@
 import type {
   AppUpdateInfo,
+  AgentWorkflowItem,
   AutomationMode,
   AutomationModeDefinition,
   AutomationModeProfile,
@@ -199,7 +200,7 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
   };
 
   const appVersion = dashboard.app_version ?? {
-    version: "0.2.8",
+    version: "0.2.9",
     release_channel: "stable",
     release_repo: "pengqiyu123/auto-news-studio",
     release_notes_url: "https://github.com/pengqiyu123/auto-news-studio/releases"
@@ -301,20 +302,30 @@ export const api = {
     }),
   getEventDeepDives: () => request<EventDeepDivesResponse>("/api/admin/intel/deep-dives"),
   getEventDeepDive: (eventId: string) => request<{ item: EventDeepDive }>(`/api/admin/intel/deep-dives/${eventId}`),
-  createBriefFromEvent: (eventId: string) =>
-    request<{ item: BriefItem }>(`/api/admin/intel/events/${eventId}/brief`, {
+  createBriefFromEvent: (eventId: string, triggeredBy = "dashboard") =>
+    request<{ item: BriefItem }>(`/api/admin/intel/events/${eventId}/brief?triggered_by=${encodeURIComponent(triggeredBy)}`, {
       method: "POST"
     }),
-  getBriefs: (params?: { page?: number; page_size?: number; stage?: "all" | "local_only" | "draft_synced" | "published" | "exceptions"; q?: string }) => {
+  getBriefs: (params?: {
+    page?: number;
+    page_size?: number;
+    stage?: "all" | "local_only" | "draft_synced" | "published" | "exceptions";
+    workflow_mode?: "all" | "traditional" | "agent";
+    q?: string;
+  }) => {
     const query = new URLSearchParams();
     if (params?.page) query.set("page", String(params.page));
     if (params?.page_size) query.set("page_size", String(params.page_size));
     if (params?.stage && params.stage !== "all") query.set("stage", params.stage);
+    if (params?.workflow_mode && params.workflow_mode !== "all") query.set("workflow_mode", params.workflow_mode);
     if (params?.q?.trim()) query.set("q", params.q.trim());
     const suffix = query.size ? `?${query.toString()}` : "";
     return request<BriefsResponse>(`/api/admin/briefs${suffix}`);
   },
   getBrief: (briefId: string) => request<{ item: BriefItem }>(`/api/admin/briefs/${briefId}`),
+  getAgentWorkflows: () => request<{ items: AgentWorkflowItem[] }>("/api/admin/agent/workflows"),
+  getAgentWorkflow: (workflowSessionId: string) =>
+    request<{ item: AgentWorkflowItem }>(`/api/admin/agent/workflows/${workflowSessionId}`),
   syncBriefWeChatDraft: (briefId: string) =>
     request<{ item: BriefItem }>(`/api/admin/briefs/${briefId}/wechat-draft`, {
       method: "POST"

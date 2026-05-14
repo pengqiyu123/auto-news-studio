@@ -107,7 +107,7 @@ DEFAULT_USER_SETTINGS: dict[str, Any] = {
     },
 }
 
-DEFAULT_APP_VERSION = "0.2.8"
+DEFAULT_APP_VERSION = "0.2.9"
 DEFAULT_RELEASE_CHANNEL = "stable"
 DEFAULT_RELEASE_REPO = "pengqiyu123/auto-news-studio"
 DEFAULT_RELEASE_NOTES_URL = "https://github.com/pengqiyu123/auto-news-studio/releases"

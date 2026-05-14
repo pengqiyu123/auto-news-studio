@@ -1,0 +1,210 @@
+import { act, renderHook } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { api } from "../../lib/api";
+import type { BriefItem, IntelAlert, IntelEvent } from "../../types";
+import { useBriefsState } from "./useBriefsState";
+
+vi.mock("../../lib/api", () => ({
+  api: {
+    getBriefs: vi.fn(),
+    getAgentWorkflows: vi.fn(),
+    createEventDeepDive: vi.fn(),
+    getEventDeepDive: vi.fn(),
+    createBriefFromEvent: vi.fn(),
+    syncBriefWeChatDraft: vi.fn(),
+    copyBriefPackage: vi.fn(),
+    deleteBrief: vi.fn(),
+  },
+}));
+
+const mockedApi = vi.mocked(api);
+
+const sampleBrief: BriefItem = {
+  id: "brief-1",
+  event_id: "evt-1",
+  deep_dive_id: "dd-1",
+  brief_level: "article",
+  stage: "prepared",
+  title: "测试长文",
+  one_line: "一句话结论",
+  why_it_matters: "值得关注",
+  facts: ["事实 1"],
+  quotes: [],
+  timeline: [],
+  entity_names: [],
+  source_links: ["https://example.com/a"],
+  risk_notes: [],
+  prompt_package_markdown: "pkg",
+  wechat_markdown: "# 测试长文",
+  wechat_html: "<h1>测试长文</h1>",
+  updated_at: "2026-05-12T10:00:00+08:00",
+  record_status: "local_only",
+  record_exception: null,
+  draft_remote_updated_at: null,
+  publish_record_published_at: null,
+  workflow_mode: "agent",
+  workflow_session_id: "agentwf-1",
+};
+
+const events: IntelEvent[] = [
+  {
+    id: "evt-1",
+    title: "地平线 6 泄露",
+    summary: "事件摘要",
+    representative_link: "https://example.com/e1",
+    representative_source_name: "Example Source",
+    representative_discovery_item_id: "disc-1",
+    discovery_item_ids: ["disc-1"],
+    source_keys: ["example"],
+    source_names: ["Example Source"],
+    platforms: ["web"],
+    alert_state: "watch",
+    entity_ids: [],
+    entity_names: [],
+    watchlisted: true,
+    ignored: false,
+    brief_id: null,
+    deep_dive_id: null,
+    deep_dive_status: "pending",
+    deep_dive_summary: undefined,
+    deep_dive_started_at: null,
+    deep_dive_updated_at: null,
+    deep_dive_finished_at: null,
+    worth_to_brief: false,
+    worth_reason: undefined,
+    platform_count: 1,
+    source_count: 1,
+    member_count: 1,
+    story_count: 1,
+    member_delta: 0,
+    platform_delta: 0,
+    tags: [],
+    anchor_tokens: [],
+    velocity_score: 5,
+    coverage_score: 4,
+    freshness_score: 3,
+    composite_score: 10,
+    velocity_details: {},
+    change_state: "growing_event",
+    alert_reason: "增长中",
+    published_at: "2026-05-12T09:00:00+08:00",
+    first_seen_at: "2026-05-12T09:00:00+08:00",
+    last_seen_at: "2026-05-12T09:30:00+08:00",
+    latest_collected_at: "2026-05-12T09:30:00+08:00",
+  },
+];
+
+describe("useBriefsState", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("loads briefs with record counts from API", async () => {
+    mockedApi.getBriefs.mockResolvedValue({
+      items: [sampleBrief],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      has_more: false,
+      stage_counts: { all: 1, prepared: 1, synced: 0, failed: 0 },
+      record_counts: { all: 1, local_only: 1, draft_synced: 0, published: 0, exceptions: 0 },
+    });
+    mockedApi.getAgentWorkflows.mockResolvedValue({ items: [] });
+
+    const { result } = renderHook(() =>
+      useBriefsState({
+        onError: vi.fn(),
+        onToast: vi.fn(),
+        onReloadOverview: vi.fn().mockResolvedValue(undefined),
+        onReloadEvents: vi.fn().mockResolvedValue(undefined),
+        onReloadAlerts: vi.fn().mockResolvedValue(undefined),
+        onReloadWatchlist: vi.fn().mockResolvedValue(undefined),
+        onReloadPublishHistory: vi.fn().mockResolvedValue(undefined),
+        onReloadDraftBox: vi.fn().mockResolvedValue(undefined),
+        onMarkBriefsLoaded: vi.fn(),
+        onActivateWatchlist: vi.fn(),
+        onActivateBriefs: vi.fn(),
+        getEventsSnapshot: () => events,
+        getWatchlistSnapshot: () => [],
+        getAlertsSnapshot: () => [],
+      }),
+    );
+
+    await act(async () => {
+      await result.current.loadBriefsData();
+    });
+
+    expect(mockedApi.getBriefs).toHaveBeenCalledWith({
+      page: 1,
+      page_size: 20,
+      stage: "all",
+      workflow_mode: "all",
+      q: "",
+    });
+    expect(result.current.briefs).toHaveLength(1);
+    expect(result.current.briefRecordCounts.local_only).toBe(1);
+    expect(result.current.briefs[0].title).toBe("测试长文");
+  });
+
+  it("creates brief and fans out reloads through injected callbacks", async () => {
+    const onReloadOverview = vi.fn().mockResolvedValue(undefined);
+    const onReloadEvents = vi.fn().mockResolvedValue(undefined);
+    const onReloadAlerts = vi.fn().mockResolvedValue(undefined);
+    const onReloadWatchlist = vi.fn().mockResolvedValue(undefined);
+    const onMarkBriefsLoaded = vi.fn();
+    const onActivateBriefs = vi.fn();
+    const onToast = vi.fn();
+
+    mockedApi.createBriefFromEvent.mockResolvedValue({
+      item: {
+        ...sampleBrief,
+        brief_level: "article",
+        title: "地平线 6 泄露",
+      },
+    });
+    mockedApi.getBriefs.mockResolvedValue({
+      items: [{ ...sampleBrief, title: "地平线 6 泄露" }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      has_more: false,
+      stage_counts: { all: 1, prepared: 1, synced: 0, failed: 0 },
+      record_counts: { all: 1, local_only: 1, draft_synced: 0, published: 0, exceptions: 0 },
+    });
+    mockedApi.getAgentWorkflows.mockResolvedValue({ items: [] });
+
+    const { result } = renderHook(() =>
+      useBriefsState({
+        onError: vi.fn(),
+        onToast,
+        onReloadOverview,
+        onReloadEvents,
+        onReloadAlerts,
+        onReloadWatchlist,
+        onReloadPublishHistory: vi.fn().mockResolvedValue(undefined),
+        onReloadDraftBox: vi.fn().mockResolvedValue(undefined),
+        onMarkBriefsLoaded,
+        onActivateWatchlist: vi.fn(),
+        onActivateBriefs,
+        getEventsSnapshot: () => events,
+        getWatchlistSnapshot: () => [],
+        getAlertsSnapshot: (): IntelAlert[] => [],
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleCreateBrief("evt-1");
+    });
+
+    expect(mockedApi.createBriefFromEvent).toHaveBeenCalledWith("evt-1");
+    expect(mockedApi.getBriefs).toHaveBeenCalledTimes(1);
+    expect(onReloadOverview).toHaveBeenCalledWith(true);
+    expect(onReloadEvents).toHaveBeenCalledTimes(1);
+    expect(onReloadAlerts).toHaveBeenCalledTimes(1);
+    expect(onReloadWatchlist).toHaveBeenCalledTimes(1);
+    expect(onActivateBriefs).toHaveBeenCalledTimes(1);
+    expect(onMarkBriefsLoaded).toHaveBeenCalledTimes(1);
+    expect(onToast).toHaveBeenCalledWith("AI文章已生成：地平线 6 泄露", "success");
+  });
+});

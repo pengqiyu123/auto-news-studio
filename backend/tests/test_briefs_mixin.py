@@ -236,7 +236,100 @@ def test_create_agent_article_optimizes_title_and_rewrites_markdown_heading() ->
         )
 
         assert article.title == "英伟达财报：数据中心收入再创新高"
+        assert article.summary == "数据中心收入再创新高，市场预期继续上修"
         assert article.wechat_markdown.startswith("# 英伟达财报：数据中心收入再创新高")
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_create_brief_from_event_generates_summary_and_writing_guide_prompt() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["intel_events"] = [
+            {
+                "id": "evt-brief-1",
+                "title": "OpenAI 新融资",
+                "summary": "事件原始摘要",
+                "alert_state": "watch",
+                "entity_names": [],
+                "entity_ids": [],
+                "brief_id": None,
+                "watchlisted": True,
+                "ignored": False,
+            }
+        ]
+        state["event_deep_dives"] = [
+            {
+                "id": "dd-brief-1",
+                "event_id": "evt-brief-1",
+                "status": "ready",
+                "sources": [],
+                "facts": ["Thrive Capital 领投，微软继续跟投"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {"reason": "值得跟踪 AI 融资格局变化"},
+                "updated_at": "2026-05-13T10:00:00+08:00",
+            }
+        ]
+        store._write(state)
+
+        brief = store.create_brief_from_event("evt-brief-1", triggered_by="agent")
+
+        assert brief.summary == "Thrive Capital 领投，微软继续跟投"
+        assert "## 写作要求" in brief.prompt_package_markdown
+        assert "### 摘要" in brief.prompt_package_markdown
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_create_agent_article_prefers_explicit_summary_payload() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["intel_events"] = [
+            {
+                "id": "evt-summary-1",
+                "title": "AI Event",
+                "summary": "事件默认摘要",
+                "alert_state": "watch",
+                "entity_names": [],
+                "entity_ids": [],
+                "brief_id": None,
+                "watchlisted": True,
+                "ignored": False,
+            }
+        ]
+        state["event_deep_dives"] = [
+            {
+                "id": "dd-summary-1",
+                "event_id": "evt-summary-1",
+                "status": "ready",
+                "sources": [],
+                "facts": ["事实 1"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {"reason": "worth watching"},
+                "updated_at": "2026-05-13T10:00:00+08:00",
+            }
+        ]
+        store._write(state)
+
+        article = store.create_agent_article(
+            AgentArticlePayload(
+                event_id="evt-summary-1",
+                title="测试标题",
+                article_markdown="# 测试标题\n\n正文",
+                summary="显式摘要优先",
+                one_line="一句话结论",
+                facts=["事实 1"],
+                publish_to_wechat_draft=False,
+                publish_to_douyin_article=False,
+                triggered_by="agent",
+            )
+        )
+
+        assert article.summary == "显式摘要优先"
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -253,6 +346,7 @@ def test_sync_brief_wechat_draft_refreshes_cached_wechat_html_before_revision_ch
                 "brief_level": "article",
                 "stage": "synced",
                 "title": "缓存刷新标题",
+                "summary": "这是显式摘要",
                 "one_line": "一句话",
                 "why_it_matters": "原因",
                 "facts": [],
@@ -276,6 +370,7 @@ def test_sync_brief_wechat_draft_refreshes_cached_wechat_html_before_revision_ch
         result = store.sync_brief_wechat_draft("brief-refresh-1", triggered_by="dashboard")
 
         assert "<strong>加粗</strong>" in result.wechat_html
+        assert result.summary == "这是显式摘要"
         assert result.stage != "synced"
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)

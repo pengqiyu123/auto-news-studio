@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 
 import { formatDateTime, formatRelativeTime } from "../lib/time";
 import type {
+  AgentWorkflowItem,
   BriefItem,
   BrowserSessionState,
   PublishTask,
@@ -42,6 +43,7 @@ const recordExceptionLabel: Partial<Record<NonNullable<BriefItem["record_excepti
 interface WeChatDraftBoxPanelProps {
   mapping: WeChatMappingSnapshot | null;
   briefs: BriefItem[];
+  agentWorkflows: AgentWorkflowItem[];
   localBriefCount: number;
   browserSession: BrowserSessionState | null;
   publishTasks: PublishTask[];
@@ -69,6 +71,7 @@ function remoteRowKey(item: WeChatRemoteDraftItem, index: number): string {
 export function WeChatDraftBoxPanel({
   mapping,
   briefs,
+  agentWorkflows,
   localBriefCount,
   browserSession,
   publishTasks,
@@ -85,6 +88,10 @@ export function WeChatDraftBoxPanel({
 }: WeChatDraftBoxPanelProps) {
   const [view, setView] = useState<MappingView>("wechat_remote");
   const [showRecords, setShowRecords] = useState(false);
+  const workflowMap = useMemo(
+    () => new Map(agentWorkflows.map((workflow) => [workflow.workflow_session_id, workflow])),
+    [agentWorkflows],
+  );
 
   const remoteItems = mapping?.items ?? [];
   const localRecords = useMemo(
@@ -230,6 +237,9 @@ export function WeChatDraftBoxPanel({
                 {brief.record_exception ? (
                   <span className="status-badge status-danger">{recordExceptionLabel[brief.record_exception] ?? "待确认"}</span>
                 ) : null}
+                <span className={`status-badge status-${brief.workflow_mode === "agent" ? "info" : "neutral"}`}>
+                  {brief.workflow_mode === "agent" ? "Agent" : "传统"}
+                </span>
                 <span>{formatRelativeTime(brief.updated_at, "刚更新")}</span>
               </div>
               <strong>{brief.title}</strong>
@@ -239,6 +249,12 @@ export function WeChatDraftBoxPanel({
                 <span>草稿箱 {brief.draft_remote_updated_at ? "已命中" : "未命中"}</span>
                 <span>发表记录 {brief.publish_record_published_at ? "已命中" : "未命中"}</span>
               </div>
+              {brief.workflow_session_id ? (
+                <div className="intel-score-row">
+                  <span>会话 {brief.workflow_session_id}</span>
+                  <span>步骤 {workflowMap.get(brief.workflow_session_id)?.current_step ?? "article_saved"}</span>
+                </div>
+              ) : null}
               <details className="draft-list-block">
                 <summary>文章详情</summary>
                 <p>{detailExcerpt(brief)}</p>
@@ -279,6 +295,9 @@ export function WeChatDraftBoxPanel({
                     {brief.record_exception ? (
                       <span className="status-badge status-danger">{recordExceptionLabel[brief.record_exception] ?? "待确认"}</span>
                     ) : null}
+                    <span className={`status-badge status-${brief.workflow_mode === "agent" ? "info" : "neutral"}`}>
+                      {brief.workflow_mode === "agent" ? "Agent" : "传统"}
+                    </span>
                   </div>
                   <strong>{brief.title}</strong>
                   <p>{brief.one_line || "尚未生成一句话摘要。"}</p>

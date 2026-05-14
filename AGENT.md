@@ -13,6 +13,14 @@ Do not create a second Agent database, Agent console runtime, MCP sidecar, or fa
 - The shared information layer, deep dives, article records, WeChat draft mapping, and publish tasks all live in the same state.
 - Traditional mode is the built-in script/rule-driven workflow.
 - Agent mode is external-AI-driven workflow.
+- The frontend overview page is only the traditional automation console. Do not treat it as the Agent work entry.
+- Agent mode must strictly follow the project-defined chain:
+  `sources/sync -> intel/events -> deep-dive -> brief -> agent/articles -> platform execution`
+- WeChat and Douyin are downstream execution targets, not alternate content-ingest paths.
+- Do not treat "open a platform editor and fill content" as a valid replacement for writing into the shared `briefs` ledger first.
+- WeChat upload must stay on a single browser tab. Always return to the WeChat home dashboard first, then enter `新的创作 -> 文章` on the current tab.
+- Do not solve WeChat upload failures by opening extra tabs. Retry by re-walking `home -> article -> editor`, not by reusing a stale editor tab.
+- If the user says `开始今日的工作`, treat it as a shortcut for the full Agent daily workflow, not as a request to start the built-in traditional scheduler.
 - For the Agent path, you should:
   1. collect and inspect shared intel
   2. decide what is worth writing
@@ -244,6 +252,7 @@ JSON body:
   "source_links": ["https://example.com/a"],
   "risk_notes": ["仍需注意的不确定性"],
   "publish_to_wechat_draft": true,
+  "publish_to_douyin_article": false,
   "triggered_by": "agent",
   "driver_label": "codex"
 }
@@ -254,6 +263,7 @@ Behavior:
 - saves the article into the shared `briefs` store
 - reuses the existing event linkage and deep-dive linkage
 - if `publish_to_wechat_draft=true`, automatically reuses the existing WeChat draft upload chain
+- if `publish_to_douyin_article=true`, automatically opens the Douyin article page and fills title, summary, body, and AI illustration
 
 ### Collect shared intel
 
@@ -315,6 +325,8 @@ WeChat browser operations (check-drafts, check-publish-history, delete remote dr
 12. **Before deleting a remote draft**, always call `GET /api/admin/wechat/mapping` first to get the correct `remote_key` for the target brief. The `remote_id` in `DELETE /api/admin/wechat/remote-drafts/{remote_id}` must exactly match the `remote_key` from the mapping (URL-encode `|`, Chinese characters, etc.).
 13. **Do NOT start the traditional runtime.** `POST /api/admin/runtime/start` launches a 60-second scheduler that autonomously generates briefs and uploads them to WeChat draft — this conflicts with Agent-authored articles. Use `POST /api/admin/sources/sync` for manual one-shot collection instead. If the runtime is already running, stop it with `POST /api/admin/runtime/stop` before writing articles.
 14. **Do NOT use `POST /api/admin/briefs/{id}/wechat-draft` to upload a traditional brief.** Agent-authored articles must go through `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true`. The backend will reject `triggered_by=agent` if the target record is still a traditional brief.
+15. **Do NOT invent side paths for Douyin or WeChat.** Platform actions are allowed only after the article already exists in the shared `briefs` ledger through the standard project flow.
+16. **Do NOT skip the brief/article linkage.** Even when the final destination is Douyin, the content must still come from the shared event -> deep-dive -> brief -> article chain defined by this project.
 
 ## Basic error-handling rules
 
@@ -329,6 +341,22 @@ WeChat browser operations (check-drafts, check-publish-history, delete remote dr
 
 **Do NOT start the traditional runtime (`POST /api/admin/runtime/start`).** The traditional scheduler runs every 60 seconds and will autonomously generate briefs and upload them to WeChat draft, overwriting or conflicting with your Agent-authored articles. If the runtime is already running, stop it first with `POST /api/admin/runtime/stop`.
 
+### Shortcut phrase
+
+If the user says `开始今日的工作`, interpret it as a request to run the end-to-end Agent workflow for the current day unless the user narrows the scope.
+
+This shortcut means:
+
+1. stop the traditional scheduler if it is running
+2. sync fresh shared intel
+3. inspect today's event pool
+4. choose worthwhile topics
+5. deep-dive, create local brief/material records, and write the full article
+6. save the article through `POST /api/admin/agent/articles`
+7. only after that, execute the target platform step
+
+If the user does not specify a target platform, default to the existing WeChat draft delivery path.
+
 1. `POST /api/admin/runtime/stop` — stop the traditional scheduler if it is running (avoid conflicts)
 2. `POST /api/admin/sources/sync?triggered_by=agent` — collect fresh intel (manual one-shot, not scheduler-driven)
 3. `GET /api/admin/intel/events` — read hot events
@@ -339,7 +367,17 @@ WeChat browser operations (check-drafts, check-publish-history, delete remote dr
    - `POST /api/admin/intel/events/{event_id}/brief?triggered_by=agent` — generate a local brief record for material tracking only
    - do extra online verification yourself
    - write a 1500-3000 word full article following the `article_writing_guide`
-   - `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true` — save the article and upload to WeChat draft in one step
+   - before saving, you MUST run a separate Critique pass against the draft
+   - Critique must independently check:
+     - facts, numbers, dates, names, and quotations are traceable to source material or clearly marked as uncertain
+     - title, summary, lead, section headings, and ending follow the writing guide
+     - the draft does not rely on AI-sounding filler such as road-sign transitions, empty praise, or repetitive paragraph templates
+     - paragraph rhythm is varied and the article structure is not loose or repetitive
+   - if Critique fails, revise the article and critique again
+   - repeat the write -> critique -> revise loop up to 2 times maximum
+   - only when Critique passes may you call `POST /api/admin/agent/articles` to save into the shared ledger
+   - if the draft still fails after 2 critique rounds, do not save it; report the problems first
+   - only after that, execute the target platform step such as WeChat draft upload or Douyin page fill
 6. after upload, optionally verify:
    - `POST /api/admin/browser/wechat/check-drafts?triggered_by=agent`
    - `POST /api/admin/browser/wechat/check-publish-history?triggered_by=agent`
@@ -349,7 +387,7 @@ WeChat browser operations (check-drafts, check-publish-history, delete remote dr
    - re-write and re-submit via `POST /api/admin/agent/articles`
    - `POST /api/admin/wechat/mapping/refresh?triggered_by=agent` — refresh mapping to verify consistency
 
-**Key distinction:** The brief record from step 5 is a local material record. The article from `POST /api/admin/agent/articles` is your own full-length piece and is stored as a separate article record in the shared `briefs` collection. Never use `POST /api/admin/briefs/{id}/wechat-draft` on a traditional brief record — that is not the final Agent article. Always use `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true` for the final upload.
+**Key distinction:** The brief record from step 5 is a local material record. The article from `POST /api/admin/agent/articles` is your own full-length piece and is stored as a separate article record in the shared `briefs` collection. Never use `POST /api/admin/briefs/{id}/wechat-draft` on a traditional brief record — that is not the final Agent article. Always use `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true` for the final upload, and only after Critique has approved the draft.
 
 ## Logging expectation
 

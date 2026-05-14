@@ -2,7 +2,7 @@ import { Copy, FileSearch, RefreshCcw, RadioTower, Trash2 } from "lucide-react";
 import { useMemo } from "react";
 
 import { formatDateTime, formatRelativeTime } from "../lib/time";
-import type { BriefItem, BriefRecordCounts, BriefRecordException, BriefRecordStatus } from "../types";
+import type { AgentWorkflowItem, BriefItem, BriefRecordCounts, BriefRecordException, BriefRecordStatus } from "../types";
 import { PaginationControls } from "./PaginationControls";
 
 interface BriefTableProps {
@@ -11,11 +11,14 @@ interface BriefTableProps {
   pageSize: number;
   total: number;
   view: BriefWorkbenchView;
+  workflowView: BriefWorkflowView;
   searchTerm: string;
   recordCounts: BriefRecordCounts;
+  agentWorkflows: AgentWorkflowItem[];
   loading?: boolean;
   busyBriefId?: string | null;
   onViewChange: (view: BriefWorkbenchView) => void;
+  onWorkflowViewChange: (view: BriefWorkflowView) => void;
   onSearchChange: (value: string) => void;
   onPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: number) => void;
@@ -27,6 +30,7 @@ interface BriefTableProps {
 }
 
 type BriefWorkbenchView = "all" | "local_only" | "draft_synced" | "published" | "exceptions";
+type BriefWorkflowView = "all" | "traditional" | "agent";
 
 const recordStatusLabel: Record<BriefRecordStatus, string> = {
   local_only: "仅本地",
@@ -53,6 +57,11 @@ const recordExceptionLabel: Record<BriefRecordException, string> = {
   draft_missing: "草稿已丢失",
 };
 
+const workflowModeLabel: Record<BriefItem["workflow_mode"], string> = {
+  traditional: "传统",
+  agent: "Agent",
+};
+
 function matchesView(brief: BriefItem, view: BriefWorkbenchView) {
   if (view === "all") return true;
   if (view === "exceptions") return Boolean(brief.record_exception);
@@ -75,11 +84,14 @@ export function BriefTable({
   pageSize,
   total,
   view,
+  workflowView,
   searchTerm,
   recordCounts,
+  agentWorkflows,
   loading = false,
   busyBriefId,
   onViewChange,
+  onWorkflowViewChange,
   onSearchChange,
   onPageChange,
   onPageSizeChange,
@@ -89,6 +101,18 @@ export function BriefTable({
   onSyncBrief,
   onDeleteBrief,
 }: BriefTableProps) {
+  const workflowCounts = useMemo(
+    () => ({
+      all: briefs.length,
+      traditional: briefs.filter((brief) => brief.workflow_mode === "traditional").length,
+      agent: briefs.filter((brief) => brief.workflow_mode === "agent").length,
+    }),
+    [briefs],
+  );
+  const workflowMap = useMemo(
+    () => new Map(agentWorkflows.map((workflow) => [workflow.workflow_session_id, workflow])),
+    [agentWorkflows],
+  );
   const filtered = useMemo(
     () => [...briefs].sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()),
     [briefs],
@@ -99,8 +123,23 @@ export function BriefTable({
       <div className="panel-header">
         <div>
           <p className="eyebrow">简报</p>
-          <h2>查看已经整理好的简报与来源包</h2>
+          <h2>共享总账：区分传统链与 Agent 会话产物</h2>
         </div>
+      </div>
+
+      <div className="segmented-control draft-workbench-tabs">
+        <button type="button" className={workflowView === "all" ? "segment-active" : ""} onClick={() => onWorkflowViewChange("all")}>
+          全部
+          <strong>{workflowCounts.all}</strong>
+        </button>
+        <button type="button" className={workflowView === "traditional" ? "segment-active" : ""} onClick={() => onWorkflowViewChange("traditional")}>
+          传统
+          <strong>{workflowCounts.traditional}</strong>
+        </button>
+        <button type="button" className={workflowView === "agent" ? "segment-active" : ""} onClick={() => onWorkflowViewChange("agent")}>
+          Agent
+          <strong>{workflowCounts.agent}</strong>
+        </button>
       </div>
 
       <div className="segmented-control draft-workbench-tabs">
@@ -156,6 +195,7 @@ export function BriefTable({
       <div className="intel-list">
         {filtered.length ? filtered.map((brief) => {
           const busy = busyBriefId === brief.id;
+          const workflow = brief.workflow_session_id ? workflowMap.get(brief.workflow_session_id) : null;
           return (
             <article key={brief.id} className="intel-row-card">
               <div className="intel-card-topline">
@@ -165,6 +205,9 @@ export function BriefTable({
                 {brief.record_exception ? (
                   <span className="status-badge status-danger">{recordExceptionLabel[brief.record_exception]}</span>
                 ) : null}
+                <span className={`status-badge status-${brief.workflow_mode === "agent" ? "info" : "neutral"}`}>
+                  {workflowModeLabel[brief.workflow_mode]}
+                </span>
                 <span>{briefLevelLabel[brief.brief_level]}</span>
               </div>
               <strong>{brief.title}</strong>
@@ -179,6 +222,13 @@ export function BriefTable({
                 <span>{brief.source_links.length} 条来源</span>
                 <span>{brief.quotes.length} 条引文</span>
               </div>
+              {brief.workflow_session_id ? (
+                <div className="intel-score-row">
+                  <span>会话 {brief.workflow_session_id}</span>
+                  <span>步骤 {workflow?.current_step ?? "article_saved"}</span>
+                  <span>状态 {workflow?.status ?? "running"}</span>
+                </div>
+              ) : null}
               <div className="draft-list-block">
                 <span>为什么值得关注</span>
                 <p>{brief.why_it_matters || "当前仍以规则简报为主，可继续补充判断。"}</p>

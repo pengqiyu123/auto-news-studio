@@ -866,6 +866,7 @@ class BriefItem(BaseModel):
     brief_level: BriefLevel = "rule"
     stage: BriefStage = "prepared"
     title: str
+    summary: str = ""
     one_line: str = ""
     why_it_matters: str = ""
     facts: list[str] = Field(default_factory=list)
@@ -918,6 +919,7 @@ class AgentArticlePayload(BaseModel):
     event_id: str
     title: str
     article_markdown: str
+    summary: str = ""
     one_line: str = ""
     why_it_matters: str = ""
     facts: list[str] = Field(default_factory=list)

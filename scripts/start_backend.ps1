@@ -72,6 +72,7 @@ $outLog = Join-Path $runtimeDir "backend.out.log"
 $errLog = Join-Path $runtimeDir "backend.err.log"
 $frontendDist = Join-Path $appRoot "frontend\dist\index.html"
 $appUrl = "http://127.0.0.1:8000"
+$managedAppUrl = "$appUrl/?launcher=1&ts=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
 
 if (-not (Test-Path $runtimeDir)) {
     New-Item -ItemType Directory -Path $runtimeDir | Out-Null
@@ -120,7 +121,7 @@ if ($projectBackends.Count -gt 0) {
             Set-Content -Path $pidFile -Value $listenerPid
             Write-Host "[INFO] Auto News Studio is already running. PID=$listenerPid"
             Write-Host "URL: $appUrl"
-            Start-Process $appUrl | Out-Null
+            Start-Process $managedAppUrl | Out-Null
             exit 0
         }
     }
@@ -134,7 +135,7 @@ if ($listenerPid) {
             Set-Content -Path $pidFile -Value $listenerPid
             Write-Host "[INFO] Auto News Studio is already running. PID=$listenerPid"
             Write-Host "URL: $appUrl"
-            Start-Process $appUrl | Out-Null
+            Start-Process $managedAppUrl | Out-Null
             exit 0
         }
 
@@ -222,5 +223,5 @@ Write-Host "  Logs: $runtimeDir\"
 Write-Host "========================================"
 Write-Host ""
 
-Start-Process $appUrl | Out-Null
+Start-Process $managedAppUrl | Out-Null
 exit 0

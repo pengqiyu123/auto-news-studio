@@ -253,7 +253,7 @@ export function IntelOverviewPage({
   const shouldShowImmediateRerun = visualState === "waiting_next";
   const shouldShowStartButton = visualState === "stopped" || visualState === "one_shot_done" || visualState === "one_shot_failed";
   const shouldShowStopButton = visualState === "running" || visualState === "maintenance_running" || visualState === "waiting_start_once" || visualState === "waiting_start_loop" || visualState === "waiting_next";
-  const stopLabel = visualState === "waiting_start_once" || visualState === "waiting_start_loop" ? "停止计划" : "停止监测";
+  const stopLabel = visualState === "waiting_start_once" || visualState === "waiting_start_loop" ? "停止传统计划" : "停止传统模式";
   const headerHint = useMemo(() => {
     switch (visualState) {
       case "one_shot_done":
@@ -303,7 +303,7 @@ export function IntelOverviewPage({
                 onClick={() => void onRunIntent("normal_monitoring")}
               >
                 <RadioTower size={14} />
-                {busyMaintenanceIntent === "normal_monitoring" ? "执行中..." : "立即补跑"}
+                {busyMaintenanceIntent === "normal_monitoring" ? "执行中..." : "执行一次维护动作"}
               </button>
             ) : null}
             <button
@@ -331,7 +331,7 @@ export function IntelOverviewPage({
                 onClick={() => void handleStart()}
               >
                 <PlayCircle size={14} />
-                {busyRuntimeAction === "start" ? "启动中..." : "开始监测"}
+                {busyRuntimeAction === "start" ? "启动中..." : "启动传统模式"}
               </button>
             ) : null}
             {shouldShowStopButton ? (
@@ -354,7 +354,7 @@ export function IntelOverviewPage({
               { intent: "collect_validation", label: "仅采集素材" },
               { intent: "event_rebuild", label: "重建事件" },
               { intent: "alert_rebuild", label: "重算预警" },
-              { intent: "normal_monitoring", label: "补跑完整交付" },
+              { intent: "normal_monitoring", label: "执行一次维护动作" },
             ] as Array<{ intent: RuntimeIntent; label: string }>).map((item) => (
               <button
                 key={item.intent}
@@ -433,6 +433,12 @@ export function IntelOverviewPage({
         {/* 展开的计划配置面板 */}
         {planExpanded ? (
           <div className="intel-plan-groups">
+            <section className="intel-plan-group">
+              <div className="intel-plan-group-header">
+                <p className="eyebrow">传统模式</p>
+                <h3>这里是前端传统自动化控制台，不是 Agent 工作入口</h3>
+              </div>
+            </section>
             <section className="intel-plan-group">
               <div className="intel-plan-group-header">
                 <p className="eyebrow">信息获取</p>

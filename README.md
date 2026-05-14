@@ -6,7 +6,7 @@
 
 当前同时支持两种使用方式：
 
-- **传统模式**：项目内置的脚本 / 规则驱动三档自动化
+- **传统模式**：前端总览页中的内置脚本 / 规则驱动三档自动化控制台
 - **Agent 模式**：外部 AI 工具读取仓库与 `AGENT.md` 后，直接调用项目真实接口驱动工作流
 
 另外，Agent 模式下现已支持一条**独立的 HTML 结构化采集链**：
@@ -107,7 +107,7 @@ start.bat                   # Windows（推荐，要求 frontend/dist 已存在�
 # cd backend && .venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-启动后会检查 `frontend/dist` 是否存在；若前端已完成构建，会启动后端并自动打开浏览器访问 `http://127.0.0.1:8000`。
+启动后会检查 `frontend/dist` 是否存在；若前端已完成构建，会启动后端并自动打开一个受管仪表盘页。重复执行 `start.bat` 时会优先唤醒现有仪表盘页，而不是继续堆新标签。
 
 说明：
 
@@ -124,6 +124,33 @@ start.bat                   # Windows（推荐，要求 frontend/dist 已存在�
 
 这条路径不会创建第二套数据库，也不会引入第二套 Agent 产品壳。外部 AI 负责判断和写作，项目负责真实数据、真实浏览器链和真实日志。
 
+严格要求：
+
+- Agent 模式必须严格按项目既有链路执行：`sources/sync -> intel/events -> deep-dive -> brief -> agent/articles -> 平台执行`
+- `开始今日的工作` 仅代表 Agent 对话口令，不是前端传统模式按钮，也不是 `/api/admin/runtime/start` 的别名
+- 微信公众号、抖音创作者中心都属于下游平台执行环节，不是新的内容入口链路
+- 不要跳过 `event -> deep-dive -> brief -> article` 这一组共享主链，也不要把“直接打开平台编辑页并填内容”当作正式入库方式
+- 所有平台动作都只能消费已经写入共享 `briefs` 总账的记录，不能脱离项目主链单独生成一篇“游离文章”
+- 微信公众号上传必须严格使用单标签页链路：每次都先回公众号后台首页，再从“新的创作 -> 文章”进入编辑页
+- 不允许通过新建标签页规避微信流程问题；如果失败重试，必须重新走“首页 -> 文章 -> 编辑页”
+
+### 快速口令
+
+在 Agent 模式下，可以直接对 AI 说：`开始今日的工作`。
+
+这句话约定代表按项目既有主链执行一次当天全流程，而不是只做单步操作，也不是启动传统模式调度器：
+
+`sources/sync -> intel/events -> deep-dive -> brief -> agent/articles -> 平台执行`
+
+默认含义：
+
+- 先确认传统调度器已停止，避免和 Agent 链路冲突
+- 获取当天最新情报并筛选值得写的主题
+- 完成深挖、生成本地素材简报、撰写长文并写回共享 `briefs`
+- 最后再进入目标平台执行步骤
+
+如果用户没有额外指定平台，优先按当前项目默认交付链执行微信公众号草稿箱。
+
 ### Agent 手工回归清单
 
 1. 先执行 `stop.bat`，再执行 `start.bat`
@@ -134,8 +161,9 @@ start.bat                   # Windows（推荐，要求 frontend/dist 已存在�
 6. `POST /api/admin/intel/events/{event_id}/deep-dive?triggered_by=agent`
 7. `POST /api/admin/intel/events/{event_id}/brief?triggered_by=agent`，这里只生成本地素材记录
 8. `POST /api/admin/agent/articles`，并设置 `publish_to_wechat_draft=true`
-9. 不要对传统简报调用 `POST /api/admin/briefs/{brief_id}/wechat-draft`
-10. 如需检查微信端，`check-drafts` 和 `check-publish-history` 必须串行执行，不能并发抢浏览器锁
+9. 如需执行下游平台动作，也必须基于第 8 步写入后的共享文章记录继续，不要绕过总账直接把内容塞进平台页
+10. 不要对传统简报调用 `POST /api/admin/briefs/{brief_id}/wechat-draft`
+11. 如需检查微信端，`check-drafts` 和 `check-publish-history` 必须串行执行，不能并发抢浏览器锁
 
 ### Agent HTML 手工回归清单
 

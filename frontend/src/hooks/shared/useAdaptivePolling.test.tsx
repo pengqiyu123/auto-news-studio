@@ -2,7 +2,7 @@ import { renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAdaptivePolling } from "./useAdaptivePolling";
-import type { SchedulerStatus } from "../types";
+import type { SchedulerStatus } from "../../types";
 
 const baseRuntime: SchedulerStatus = {
   running: false,

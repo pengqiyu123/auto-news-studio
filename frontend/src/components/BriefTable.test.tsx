@@ -27,11 +27,14 @@ const brief: BriefItem = {
   record_exception: null,
   draft_remote_updated_at: null,
   publish_record_published_at: null,
+  workflow_mode: "agent",
+  workflow_session_id: "agentwf-1",
 };
 
 describe("BriefTable", () => {
   it("wires stage filter, search, and pagination controls to parent callbacks", () => {
     const onViewChange = vi.fn();
+    const onWorkflowViewChange = vi.fn();
     const onSearchChange = vi.fn();
     const onPageChange = vi.fn();
     const onPageSizeChange = vi.fn();
@@ -43,9 +46,12 @@ describe("BriefTable", () => {
         pageSize={20}
         total={50}
         view="all"
+        workflowView="all"
         searchTerm=""
         recordCounts={{ all: 50, local_only: 20, draft_synced: 20, published: 8, exceptions: 2 }}
+        agentWorkflows={[{ workflow_session_id: "agentwf-1", status: "running", current_step: "article_saved", target_platforms: ["wechat"], started_at: "2026-05-13T10:00:00+08:00", updated_at: "2026-05-13T10:01:00+08:00" }]}
         onViewChange={onViewChange}
+        onWorkflowViewChange={onWorkflowViewChange}
         onSearchChange={onSearchChange}
         onPageChange={onPageChange}
         onPageSizeChange={onPageSizeChange}
@@ -59,6 +65,9 @@ describe("BriefTable", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: /仅本地/ })[0]);
     expect(onViewChange).toHaveBeenCalledWith("local_only");
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Agent/ })[0]);
+    expect(onWorkflowViewChange).toHaveBeenCalledWith("agent");
 
     fireEvent.change(screen.getByPlaceholderText("搜索标题、结论、价值判断"), { target: { value: "OpenAI" } });
     expect(onSearchChange).toHaveBeenCalledWith("OpenAI");

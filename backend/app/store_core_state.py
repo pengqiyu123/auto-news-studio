@@ -910,6 +910,7 @@ class StoreCoreStateMixin:
                 continue
             brief.setdefault("brief_level", "rule")
             brief.setdefault("stage", "prepared")
+            brief.setdefault("summary", "")
             brief.setdefault("one_line", "")
             brief.setdefault("why_it_matters", "")
             brief.setdefault("facts", [])
@@ -1306,6 +1307,7 @@ class StoreCoreStateMixin:
                 brief["wechat_target_id"] = brief.get("wechat_draft_id")
             brief.setdefault("brief_level", "rule")
             brief.setdefault("stage", "prepared")
+            brief.setdefault("summary", "")
             brief.setdefault("one_line", "")
             brief.setdefault("why_it_matters", "")
             brief.setdefault("facts", [])

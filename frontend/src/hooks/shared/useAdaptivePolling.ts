@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
-import { isRuntimeActivelyProcessing } from "../lib/runtimeIntent";
-import type { SchedulerStatus } from "../types";
+import { isRuntimeActivelyProcessing } from "../../lib/runtimeIntent";
+import type { SchedulerStatus } from "../../types";
 
 type PollTask = () => void | Promise<void>;
 type PollIntervals = {

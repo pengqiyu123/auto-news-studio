@@ -39,6 +39,33 @@ _TITLE_HOOK_KEYWORDS = (
     "开源",
 )
 
+_AI_STYLE_BANNED_PHRASES = (
+    "在人工智能技术飞速发展的今天",
+    "随着大模型技术的不断演进",
+    "值得关注",
+    "引发关注",
+    "引发热议",
+    "具有重要意义",
+    "不言而喻",
+    "接下来我们来看看",
+    "让我们深入探讨",
+    "下面将详细介绍",
+    "本文将从以下几个方面展开",
+    "综上所述",
+    "总而言之",
+    "总的来说",
+    "赋能",
+    "深耕",
+    "布局",
+    "生态",
+    "底层逻辑",
+    "赛道",
+    "范式",
+    "核心驱动力",
+    "不可或缺",
+    "举足轻重",
+)
+
 
 def _contains_cjk(value: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", str(value or "")))
@@ -197,6 +224,35 @@ def rewrite_markdown_title(markdown: str, previous_title: str, next_title: str) 
     return str(markdown or "").strip()
 
 
+def _normalize_summary_text(value: str, *, limit: int = 120) -> str:
+    compact = re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip()
+    compact = compact.strip(" \t\r\n-—_|｜/\\:：;；，,。！？!?")
+    if not compact:
+        return ""
+    return compact[:limit].rstrip(" \t\r\n-—_|｜/\\:：;；，,。！？!?")
+
+
+def build_brief_summary(
+    *,
+    summary: str = "",
+    one_line: str = "",
+    facts: list[str] | None = None,
+    event_summary: str = "",
+    limit: int = 120,
+) -> str:
+    candidates = [
+        str(summary or "").strip(),
+        str(one_line or "").strip(),
+        next((str(item).strip() for item in list(facts or []) if str(item).strip()), ""),
+        str(event_summary or "").strip(),
+    ]
+    for candidate in candidates:
+        normalized = _normalize_summary_text(candidate, limit=limit)
+        if normalized:
+            return normalized
+    return ""
+
+
 def build_prompt_package_markdown(
     *,
     title: str,
@@ -208,11 +264,24 @@ def build_prompt_package_markdown(
     timeline: list[str],
     risk_notes: list[str],
     source_links: list[str],
+    article_writing_guide: str = "",
 ) -> str:
+    guide = str(article_writing_guide or build_agent_article_writing_guide()).strip()
     lines = [
         "## 写作任务",
         "基于以下已核验素材，写一篇公众号文章。",
         "",
+    ]
+    if guide:
+        lines.extend(
+            [
+                "## 写作要求",
+                guide,
+                "",
+            ]
+        )
+    lines.extend(
+        [
         "## 事件标题",
         title.strip() or "未命名事件",
         "",
@@ -223,7 +292,7 @@ def build_prompt_package_markdown(
         why_it_matters.strip() or "请结合事实、时间线和行业影响判断其重要性。",
         "",
         "## 核心事实",
-    ]
+    ])
     if facts:
         lines.extend([f"- {item}" for item in facts])
     else:
@@ -318,6 +387,12 @@ def build_rule_brief_payload(event: dict[str, Any], deep_dive: dict[str, Any]) -
         risk_notes.append(worth_reason)
     one_line = facts[0] if facts else (str(event.get("summary") or "").strip() or "信息仍待进一步确认。")
     why_it_matters = worth_reason or f"当前事件处于 {event.get('alert_state') or '观察'} 阶段，具备继续追踪价值。"
+    summary = build_brief_summary(
+        one_line=one_line,
+        facts=facts,
+        event_summary=str(event.get("summary") or "").strip(),
+    )
+    writing_guide = build_agent_article_writing_guide()
     prompt_package_markdown = build_prompt_package_markdown(
         title=title,
         one_line=one_line,
@@ -328,6 +403,7 @@ def build_rule_brief_payload(event: dict[str, Any], deep_dive: dict[str, Any]) -
         timeline=timeline,
         risk_notes=risk_notes,
         source_links=source_links,
+        article_writing_guide=writing_guide,
     )
     wechat_lines = [
         f"# {title}",
@@ -354,57 +430,95 @@ def build_rule_brief_payload(event: dict[str, Any], deep_dive: dict[str, Any]) -
         "title": title,
         "one_line": one_line,
         "why_it_matters": why_it_matters,
+        "summary": summary,
         "facts": facts[:6],
         "quotes": quotes[:4],
         "timeline": timeline[:6],
         "entity_names": list(event.get("entity_names", [])),
         "source_links": source_links[:10],
         "risk_notes": risk_notes[:5],
+        "article_writing_guide": writing_guide,
         "prompt_package_markdown": prompt_package_markdown,
         "wechat_markdown": "\n".join(wechat_lines).strip(),
     }
 
 
 def build_agent_article_writing_guide() -> str:
-    return """\
+    banned_phrases = "、".join(_AI_STYLE_BANNED_PHRASES)
+    return f"""\
 ## 公众号文章写作规范
 
 ### 字数要求
-正文 1500-3000 字。不含标题和来源链接。
+正文 1500-3000 字。不含标题、摘要和来源链接。
 
-### 文章结构（按顺序）
-1. **标题** — 吸引眼球但不标题党，20 字以内
-   优先写成“核心事实 + 结果/影响”的双段式标题，避免“某公司发布新产品”这种平铺直叙
-2. **导语** — 2-3 句话概括核心事实和影响，让读者 10 秒内决定是否继续读
-3. **背景铺垫** — 1-2 段，交代事件的技术/商业/政策背景，让非专业读者也能跟上
-4. **核心事实展开** — 2-4 个小节（用 ## 小标题），每节聚焦一个维度：
-   - 技术细节（用了什么、怎么实现的）
-   - 商业影响（对行业格局、股价、竞争的意义）
-   - 用户/社会影响（对普通人的实际影响）
-   - 关键数据（具体数字、百分比、金额）
-5. **引文分析** — 引用 1-3 条关键原文，用 > 引用格式，然后加 1-2 句你的解读
-6. **影响展望** — 未来走向、可能的后续发展、值得持续关注的点
-7. **来源链接** — 列出 3-6 条核心来源 URL
+### 标题策略（决定打开率）
+- 标题长度 14-25 字，前 14 字必须放最关键的信息点，避免折叠后失真
+- 标题至少包含一个具体信息点：公司名、人名、数字、产品名、价格、金额、时间点
+- 优先使用“核心事实 + 结果/影响”的双段式，不要写平铺直叙的新闻播报标题
+- 标题中的每个信息点必须在正文或素材中找到对应事实，不做标题党
+- 禁止使用“重磅”“震惊”“值得关注”“引发热议”等空洞词汇
+
+### 摘要（推送时显示在标题下方）
+- 摘要与标题互补，不重复标题
+- 摘要优先补充 Why 或 How，而不只是重复 What
+- 控制在 40-60 字，至少包含一个标题里没有的新信息点
+
+### 文章结构（按顺序，用过渡句自然衔接）
+1. **导语**（50-80 字，2-3 句）
+   - 第一句必须是具体事实、数字或时间点，不要以宏大背景开头
+   - 第二句说明这件事意味着什么，为什么与读者有关
+2. **背景与冲突**（100-200 字）
+   - 交代技术、商业或政策背景
+   - 必须呈现一个张力或冲突点，例如竞争格局、技术路线分歧、利益博弈
+3. **核心展开**（3-5 个小节）
+   - 用 ## 小标题分隔，每节聚焦一个明确论点，而不是泛泛维度
+   - 每个小节内部遵循“事实 -> 分析 -> 这意味着什么”的递进
+   - 小节之间要有自然衔接，不要硬切
+4. **展望与收束**（100-200 字）
+   - 不要写“总结”或“总之”
+   - 回答“接下来会怎样”“读者该继续关注什么”
+5. **来源链接**
+   - 列出 3-6 条核心来源 URL
+
+### 小标题要求
+- 小标题本身必须传达信息，不要写“技术分析”“商业影响”这类空泛分类
+- 优先把数字、判断、转折写进小标题，例如“推理成本降 60%，价格战正式打响”
 
 ### 写作风格
-- 专业但易懂，类似 36 氪/极客公园/极客公园风格
-- 多用具体数字（"融了 12 亿美元"），少用空泛形容词（"具有重要意义"）
-- 每段 3-5 句话，不要出现超过 200 字的超长段落
-- 适当使用 **加粗** 标记关键信息，但不要满篇加粗
-- 技术术语第一次出现时用括号简短解释
+- 目标风格：36 氪的信息密度 + 极客公园的深度叙事，专业但不学术，快但不浅
+- 每个段落至少提供一个具体事实、数据或引述，不要写删掉后不影响理解的空段落
+- 段落长度必须有变化，可以有 1 句短段，也可以有 4-5 句分析段，不要连续多段结构完全一致
+- 多用阿拉伯数字和对比参照，例如“比去年降了 60%”，少用“显著提升”“大幅增长”这类空泛表述
+- 技术术语首次出现时用括号做简短效果解释，不超过 15 字
+- 加粗只用于关键数据或核心判断，全文加粗不超过 8 处
+
+### 引文与事实底线（最高优先级）
+- 所有数字、金额、百分比、日期、人名、公司名、产品名，必须来自素材或可核实公开来源
+- 如果具体数字不确定，不要猜，改成定性描述或明确写“未披露”
+- 所有引号中的内容必须来自原文摘录，不允许改写后再加引号
+- 日期和事件顺序必须与素材一致，不要为了叙事调整时间线
+- 区分事实与分析：事实直接陈述，分析用“这意味着”“这表明”等引入
 
 ### 格式要求
-- Markdown 格式
-- # 一级标题只用一次（文章大标题）
-- ## 二级标题用于小节分隔
-- > 用于引用原文
-- - 用于来源列表，不要在正文中堆砌链接
-- 不要用编号列表替代段落论述
+- Markdown 格式输出
+- # 一级标题只用一次
+- ## 二级标题用于小节分隔，且标题本身要有信息量
+- > 仅用于引用原文，引文后必须紧跟 1-2 句解读
+- - 仅用于来源链接列表
+- 段落之间保留一个空行
 
 ### 禁止事项
-- 不要写 bullet-point 简报（这不是简报，是完整文章）
-- 不要用"1. 2. 3."编号列表替代段落
-- 不要在正文堆砌链接
-- 不要以"总结：""总之："开头写结尾，自然收束即可
-- 不要出现"本文将从以下几个方面展开"之类的套话开头
-- 不要写"值得关注""引发关注"等空洞评价，用具体事实说话"""
+- 不要写 bullet-point 简报，这是一篇完整文章
+- 不要用“1. 2. 3.”编号列表替代段落论述
+- 不要在正文堆砌来源链接
+- 不要以“总结：”“总之：”“综上所述”开头写结尾
+- 不要用“本文将从以下几个方面展开”之类的元描述
+- 不要使用宏大背景开头，不要用空洞评价、路标句、假对比句式
+- 禁止出现这些高频 AI 味词或近义表达：{banned_phrases}
+
+### 自检清单
+- 删掉第一段后，文章是否仍然成立？如果是，重写导语
+- 是否有连续 3 段以上结构和长度几乎一致？如果有，打散节奏
+- 每个小标题是否传达了具体信息，而不是空泛分类？
+- 每个数字和引号内容是否都能在素材或公开来源中找到依据？
+- 是否至少有一个足够具体、值得读者截图分享的句子或数据？"""

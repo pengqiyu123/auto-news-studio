@@ -10,6 +10,7 @@ from uuid import uuid4
 from ..deep_dive import fetch_and_extract_link
 from ..briefing import (
     build_agent_article_writing_guide,
+    build_brief_summary,
     build_prompt_package_markdown,
     build_rule_brief_payload,
     optimize_wechat_article_title,
@@ -34,6 +35,23 @@ class BriefsMixin:
 
     def _workflow_mode_for_trigger(self, triggered_by: str) -> str:
         return "agent" if str(triggered_by or "").strip() == "agent" else "traditional"
+
+    def _resolve_brief_summary(
+        self,
+        *,
+        brief: dict[str, Any] | None = None,
+        summary: str = "",
+        one_line: str = "",
+        facts: list[str] | None = None,
+        event_summary: str = "",
+    ) -> str:
+        source = brief or {}
+        return build_brief_summary(
+            summary=summary or str(source.get("summary") or "").strip(),
+            one_line=one_line or str(source.get("one_line") or "").strip(),
+            facts=facts if facts is not None else list(source.get("facts", [])),
+            event_summary=event_summary,
+        )
 
     def _agent_workflows(self, state: dict[str, Any]) -> list[dict[str, Any]]:
         items = state.setdefault("agent_workflows", [])
@@ -169,6 +187,12 @@ class BriefsMixin:
                     compact = str(quote).strip()
                     if compact:
                         source_quotes.append({"source_name": source_name, "quote": compact})
+            summary = self._resolve_brief_summary(
+                summary=str(base_payload.get("summary") or "").strip(),
+                one_line=one_line,
+                facts=list(base_payload.get("facts", [])),
+                event_summary=str(event.get("summary") or "").strip(),
+            )
             prompt_package_markdown = build_prompt_package_markdown(
                 title=str(base_payload.get("title") or ""),
                 one_line=one_line,
@@ -196,6 +220,7 @@ class BriefsMixin:
                 "brief_level": brief_level,
                 "stage": existing.get("stage") if existing else "prepared",
                 "title": str(base_payload.get("title") or event.get("title") or ""),
+                "summary": summary,
                 "one_line": one_line,
                 "why_it_matters": why_it_matters,
                 "facts": list(base_payload.get("facts", [])),
@@ -327,6 +352,12 @@ class BriefsMixin:
                 why_it_matters = str(deep_dive.get("worthiness", {}).get("reason") or "").strip()
             if not why_it_matters:
                 why_it_matters = f"该事件当前处于 {event.get('alert_state') or '观察'} 阶段，且已具备可发布价值。"
+            summary = self._resolve_brief_summary(
+                summary=str(payload.summary or "").strip(),
+                one_line=one_line,
+                facts=facts,
+                event_summary=str(event.get("summary") or "").strip(),
+            )
 
             title = optimize_wechat_article_title(
                 raw_title,
@@ -379,6 +410,7 @@ class BriefsMixin:
                 "brief_level": "article",
                 "stage": existing.get("stage") if existing else "prepared",
                 "title": title,
+                "summary": summary,
                 "one_line": one_line,
                 "why_it_matters": why_it_matters,
                 "facts": facts,
@@ -725,6 +757,7 @@ class BriefsMixin:
     def _brief_revision(self, brief: dict[str, Any]) -> str:
         stable_payload = {
             "title": str(brief.get("title") or "").strip(),
+            "summary": str(brief.get("summary") or "").strip(),
             "one_line": str(brief.get("one_line") or "").strip(),
             "why_it_matters": str(brief.get("why_it_matters") or "").strip(),
             "facts": list(brief.get("facts", [])),
@@ -828,10 +861,22 @@ class BriefsMixin:
             brief["last_delivery_attempt_at"] = now_iso()
             brief["delivery_attempt_count"] = int(brief.get("delivery_attempt_count", 0) or 0) + 1
             brief["needs_resync"] = False
+            event_summary = ""
+            event_id = str(brief.get("event_id") or "").strip()
+            if event_id:
+                try:
+                    event_summary = str(self._find_event(state, event_id).get("summary") or "").strip()
+                except ValueError:
+                    event_summary = ""
+            resolved_summary = self._resolve_brief_summary(
+                brief=brief,
+                event_summary=event_summary,
+            )
+            brief["summary"] = resolved_summary
             browser = self._refresh_browser_session(state)
             browser_payload = {
                 **brief,
-                "summary": str(brief.get("one_line") or ""),
+                "summary": resolved_summary,
                 "markdown": str(brief.get("wechat_markdown") or ""),
             }
             browser, artifacts, step_logs = run_browser_action("sync_wechat_draft", browser_payload, state["channels"]["wechat"], browser)
