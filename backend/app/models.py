@@ -535,6 +535,7 @@ class IntelEvent(BaseModel):
     velocity_score: float = 0.0
     coverage_score: float = 0.0
     freshness_score: float = 0.0
+    audience_fit_score: float = 0.0
     composite_score: float = 0.0
     velocity_details: dict[str, float] = Field(default_factory=dict)
     alert_state: IntelEventState = "new"
@@ -566,6 +567,7 @@ class EventSnapshot(BaseModel):
     velocity_score: float = 0.0
     coverage_score: float = 0.0
     freshness_score: float = 0.0
+    audience_fit_score: float = 0.0
     composite_score: float = 0.0
     alert_state: IntelEventState = "new"
 
@@ -579,6 +581,7 @@ class IntelAlert(BaseModel):
     velocity_score: float = 0.0
     coverage_score: float = 0.0
     freshness_score: float = 0.0
+    audience_fit_score: float = 0.0
     composite_score: float = 0.0
     platform_count: int = 0
     source_count: int = 0

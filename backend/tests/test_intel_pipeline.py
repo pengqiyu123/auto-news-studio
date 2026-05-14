@@ -1,4 +1,4 @@
-from backend.app.intel_pipeline import _should_merge, canonical_link, jaccard, title_dedupe_key
+from backend.app.intel_pipeline import _audience_fit_score, _should_merge, canonical_link, jaccard, title_dedupe_key
 
 
 def test_canonical_link_removes_tracking_query_keys() -> None:
@@ -66,3 +66,23 @@ def test_should_merge_rejects_low_similarity_cross_theme_items() -> None:
         "entity_ids": ["uber"],
     }
     assert _should_merge(left, right) is False
+
+
+def test_audience_fit_score_prefers_mainstream_tech_topics() -> None:
+    mainstream = {
+        "title": "苹果 iPhone 18 芯片升级，AI 手机竞争再升温",
+        "summary": "新一代手机、芯片和端侧 AI 成为焦点",
+        "entity_names": ["Apple"],
+        "tags": ["hardware", "ai", "mobile"],
+        "platform_count": 2,
+        "source_count": 2,
+    }
+    niche = {
+        "title": "NGINX CVE 漏洞影响 rewrite worker",
+        "summary": "底层运维与安全配置细节",
+        "entity_names": ["NGINX"],
+        "tags": ["tech"],
+        "platform_count": 1,
+        "source_count": 1,
+    }
+    assert _audience_fit_score(mainstream) > _audience_fit_score(niche)

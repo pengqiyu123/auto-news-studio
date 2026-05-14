@@ -97,6 +97,7 @@ def test_watchlist_and_ignore_event_mutate_runtime_projection() -> None:
                 "velocity_score": 20,
                 "coverage_score": 10,
                 "freshness_score": 30,
+                "audience_fit_score": 55,
                 "composite_score": 25,
                 "velocity_details": {},
                 "alert_state": "watch",

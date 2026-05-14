@@ -28,6 +28,75 @@ TRACKING_QUERY_KEYS = {
 
 ALERT_LEVELS = {"cooling": 0, "new": 1, "watch": 2, "rising": 3, "breakout": 4}
 
+PRIORITY_AUDIENCE_KEYWORDS = {
+    "ai": 22.0,
+    "大模型": 22.0,
+    "模型": 12.0,
+    "agent": 14.0,
+    "智能体": 16.0,
+    "机器人": 20.0,
+    "robot": 18.0,
+    "芯片": 22.0,
+    "soc": 16.0,
+    "gpu": 20.0,
+    "cpu": 18.0,
+    "npu": 18.0,
+    "半导体": 22.0,
+    "显卡": 18.0,
+    "手机": 20.0,
+    "iphone": 18.0,
+    "android": 16.0,
+    "华为": 16.0,
+    "小米": 16.0,
+    "oppo": 14.0,
+    "vivo": 14.0,
+    "荣耀": 14.0,
+    "三星": 16.0,
+    "apple": 16.0,
+    "电脑": 18.0,
+    "pc": 14.0,
+    "mac": 14.0,
+    "macbook": 16.0,
+    "笔记本": 18.0,
+    "台式机": 14.0,
+    "通信": 18.0,
+    "5g": 18.0,
+    "6g": 18.0,
+    "卫星通信": 18.0,
+    "运营商": 14.0,
+}
+
+NICHE_TECH_KEYWORDS = {
+    "nginx": -14.0,
+    "cve": -10.0,
+    "漏洞": -8.0,
+    "exploit": -10.0,
+    "rewrite": -8.0,
+    "worker": -6.0,
+    "server": -6.0,
+    "运维": -8.0,
+    "kubernetes": -8.0,
+    "k8s": -8.0,
+    "devops": -8.0,
+    "observability": -6.0,
+    "prometheus": -6.0,
+    "grafana": -6.0,
+}
+
+GENERAL_TECH_TAG_BOOSTS = {
+    "ai": 14.0,
+    "robotics": 16.0,
+    "robot": 16.0,
+    "hardware": 14.0,
+    "chip": 16.0,
+    "semiconductor": 16.0,
+    "mobile": 14.0,
+    "smartphone": 14.0,
+    "pc": 10.0,
+    "consumer-tech": 10.0,
+    "telecom": 14.0,
+}
+
 
 def parse_time(value: str | None) -> datetime | None:
     if not value:
@@ -537,6 +606,34 @@ def _freshness_score(event: dict[str, Any], now: datetime) -> float:
     return approx
 
 
+def _audience_fit_score(event: dict[str, Any]) -> float:
+    title = str(event.get("title") or "").lower()
+    summary = str(event.get("summary") or "").lower()
+    entity_names = " ".join(str(item).lower() for item in event.get("entity_names", []))
+    tags = {str(tag).lower() for tag in event.get("tags", []) if str(tag).strip()}
+    haystack = " ".join(part for part in [title, summary, entity_names] if part)
+
+    score = 0.0
+    for keyword, boost in PRIORITY_AUDIENCE_KEYWORDS.items():
+        if keyword in haystack:
+            score += boost
+
+    for keyword, penalty in NICHE_TECH_KEYWORDS.items():
+        if keyword in haystack:
+            score += penalty
+
+    for tag, boost in GENERAL_TECH_TAG_BOOSTS.items():
+        if tag in tags:
+            score += boost
+
+    if int(event.get("platform_count", 0) or 0) >= 2:
+        score += 6.0
+    if int(event.get("source_count", 0) or 0) >= 2:
+        score += 4.0
+
+    return round(max(0.0, min(100.0, score)), 1)
+
+
 def _window_baseline(
     snapshots: list[dict[str, Any]],
     event_id: str,
@@ -709,6 +806,7 @@ def _event_to_snapshot(event: dict[str, Any], captured_at: str) -> dict[str, Any
         "velocity_score": event["velocity_score"],
         "coverage_score": event["coverage_score"],
         "freshness_score": event["freshness_score"],
+        "audience_fit_score": event.get("audience_fit_score", 0.0),
         "composite_score": event["composite_score"],
         "alert_state": event["alert_state"],
     }
@@ -732,8 +830,9 @@ def _carry_forward_stale_events(
         preserved["alert_state"] = "cooling"
         preserved["velocity_score"] = 0.0
         preserved["composite_score"] = round(
-            float(preserved.get("coverage_score", 0) or 0) * 0.35
-            + float(preserved.get("freshness_score", 0) or 0) * 0.25,
+            float(preserved.get("coverage_score", 0) or 0) * 0.22
+            + float(preserved.get("freshness_score", 0) or 0) * 0.20
+            + float(preserved.get("audience_fit_score", 0) or 0) * 0.30,
             1,
         )
         preserved["change_state"] = "cooling_event"
@@ -811,8 +910,12 @@ def build_intel_state(
         event["velocity_score"] = velocity_score
         event["coverage_score"] = _coverage_score(event, sources_by_key)
         event["freshness_score"] = _freshness_score(event, now)
+        event["audience_fit_score"] = _audience_fit_score(event)
         event["composite_score"] = round(
-            event["velocity_score"] * 0.4 + event["coverage_score"] * 0.35 + event["freshness_score"] * 0.25,
+            event["velocity_score"] * 0.28
+            + event["coverage_score"] * 0.22
+            + event["freshness_score"] * 0.20
+            + event["audience_fit_score"] * 0.30,
             1,
         )
         event["velocity_details"] = velocity_details
@@ -865,6 +968,7 @@ def build_intel_state(
                 "velocity_score": event["velocity_score"],
                 "coverage_score": event["coverage_score"],
                 "freshness_score": event["freshness_score"],
+                "audience_fit_score": event.get("audience_fit_score", 0.0),
                 "composite_score": event["composite_score"],
                 "platform_count": event["platform_count"],
                 "source_count": event["source_count"],

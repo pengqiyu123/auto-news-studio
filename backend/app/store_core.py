@@ -673,12 +673,15 @@ class StoreCore(StoreCoreStateMixin, StoreCoreRuntimeMixin):
         success_count = int(deep_dive.get("success_count", 0) or 0)
         facts = [item for item in deep_dive.get("facts", []) if str(item).strip()]
         quotes = [item for item in deep_dive.get("quotes", []) if str(item).strip()]
+        audience_fit_score = float(event.get("audience_fit_score", 0) or 0)
         if success_count < 1:
             return False, "正文深挖仍未拿到可用正文来源。"
         if not facts and not quotes:
             return False, "已抓取正文，但还没有足够可复用的事实或引文。"
         if alert_state in {"rising", "breakout"}:
             return True, f"事件处于 {alert_state} 阶段，且已有可引用正文证据。"
+        if watchlisted and audience_fit_score >= 45:
+            return True, "事件已进入深挖池，且更贴近公众号大众科技受众，可继续生成简报。"
         if watchlisted:
             return True, "事件已进入深挖池，且已有正文证据，可生成简报继续跟进。"
         return False, "当前仍未进入重点观察或上升/爆发态，建议继续观察。"
@@ -873,6 +876,7 @@ class StoreCore(StoreCoreStateMixin, StoreCoreRuntimeMixin):
             alert_rank,
             float(item.get("worth_to_brief") or False),
             float(item.get("composite_score", 0) or 0),
+            float(item.get("audience_fit_score", 0) or 0),
             float(item.get("velocity_score", 0) or 0),
             float(item.get("coverage_score", 0) or 0),
             float(item.get("freshness_score", 0) or 0),
@@ -1676,6 +1680,7 @@ class StoreCore(StoreCoreStateMixin, StoreCoreRuntimeMixin):
                         "velocity": float(event.get("velocity_score", 0) or 0),
                         "coverage": float(event.get("coverage_score", 0) or 0),
                         "freshness": float(event.get("freshness_score", 0) or 0),
+                        "audience_fit": float(event.get("audience_fit_score", 0) or 0),
                     },
                     "collected_at": event.get("latest_collected_at"),
                     "freshness_bucket": freshness_bucket(event.get("latest_collected_at")),
