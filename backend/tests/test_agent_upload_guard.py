@@ -104,6 +104,56 @@ def test_agent_article_upload_rejected_while_scheduler_running(monkeypatch: pyte
     shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def test_agent_article_can_directly_fill_douyin_after_save(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, state, temp_root = _make_store_and_state()
+    store._write(state)
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_open_douyin_article_publish():
+        calls.append(("open", None))
+        return types.SimpleNamespace(last_error=None)
+
+    def fake_fill_douyin_article(payload):
+        calls.append(("fill", payload.brief_id))
+        assert payload.brief_id
+        return store.get_brief(str(payload.brief_id))
+
+    def fake_get_douyin_browser_session():
+        calls.append(("check", None))
+        return types.SimpleNamespace(last_error=None)
+
+    monkeypatch.setattr(store, "open_douyin_article_publish", fake_open_douyin_article_publish)
+    monkeypatch.setattr(store, "fill_douyin_article", fake_fill_douyin_article)
+    monkeypatch.setattr(store, "get_douyin_browser_session", fake_get_douyin_browser_session)
+
+    payload = AgentArticlePayload(
+        event_id="evt-1",
+        title="Agent Article",
+        article_markdown="# Agent Article\n\nbody",
+        publish_to_wechat_draft=False,
+        publish_to_douyin_article=True,
+        triggered_by="agent",
+        driver_label="codex",
+    )
+
+    result = store.create_agent_article(payload)
+    saved_state = store._upgrade_state(store._read())
+    article_records = [
+        item
+        for item in saved_state.get("briefs", [])
+        if isinstance(item, dict) and str(item.get("brief_level") or "") == "article"
+    ]
+
+    assert result.title == "Agent Article"
+    assert article_records
+    assert article_records[0]["title"] == "Agent Article"
+    assert calls[0][0] == "open"
+    assert calls[1][0] == "fill"
+    assert calls[1][1] == article_records[0]["id"]
+    assert calls[2][0] == "check"
+    shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def test_agent_cannot_upload_rule_brief_via_traditional_draft_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     store, state, temp_root = _make_store_and_state()
     state["briefs"] = [

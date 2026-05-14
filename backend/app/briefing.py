@@ -1,6 +1,200 @@
 from __future__ import annotations
 
+import re
 from typing import Any
+
+
+WECHAT_TITLE_LIMIT = 64
+WECHAT_TITLE_HOOK_LIMIT = 28
+_LOW_SIGNAL_TITLE_TAILS = {
+    "summary",
+    "body",
+    "article",
+    "news",
+    "update",
+    "overview",
+    "导语",
+    "正文",
+    "摘要",
+    "文章",
+}
+_TITLE_HOOK_KEYWORDS = (
+    "首次",
+    "翻倍",
+    "提速",
+    "降本",
+    "暴涨",
+    "暴跌",
+    "新高",
+    "新低",
+    "意味着",
+    "背后",
+    "反转",
+    "停摆",
+    "封禁",
+    "裁员",
+    "融资",
+    "落地",
+    "量产",
+    "开源",
+)
+
+
+def _contains_cjk(value: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", str(value or "")))
+
+
+def _normalize_title_text(value: str) -> str:
+    compact = re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip()
+    compact = re.sub(r"\s*([:：|｜/\\-])\s*", r"\1", compact)
+    compact = compact.strip(" \t\r\n-—_|｜/\\:：;；，,。！？!?")
+    return compact[:WECHAT_TITLE_LIMIT]
+
+
+def _extract_markdown_heading(markdown: str) -> str:
+    for raw in str(markdown or "").splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip()
+        break
+    return ""
+
+
+def _title_already_punchy(title: str) -> bool:
+    compact = _normalize_title_text(title)
+    if not compact:
+        return False
+    if re.search(r"[！？?!]", compact):
+        return True
+    if re.search(r"[：:].{3,}", compact):
+        return True
+    if re.search(r"\d", compact) or "%" in compact:
+        return True
+    return any(marker in compact for marker in _TITLE_HOOK_KEYWORDS)
+
+
+def _clean_title_hook_candidate(text: str, base_title: str) -> str:
+    compact = _normalize_title_text(text)
+    compact = re.sub(r"^(一句话|导语|结论|摘要|核心事实|看点|重点)\s*[:：]\s*", "", compact)
+    compact = re.sub(r"https?://\S+", "", compact).strip()
+    compact = re.sub(r"^(这意味着|值得注意的是|需要注意的是|简单来说|换句话说|说白了|本质上)", "", compact)
+    compact = compact.strip(" ：:，,、；;。！？!?")
+    if base_title:
+        compact = compact.replace(base_title, "").strip(" ：:，,、；;。！？!?")
+    return _normalize_title_text(compact)
+
+
+def _score_title_hook(candidate: str) -> int:
+    score = 0
+    if re.search(r"\d", candidate) or "%" in candidate:
+        score += 4
+    if any(marker in candidate for marker in _TITLE_HOOK_KEYWORDS):
+        score += 2
+    if 4 <= len(candidate) <= 12:
+        score += 2
+    if candidate.endswith(("发布", "回应", "消息", "文章")):
+        score -= 2
+    return score
+
+
+def _derive_title_hook(source: str, base_title: str, *, max_len: int) -> str:
+    cleaned = _clean_title_hook_candidate(source, base_title)
+    if not cleaned:
+        return ""
+    candidates: list[str] = []
+    for sentence in re.split(r"[。！？?!；;\n]", cleaned):
+        for clause in re.split(r"[，,、]", sentence):
+            candidate = _clean_title_hook_candidate(clause, base_title)
+            if not candidate:
+                continue
+            lowered = candidate.lower()
+            if lowered in _LOW_SIGNAL_TITLE_TAILS:
+                continue
+            if base_title and (candidate in base_title or base_title in candidate):
+                continue
+            candidate = candidate[:max_len].rstrip(" ：:，,、；;。！？!?")
+            if len(candidate) < 4:
+                continue
+            if not _contains_cjk(candidate) and not re.search(r"\d", candidate):
+                continue
+            candidates.append(candidate)
+    if not candidates:
+        return ""
+    ranked = sorted(
+        candidates,
+        key=lambda item: (_score_title_hook(item), -abs(len(item) - 8), -len(item)),
+        reverse=True,
+    )
+    best = ranked[0].strip()
+    if _score_title_hook(best) <= 0 and not _contains_cjk(best):
+        return ""
+    return best
+
+
+def optimize_wechat_article_title(
+    raw_title: str,
+    *,
+    one_line: str = "",
+    facts: list[str] | None = None,
+    article_markdown: str = "",
+) -> str:
+    normalized_facts = [_normalize_title_text(item) for item in list(facts or []) if _normalize_title_text(item)]
+    base_title = _normalize_title_text(raw_title)
+    if not base_title:
+        base_title = _normalize_title_text(
+            _extract_markdown_heading(article_markdown) or one_line or (normalized_facts[0] if normalized_facts else "")
+        )
+    if not base_title:
+        return ""
+    if len(base_title) > 20 or _title_already_punchy(base_title):
+        return base_title
+    if not (
+        _contains_cjk(base_title)
+        or _contains_cjk(one_line)
+        or any(_contains_cjk(item) for item in normalized_facts)
+    ):
+        return base_title
+    hook_budget = min(14, WECHAT_TITLE_HOOK_LIMIT - len(base_title) - 1)
+    if hook_budget < 4:
+        return base_title
+    hook_sources = [str(one_line or "").strip(), *normalized_facts]
+    for raw in str(article_markdown or "").splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        hook_sources.append(stripped)
+        if len(hook_sources) >= 6:
+            break
+    for source in hook_sources:
+        hook = _derive_title_hook(source, base_title, max_len=hook_budget)
+        if hook:
+            return f"{base_title}：{hook}"[:WECHAT_TITLE_LIMIT]
+    return base_title
+
+
+def rewrite_markdown_title(markdown: str, previous_title: str, next_title: str) -> str:
+    lines = str(markdown or "").splitlines()
+    if not lines:
+        return str(markdown or "").strip()
+    previous_compact = _normalize_title_text(previous_title)
+    next_compact = _normalize_title_text(next_title)
+    if not next_compact:
+        return str(markdown or "").strip()
+    for index, raw in enumerate(lines):
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith("#"):
+            return str(markdown or "").strip()
+        level = max(1, len(stripped) - len(stripped.lstrip("#")))
+        heading = stripped.lstrip("#").strip()
+        if heading not in {previous_compact, next_compact}:
+            return str(markdown or "").strip()
+        lines[index] = f"{'#' * level} {next_compact}"
+        return "\n".join(lines).strip()
+    return str(markdown or "").strip()
 
 
 def build_prompt_package_markdown(
@@ -180,6 +374,7 @@ def build_agent_article_writing_guide() -> str:
 
 ### 文章结构（按顺序）
 1. **标题** — 吸引眼球但不标题党，20 字以内
+   优先写成“核心事实 + 结果/影响”的双段式标题，避免“某公司发布新产品”这种平铺直叙
 2. **导语** — 2-3 句话概括核心事实和影响，让读者 10 秒内决定是否继续读
 3. **背景铺垫** — 1-2 段，交代事件的技术/商业/政策背景，让非专业读者也能跟上
 4. **核心事实展开** — 2-4 个小节（用 ## 小标题），每节聚焦一个维度：

@@ -13,6 +13,8 @@ from urllib.parse import parse_qs, urlparse
 import webbrowser
 from uuid import uuid4
 
+from .wechat_format import markdown_to_plain_text, markdown_to_wechat_html, strip_markdown_title
+
 
 UTC = timezone.utc
 ARTIFACT_ROOT = Path(__file__).resolve().parent.parent / "data" / "artifacts"
@@ -45,9 +47,9 @@ SELECTOR_PROFILES: dict[str, dict[str, list[str] | str]] = {
             ".weui-desktop-side-menu",
         ],
         "new_article": [
-            "div.new-creation__menu-item:has-text('文章')",
-            "text=文章",
-            "a[href*='appmsg']",
+            ".new-creation__menu-item:has(.new-creation__menu-title:text-is('文章'))",
+            ".new-creation__menu-content:has(.new-creation__menu-title:text-is('文章'))",
+            ".new-creation__menu-title:text-is('文章')",
         ],
         "draft_box": [
             "a#menu_10125[href*='action=list_card']",
@@ -75,6 +77,8 @@ SELECTOR_PROFILES: dict[str, dict[str, list[str] | str]] = {
             "text=内容管理",
         ],
         "title_input": [
+            "div.ProseMirror[data-placeholder*='请在这里输入标题']",
+            "div.ProseMirror[data-placeholder*='标题']",
             "textarea.js_article_title",
             "input[placeholder*='标题']",
             "textarea[placeholder*='标题']",
@@ -88,9 +92,14 @@ SELECTOR_PROFILES: dict[str, dict[str, list[str] | str]] = {
             "textarea[placeholder*='摘要']",
         ],
         "editor": [
-            ".ProseMirror",
+            "#edui1_iframeholder .mock-iframe-body .rich_media_content > div.ProseMirror[contenteditable='true']",
+            "#edui1_iframeholder .mock-iframe-body .rich_media_content div.ProseMirror[contenteditable='true']",
+            ".editor-v-root .mock-iframe-body .rich_media_content > div.ProseMirror[contenteditable='true']",
+            "div.ProseMirror:not([data-placeholder*='请在这里输入标题']):not([data-placeholder*='标题'])",
+            "div.ProseMirror:not([data-placeholder*='请在这里输入标题']):not([data-placeholder*='标题'])[style*='min-height']",
+            ".rich_media_content .ProseMirror:not([data-placeholder*='请在这里输入标题']):not([data-placeholder*='标题'])",
+            "div.ProseMirror:has(.editor_content_placeholder)",
             ".rich_media_content [contenteditable='true']",
-            "[contenteditable='true']",
             ".rich_media_content",
         ],
         "preview_button": [
@@ -102,6 +111,21 @@ SELECTOR_PROFILES: dict[str, dict[str, list[str] | str]] = {
             "button:has-text('保存为草稿')",
             "span:has-text('保存为草稿')",
             "text=保存为草稿",
+        ],
+        "original_setting": [
+            "#js_original",
+            ".js_original_apply_cell",
+            ".appmsg-editor__setting-group.origined__setting-group",
+        ],
+        "reward_setting": [
+            "#js_reward_setting_area",
+            ".reward__setting-group.js_reward_open_cell",
+            ".reward__setting-group",
+        ],
+        "primary_confirm_button": [
+            "button.weui-desktop-btn.weui-desktop-btn_primary:has-text('确定')",
+            "button.weui-desktop-btn_primary:has-text('确定')",
+            "button:has-text('确定')",
         ],
         "publish_button": [
             "button:has-text('发表')",
@@ -456,11 +480,139 @@ def _pick_selector(page, selectors: list[str] | str, timeout: int = 2200) -> str
     selector_list = selectors if isinstance(selectors, list) else [selectors]
     for selector in selector_list:
         try:
-            page.locator(str(selector)).first.wait_for(timeout=timeout)
+            locator = page.locator(str(selector))
+            count = locator.count()
+            if count <= 0:
+                continue
+            matched_visible = False
+            for index in range(count):
+                candidate = locator.nth(index)
+                try:
+                    candidate.wait_for(state="visible", timeout=timeout)
+                    matched_visible = True
+                    break
+                except Exception:
+                    continue
+            if matched_visible:
+                return str(selector)
+            locator.first.wait_for(timeout=timeout)
             return str(selector)
         except Exception:
             continue
     return None
+
+
+def _pick_visible_locator(page, selector: str, timeout: int = 2200):
+    locator = page.locator(selector)
+    count = locator.count()
+    if count <= 0:
+        return locator.first
+    for index in range(count):
+        candidate = locator.nth(index)
+        try:
+            candidate.wait_for(state="visible", timeout=timeout)
+            return candidate
+        except Exception:
+            continue
+    return locator.first
+
+
+def _page_url(page) -> str:
+    try:
+        return str(getattr(page, "url", "") or "")
+    except Exception:
+        return ""
+
+
+def _is_page_closed(page) -> bool:
+    try:
+        checker = getattr(page, "is_closed", None)
+        if callable(checker):
+            return bool(checker())
+    except Exception:
+        return False
+    return bool(getattr(page, "closed", False))
+
+
+def _count_context_pages(context) -> int:
+    try:
+        pages = list(getattr(context, "pages", []) or [])
+    except Exception:
+        return 0
+    return sum(0 if _is_page_closed(page) else 1 for page in pages)
+
+
+def _list_live_context_pages(context) -> list[object]:
+    try:
+        pages = list(getattr(context, "pages", []) or [])
+    except Exception:
+        return []
+    return [page for page in pages if not _is_page_closed(page)]
+
+
+def _can_interact_with_page(page) -> bool:
+    if page is None or _is_page_closed(page):
+        return False
+    try:
+        evaluator = getattr(page, "evaluate", None)
+        if callable(evaluator):
+            evaluator("() => document.readyState")
+        else:
+            _ = getattr(page, "url", "")
+        return True
+    except Exception:
+        return False
+
+
+def _enforce_single_tab(context, page, step_logs: list[str], *, phase: str, allow_recover: bool = False) -> None:
+    pages = _list_live_context_pages(context)
+    page_count = len(pages)
+    step_logs.append(f"单标签页检查 phase={phase} page_count={page_count}")
+    if page_count <= 1:
+        return
+
+    home_page = None
+    for candidate in pages:
+        candidate_url = _page_url(candidate)
+        if "mp.weixin.qq.com" in candidate_url and "appmsg" not in candidate_url and "action=list_card" not in candidate_url:
+            home_page = candidate
+            break
+
+    if allow_recover:
+        keep_page = home_page or page
+        closed_count = 0
+        for candidate in pages:
+            if candidate is keep_page:
+                continue
+            try:
+                candidate.close()
+                closed_count += 1
+            except Exception:
+                pass
+        step_logs.append(f"单标签页恢复 phase={phase} closed_tabs={closed_count}")
+        remaining = _count_context_pages(context)
+        step_logs.append(f"单标签页恢复后 page_count={remaining}")
+        if remaining <= 1:
+            return
+
+    raise RuntimeError(f"违反单标签页约束：检测到 {page_count} 个标签页。")
+
+
+def _converge_context_to_target(context, target_page, step_logs: list[str], *, phase: str) -> None:
+    pages = _list_live_context_pages(context)
+    closed_count = 0
+    for candidate in pages:
+        if candidate is target_page:
+            continue
+        try:
+            candidate.close()
+            closed_count += 1
+        except Exception as exc:
+            step_logs.append(f"单标签页收敛关闭失败 phase={phase} url={_page_url(candidate)} error={exc}")
+    remaining = _count_context_pages(context)
+    step_logs.append(f"单标签页收敛 phase={phase} closed_tabs={closed_count} remaining={remaining}")
+    if remaining > 1:
+        raise RuntimeError(f"违反单标签页约束：检测到 {remaining} 个标签页。")
 
 
 def _window_pid(hwnd: int) -> int:
@@ -658,11 +810,51 @@ class WechatBrowserManager:
         except Exception:
             return None
 
+    def _close_extra_pages(self, context, keep_page) -> None:
+        for candidate in _list_live_context_pages(context):
+            if candidate is keep_page:
+                continue
+            try:
+                candidate.close()
+            except Exception:
+                pass
+
+    def _prepare_working_page(self, context, entry_url: str, *, phase: str):
+        page = None
+        page_factory = getattr(context, "new_page", None)
+        if callable(page_factory):
+            try:
+                page = page_factory()
+            except Exception:
+                page = None
+        if not _can_interact_with_page(page):
+            live_pages = [item for item in _list_live_context_pages(context) if _can_interact_with_page(item)]
+            page = live_pages[0] if live_pages else None
+        if page is None:
+            raise RuntimeError("违反单标签页约束：当前浏览器上下文中没有可复用标签页。")
+        try:
+            page.evaluate("() => { document.title = 'AutoNews-微信专用'; }")
+        except Exception:
+            pass
+        try:
+            page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
+        except Exception:
+            pass
+        self._close_extra_pages(context, page)
+        self._page = page
+        self._resident_page = "home"
+        self._last_action_phase = phase
+        return page
+
     def ensure_context(self, channel: dict[str, object]):
         signature = self.signature_for(channel)
         if self._context is not None and self.is_alive() and signature == self._channel_signature:
-            self._resident_page = f"{self._resident_page or 'home'}|context_reused"
-            return self._context
+            live_pages = [page for page in _list_live_context_pages(self._context) if _can_interact_with_page(page)]
+            if live_pages:
+                if not _can_interact_with_page(self._page):
+                    self._page = live_pages[0]
+                self._resident_page = f"{self._resident_page or 'home'}|context_reused"
+                return self._context
         self._close_runtime_internal()
         playwright = self._ensure_playwright()
         normalized = ensure_channel_defaults(channel)
@@ -672,7 +864,7 @@ class WechatBrowserManager:
             channel=browser_channel_name(str(normalized.get("browser_name"))),
         )
         self._context = context
-        self._page = context.pages[0] if context.pages else None
+        self._page = None
         self._channel_signature = signature
         self._browser_pid = self._extract_browser_pid()
         self._hwnd = _find_window_for_pid(int(self._browser_pid or 0))
@@ -684,23 +876,13 @@ class WechatBrowserManager:
 
     def ensure_page(self, channel: dict[str, object], entry_url: str):
         context = self.ensure_context(channel)
-        if self._page is not None:
-            try:
-                _ = self._page.url
-                self._last_action_phase = "page_reused"
-                return self._page
-            except Exception:
-                self._page = None
-        page = context.new_page()
-        page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
-        try:
-            page.evaluate("() => { document.title = 'AutoNews-微信专用'; }")
-        except Exception:
-            pass
-        self._page = page
-        self._resident_page = "home"
-        self._last_action_phase = "page_created"
-        return page
+        if _can_interact_with_page(self._page):
+            self._last_action_phase = "page_reused"
+            return self._page
+        self._page = None
+        live_pages = [page for page in _list_live_context_pages(context) if _can_interact_with_page(page)]
+        phase = "page_recovered" if live_pages else "page_created"
+        return self._prepare_working_page(context, entry_url, phase=phase)
 
     def ensure_window_handle(self) -> int | None:
         if self._hwnd and USER32 is not None and USER32.IsWindow(self._hwnd):
@@ -770,10 +952,11 @@ class WechatBrowserManager:
 
             return self._run_in_worker(_execute)
         except Exception:
-            if self._worker_thread_id == threading.get_ident():
-                self._close_runtime_internal()
-            else:
+            try:
+                self.reset("with_session_failed")
+            except Exception:
                 self._last_reset_reason = "with_session_failed"
+                self._close_runtime_internal()
             raise
         finally:
             try:
@@ -799,47 +982,140 @@ DOUYIN_BROWSER_MANAGER = WechatBrowserManager()
 
 
 def _plain_text_from_markdown(markdown: str) -> str:
-    lines: list[str] = []
-    for raw in markdown.splitlines():
-        line = raw.strip()
-        if not line:
-            if lines and lines[-1] != "":
-                lines.append("")
-            continue
-        if line.startswith("#"):
-            line = line.lstrip("#").strip()
-        if line.startswith(("- ", "* ")):
-            line = f"• {line[2:].strip()}"
-        lines.append(line)
-    text = "\n".join(lines).strip()
-    return text[:12000]
+    return markdown_to_plain_text(markdown, limit=12000)
+
+
+def _normalize_compact_text(value: str) -> str:
+    compact = re.sub(r"\s+", " ", value or "").strip()
+    compact = compact.replace("： ", "：").replace(" - ", "-")
+    return compact
+
+
+def _pick_first_sentence(value: str) -> str:
+    compact = _normalize_compact_text(value)
+    if not compact:
+        return ""
+    parts = re.split(r"[。！？!?；;]\s*", compact, maxsplit=1)
+    return parts[0].strip(" ，,、:：;；")
+
+
+def _pick_best_prefix_within_limit(value: str, limit: int, markers: tuple[str, ...]) -> str:
+    compact = _normalize_compact_text(value)
+    if not compact:
+        return ""
+    best = ""
+    for marker in markers:
+        start = 0
+        while True:
+            index = compact.find(marker, start)
+            if index < 0 or index >= limit:
+                break
+            candidate = compact[:index].strip(" ，,、:：;；-")
+            if len(candidate) > len(best):
+                best = candidate
+            start = index + len(marker)
+    return best
+
+
+def _trim_to_limit(value: str, limit: int) -> str:
+    compact = _normalize_compact_text(value)
+    if len(compact) <= limit:
+        return compact
+    trimmed = compact[:limit].rstrip(" ，,、:：;；-")
+    return trimmed or compact[:limit]
+
+
+def _build_douyin_title(raw_title: str, limit: int = 30) -> str:
+    compact = _normalize_compact_text(raw_title)
+    if len(compact) <= limit:
+        return compact
+
+    headline = _pick_first_sentence(compact)
+    if headline and len(headline) <= limit:
+        return headline
+
+    colon_variants = ("：", ":")
+    for marker in colon_variants:
+        if marker in compact:
+            prefix, suffix = compact.split(marker, 1)
+            prefix = prefix.strip()
+            suffix = suffix.strip()
+            if prefix and len(prefix) <= limit:
+                return prefix
+            if suffix and len(suffix) <= limit:
+                return suffix
+            if prefix and suffix:
+                merged = f"{prefix}{marker}{suffix}"
+                if len(merged) <= limit:
+                    return merged
+
+    for marker in ("，", ",", "、", " - ", "-"):
+        if marker in compact:
+            segment = compact.split(marker, 1)[0].strip()
+            if segment and len(segment) <= limit:
+                return segment
+
+    return _trim_to_limit(compact, limit)
+
+
+def _build_douyin_summary(raw_summary: str, raw_title: str, limit: int = 30) -> str:
+    summary = _normalize_compact_text(raw_summary)
+    title = _normalize_compact_text(raw_title)
+    if summary and len(summary) <= limit:
+        return summary
+
+    sentence = _pick_first_sentence(summary)
+    if sentence and len(sentence) <= limit:
+        return sentence
+
+    clause = _pick_best_prefix_within_limit(summary, limit, ("，", ",", "、", "：", ":", "；", ";"))
+    if clause and len(clause) <= limit:
+        return clause
+
+    if summary and title and summary.startswith(title):
+        remainder = summary[len(title) :].strip(" ，,、:：;；-")
+        sentence = _pick_first_sentence(remainder)
+        if sentence and len(sentence) <= limit:
+            return sentence
+        clause = _pick_best_prefix_within_limit(remainder, limit, ("，", ",", "、", "：", ":", "；", ";"))
+        if clause and len(clause) <= limit:
+            return clause
+        if remainder and len(remainder) <= limit:
+            return remainder
+
+    if title:
+        derived = title
+        for marker in ("：", ":"):
+            if marker in title:
+                prefix, suffix = title.split(marker, 1)
+                prefix = prefix.strip()
+                suffix = suffix.strip()
+                if suffix and len(suffix) <= limit:
+                    derived = suffix
+                    break
+                if prefix and len(prefix) <= limit:
+                    derived = prefix
+                    break
+        if derived and len(derived) <= limit:
+            return derived
+
+    fallback = sentence or summary or title
+    return _trim_to_limit(fallback, limit)
 
 
 def _clamp_author(author: str) -> str:
-    compact = author.strip()
+    compact = re.sub(r"\s+", " ", author.strip())
     if not compact:
         return ""
     return compact[:8]
 
 
 def _strip_markdown_title(markdown: str, title: str) -> str:
-    lines = list(markdown.splitlines())
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    if not lines:
-        return ""
-    first = lines[0].strip()
-    if first.startswith("#"):
-        normalized = first.lstrip("#").strip()
-        if normalized == title.strip():
-            lines.pop(0)
-            while lines and not lines[0].strip():
-                lines.pop(0)
-    return "\n".join(lines).strip()
+    return strip_markdown_title(markdown, title)
 
 
 def _fill_locator_value(page, selector: str, value: str, *, is_rich_text: bool = False) -> None:
-    locator = page.locator(selector).first
+    locator = _pick_visible_locator(page, selector)
     locator.click()
     if is_rich_text:
         try:
@@ -884,7 +1160,315 @@ def _fill_locator_value(page, selector: str, value: str, *, is_rich_text: bool =
         )
 
 
-def _fill_wechat_editor(page, draft: dict[str, object], channel: dict[str, object], selector_profile: dict[str, list[str] | str], step_logs: list[str]) -> None:
+def _clipboard_paste_text(page, text: str) -> None:
+    """Simulate clipboard paste via JS + Ctrl+V, the only reliable way to write into ProseMirror."""
+    page.evaluate(
+        """(text) => {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+        }""",
+        text,
+    )
+    page.keyboard.press("Control+v")
+
+
+def _clipboard_paste_into_element(page, selector: str, text: str) -> None:
+    """Focus element via selector, select all existing content, then paste new text."""
+    loc = page.locator(selector).first
+    loc.click(timeout=4000)
+    page.wait_for_timeout(300)
+    page.keyboard.press("Control+a")
+    page.wait_for_timeout(200)
+    _clipboard_paste_text(page, text)
+    page.wait_for_timeout(500)
+
+
+def _dump_wechat_editor_dom(page, artifact_dir: Path, step_logs: list[str], *, label: str) -> None:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    html_path = artifact_dir / f"{label}.html"
+    report_path = artifact_dir / f"{label}.txt"
+    try:
+        html_path.write_text(str(page.content() or ""), encoding="utf-8")
+        step_logs.append(f"已导出编辑页 HTML={html_path}")
+    except Exception as exc:
+        step_logs.append(f"导出编辑页 HTML 失败：{exc}")
+        return
+
+    selector_groups = {
+        "title": [
+            "div.ProseMirror[data-placeholder*='请在这里输入标题']",
+            "div.ProseMirror[data-placeholder*='标题']",
+            "textarea.js_article_title",
+        ],
+        "author": [
+            "input.js_author",
+            "input[placeholder*='作者']",
+        ],
+        "digest": [
+            "textarea.js_desc",
+            "textarea[placeholder*='摘要']",
+        ],
+        "editor": [
+            "#edui1_iframeholder .mock-iframe-body .rich_media_content > div.ProseMirror[contenteditable='true']",
+            "#edui1_iframeholder .mock-iframe-body .rich_media_content div.ProseMirror[contenteditable='true']",
+            ".editor-v-root .mock-iframe-body .rich_media_content > div.ProseMirror[contenteditable='true']",
+            "div.ProseMirror[contenteditable='true'][style*='min-height']",
+            "div.ProseMirror:not([data-placeholder*='请在这里输入标题']):not([data-placeholder*='标题'])",
+            "div.ProseMirror:not([data-placeholder*='请在这里输入标题']):not([data-placeholder*='标题'])[style*='min-height']",
+            ".rich_media_content .ProseMirror:not([data-placeholder*='请在这里输入标题']):not([data-placeholder*='标题'])",
+            "#edui1_iframeholder .mock-iframe-body .rich_media_content > div.ProseMirror",
+            ".editor-v-root .mock-iframe-body .rich_media_content > div.ProseMirror",
+            "div.ProseMirror:has(.editor_content_placeholder)",
+            ".ProseMirror",
+        ],
+    }
+    lines = [f"url={_page_url(page)}"]
+    for group, selectors in selector_groups.items():
+        for selector in selectors:
+            try:
+                locator = page.locator(selector)
+                count = locator.count()
+                lines.append(f"[{group}] selector={selector} count={count}")
+                if count <= 0:
+                    continue
+                first = locator.first
+                outer_html = str(first.evaluate("(el) => el.outerHTML || ''")).strip()
+                inner_text = str(first.evaluate("(el) => el.innerText || el.textContent || ''")).strip()
+                lines.append(f"[{group}] outerHTML={outer_html[:4000]}")
+                lines.append(f"[{group}] innerText={inner_text[:1000]}")
+            except Exception as exc:
+                lines.append(f"[{group}] selector={selector} error={exc}")
+    _write_debug_artifact(report_path, lines)
+    step_logs.append(f"已导出编辑页节点报告={report_path}")
+
+
+def _read_locator_value(page, selector: str, *, rich_text: bool = False) -> str:
+    script = """({ selector, richText }) => {
+        const node = document.querySelector(selector);
+        if (!node) return "";
+        if (richText) {
+            const clone = node.cloneNode(true);
+            clone.querySelectorAll('.editor_content_placeholder, .ProseMirror-widget, [data-placeholder]').forEach((child) => {
+                if (child !== clone) child.remove();
+            });
+            return String(clone.innerText || clone.textContent || "").replace(/\\s+/g, " ").trim();
+        }
+        if ("value" in node) {
+            return String(node.value || "").trim();
+        }
+        return String(node.textContent || "").trim();
+    }"""
+    try:
+        value = page.evaluate(script, {"selector": selector, "richText": rich_text})
+    except Exception:
+        return ""
+    return str(value or "").strip()
+
+
+def _write_plain_field(page, selector: str, value: str, step_logs: list[str], *, field_label: str) -> int:
+    locator = _pick_visible_locator(page, selector, timeout=4000)
+    try:
+        locator.fill(value)
+    except Exception:
+        try:
+            locator.click(timeout=4000)
+            page.wait_for_timeout(250)
+            page.keyboard.press("Control+a")
+            page.wait_for_timeout(150)
+            locator.type(value, delay=8)
+        except Exception:
+            _clipboard_paste_into_element(page, selector, value)
+    page.wait_for_timeout(350)
+    resolved_value = _read_locator_value(page, selector, rich_text=False)
+    resolved_length = len(resolved_value)
+    step_logs.append(f"{field_label}回读长度={resolved_length} selector={selector}")
+    if value.strip() and not resolved_value.strip():
+        raise RuntimeError(f"{field_label}写入后回读为空。")
+    if value.strip():
+        expected_prefix = value.strip()[: min(12, len(value.strip()))]
+        if expected_prefix and expected_prefix not in resolved_value:
+            raise RuntimeError(f"{field_label}写入后回读未命中预期前缀。")
+    return resolved_length
+
+
+def _write_rich_text_field(page, selector: str, value: str, step_logs: list[str], *, minimum_length: int) -> int:
+    editor = _pick_visible_locator(page, selector, timeout=4000)
+
+    def _readback(strategy: str) -> int:
+        page.wait_for_timeout(900)
+        resolved_text = _read_locator_value(page, selector, rich_text=True)
+        resolved_length = len(resolved_text)
+        step_logs.append(f"正文回读长度={resolved_length} selector={selector} strategy={strategy}")
+        return resolved_length
+
+    strategies: list[tuple[str, object]] = []
+
+    def _exec_command_insert() -> None:
+        page.evaluate(
+            """({ selector, value }) => {
+                const node = document.querySelector(selector);
+                if (!node) return;
+                node.focus();
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(node);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                document.execCommand('delete', false);
+                document.execCommand('insertText', false, value);
+            }""",
+            {"selector": selector, "value": value},
+        )
+
+    def _set_dom_paragraphs() -> None:
+        page.evaluate(
+            """({ selector, value }) => {
+                const node = document.querySelector(selector);
+                if (!node) return;
+                node.focus();
+                node.innerHTML = '';
+                const blocks = String(value || '').split(/\\n+/).map((item) => item.trim()).filter(Boolean);
+                const section = document.createElement('section');
+                if (!blocks.length) {
+                    const span = document.createElement('span');
+                    span.setAttribute('leaf', '');
+                    span.innerHTML = '<br class="ProseMirror-trailingBreak">';
+                    section.appendChild(span);
+                } else {
+                    for (const block of blocks) {
+                        const p = document.createElement('p');
+                        p.textContent = block;
+                        section.appendChild(p);
+                    }
+                }
+                node.appendChild(section);
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(node);
+                range.collapse(false);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+                node.dispatchEvent(new Event('change', { bubbles: true }));
+            }""",
+            {"selector": selector, "value": value},
+        )
+
+    def _paste_clipboard() -> None:
+        _clipboard_paste_into_element(page, selector, value)
+
+    strategies.extend(
+        [
+            ("dom_paragraphs", _set_dom_paragraphs),
+            ("exec_command_insert", _exec_command_insert),
+            ("clipboard_paste", _paste_clipboard),
+        ]
+    )
+
+    last_length = 0
+    for strategy_name, strategy_fn in strategies:
+        try:
+            editor.click(timeout=4000)
+            page.wait_for_timeout(250)
+            page.keyboard.press("Control+a")
+            page.wait_for_timeout(150)
+            try:
+                page.keyboard.press("Delete")
+            except Exception:
+                pass
+            page.wait_for_timeout(150)
+            strategy_fn()
+            last_length = _readback(strategy_name)
+            if last_length >= minimum_length:
+                return last_length
+        except Exception as exc:
+            step_logs.append(f"正文写入策略失败 strategy={strategy_name} error={exc}")
+
+    raise RuntimeError("正文写入后回读长度不足。")
+
+
+def _write_rich_html_field(
+    page,
+    selector: str,
+    html: str,
+    plain_text: str,
+    step_logs: list[str],
+    *,
+    minimum_length: int,
+) -> int:
+    editor = _pick_visible_locator(page, selector, timeout=4000)
+
+    def _readback(strategy: str) -> int:
+        page.wait_for_timeout(900)
+        resolved_text = _read_locator_value(page, selector, rich_text=True)
+        resolved_length = len(resolved_text)
+        step_logs.append(f"正文回读长度={resolved_length} selector={selector} strategy={strategy}")
+        return resolved_length
+
+    def _set_html_blocks() -> None:
+        page.evaluate(
+            """({ selector, html }) => {
+                const node = document.querySelector(selector);
+                if (!node) return;
+                node.focus();
+                node.innerHTML = html || '<section><span leaf=""><br class="ProseMirror-trailingBreak"></span></section>';
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(node);
+                range.collapse(false);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: node.innerText || '' }));
+                node.dispatchEvent(new Event('change', { bubbles: true }));
+            }""",
+            {"selector": selector, "html": html},
+        )
+
+    try:
+        editor.click(timeout=4000)
+        page.wait_for_timeout(250)
+        _set_html_blocks()
+        last_length = _readback("html_blocks")
+        if last_length >= minimum_length:
+            return last_length
+    except Exception as exc:
+        step_logs.append(f"正文 HTML 写入失败 strategy=html_blocks error={exc}")
+
+    return _write_rich_text_field(page, selector, plain_text, step_logs, minimum_length=minimum_length)
+
+
+def _fill_wechat_editor(
+    page,
+    draft: dict[str, object],
+    channel: dict[str, object],
+    selector_profile: dict[str, list[str] | str],
+    step_logs: list[str],
+    *,
+    artifact_dir: Path | None = None,
+) -> None:
+    # Debug: screenshot editor page and dump selector results
+    try:
+        debug_path = ARTIFACT_ROOT / "debug-fill-editor.png"
+        page.screenshot(path=str(debug_path), full_page=True)
+        for key in ["title_input", "author_input", "digest_input", "editor"]:
+            selectors = selector_profile.get(key, [])
+            for s in selectors:
+                try:
+                    c = page.locator(s).count()
+                    step_logs.append(f"DEBUG {key} selector={s} count={c}")
+                except Exception as e:
+                    step_logs.append(f"DEBUG {key} selector={s} error={e}")
+        if artifact_dir is not None:
+            _dump_wechat_editor_dom(page, artifact_dir, step_logs, label="wechat-editor-dom")
+    except Exception:
+        pass
+
     title_selector = _pick_selector(page, selector_profile.get("title_input", []))
     author_selector = _pick_selector(page, selector_profile.get("author_input", []))
     digest_selector = _pick_selector(page, selector_profile.get("digest_input", []))
@@ -895,40 +1479,67 @@ def _fill_wechat_editor(page, draft: dict[str, object], channel: dict[str, objec
     title = str(draft.get("title", "")).strip()[:64]
     author = _clamp_author(str(channel.get("author") or ""))
     digest = str(draft.get("summary") or "").strip()[:120]
-    body_text = _plain_text_from_markdown(str(draft.get("markdown") or ""))
+    raw_markdown = str(draft.get("markdown") or "")
+    body_markdown = _strip_markdown_title(raw_markdown, title)
+    normalized_body_markdown = body_markdown or raw_markdown
+    body_text = _plain_text_from_markdown(normalized_body_markdown)
+    body_html = markdown_to_wechat_html(normalized_body_markdown, include_wrapper=False)
 
-    page.locator(title_selector).first.fill(title)
+    if not _validate_wechat_page_identity(page, selector_profile, expected="editor"):
+        raise RuntimeError(f"已命中编辑页 URL，但编辑器 DOM 未就绪：{_page_url(page)}")
+
+    title_length = _write_plain_field(page, title_selector, title, step_logs, field_label="标题")
     step_logs.append(f"已填充标题 selector={title_selector}")
+    step_logs.append(f"标题最终长度={title_length}")
+
     if author_selector and author:
-        page.locator(author_selector).first.fill(author)
+        _write_plain_field(page, author_selector, author, step_logs, field_label="作者")
         step_logs.append(f"已填充作者 selector={author_selector}")
+
     if digest_selector and digest:
-        page.locator(digest_selector).first.fill(digest)
+        digest_length = _write_plain_field(page, digest_selector, digest, step_logs, field_label="摘要")
         step_logs.append(f"已填充摘要 selector={digest_selector}")
-    editor = page.locator(editor_selector).first
-    editor.click()
-    try:
-        editor.fill(body_text)
-    except Exception:
-        page.evaluate(
-            """({ selector, value }) => {
-                const node = document.querySelector(selector);
-                if (!node) return;
-                node.focus();
-                node.textContent = value;
-                node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
-            }""",
-            {"selector": editor_selector, "value": body_text},
-        )
-    step_logs.append(f"已填充正文 selector={editor_selector}")
+        step_logs.append(f"摘要最终长度={digest_length}")
+
+    minimum_body_length = max(20, min(len(body_text.strip()), 120))
+    body_length = _write_rich_html_field(
+        page,
+        editor_selector,
+        body_html,
+        body_text,
+        step_logs,
+        minimum_length=minimum_body_length,
+    )
+    step_logs.append(f"已填充正文 selector={editor_selector} (rich html)")
+    step_logs.append(f"正文最终长度={body_length}")
+
+
+def _wait_for_wechat_editor_in_current_page(page, selector_profile: dict[str, list[str] | str], timeout_ms: int = 12000):
+    deadline = datetime.now(UTC).timestamp() + (timeout_ms / 1000)
+    while datetime.now(UTC).timestamp() < deadline:
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=1500)
+        except Exception:
+            pass
+        if _validate_wechat_page_identity(page, selector_profile, expected="editor"):
+            return page
+        try:
+            page.wait_for_timeout(500)
+        except Exception:
+            break
+    raise RuntimeError("当前页未进入编辑器。")
 
 
 def _locate_editor_page(context, fallback_page, timeout_ms: int = 12000):
+    """Find the editor page across ALL tabs (WeChat opens editor in a new tab)."""
     deadline = datetime.now(UTC).timestamp() + (timeout_ms / 1000)
     candidate = fallback_page
     while datetime.now(UTC).timestamp() < deadline:
-        for page in context.pages:
-            if "appmsg" in page.url or "media/appmsg_edit" in page.url:
+        pages = _list_live_context_pages(context)
+        for page in pages:
+            if _is_page_closed(page):
+                continue
+            if "appmsg" in _page_url(page) or "media/appmsg_edit" in _page_url(page):
                 try:
                     page.wait_for_load_state("domcontentloaded", timeout=1500)
                 except Exception:
@@ -940,6 +1551,20 @@ def _locate_editor_page(context, fallback_page, timeout_ms: int = 12000):
         except Exception:
             break
     return candidate
+
+
+def _locate_editor_page_with_retry(context, fallback_page, selector_profile: dict[str, list[str] | str], step_logs: list[str]):
+    def _locate_once():
+        candidate = _locate_editor_page(context, fallback_page)
+        if not _validate_wechat_page_identity(candidate, selector_profile, expected="editor"):
+            live_pages = _list_live_context_pages(context)
+            page_urls = ", ".join(_page_url(page) or "<empty>" for page in live_pages) or "<none>"
+            if candidate is fallback_page:
+                raise RuntimeError(f"未找到新开的编辑页。当前页集合：{page_urls}")
+            raise RuntimeError(f"已命中编辑页 URL，但编辑器 DOM 未就绪：{_page_url(candidate)}")
+        return candidate
+
+    return _retry_once("locate_editor_page", step_logs, _locate_once)
 
 
 def extract_wechat_appmsg_id(url: str | None) -> str | None:
@@ -1099,6 +1724,11 @@ def _run_session_recovery(context, page, entry_url: str, selector_profile: dict[
 
 
 def _run_upload(context, page, draft: dict[str, object], channel: dict[str, object], entry_url: str, selector_profile: dict[str, list[str] | str], browser_state: dict[str, object], step_logs: list[str]) -> tuple[dict[str, object], list[str], list[str], object]:
+    _enforce_single_tab(context, page, step_logs, phase="before_upload", allow_recover=True)
+    _safe_return_home(page, entry_url, selector_profile, step_logs, step_name="return_home_before_upload")
+    if not _validate_wechat_page_identity(page, selector_profile, expected="home"):
+        raise RuntimeError("首页未识别。")
+    step_logs.append("已从公众号后台首页开始上传。")
     WECHAT_BROWSER_MANAGER.set_action_state("sync_wechat_draft", "open_editor")
     new_article_selector = _pick_required_selector(
         page,
@@ -1107,14 +1737,27 @@ def _run_upload(context, page, draft: dict[str, object], channel: dict[str, obje
         step_name="pick_new_article_selector",
         timeout=5000,
     )
+    step_logs.append(f"已命中文章入口 selector={new_article_selector}")
     page.locator(new_article_selector).first.click()
     page.wait_for_timeout(2500)
+    step_logs.append(f"点击文章后 live_page_count={_count_context_pages(context)}")
     target = _locate_editor_page_with_retry(context, page, selector_profile, step_logs)
+    if target is not page:
+        step_logs.append(f"检测到新编辑页接管 URL={_page_url(target)}")
+        _converge_context_to_target(context, target, step_logs, phase="after_editor_targeted")
+        try:
+            WECHAT_BROWSER_MANAGER._page = target
+        except Exception:
+            pass
+    _enforce_single_tab(context, target, step_logs, phase="after_editor_located", allow_recover=False)
     target.wait_for_timeout(2000)
     step_logs.append(f"编辑页 URL={target.url}")
     WECHAT_BROWSER_MANAGER.set_resident_page("editor")
     WECHAT_BROWSER_MANAGER.set_action_state("sync_wechat_draft", "fill_editor")
     _fill_wechat_editor_with_retry(target, draft, channel, selector_profile, step_logs)
+    _ensure_wechat_author_before_publish_settings(target, channel, selector_profile, step_logs)
+    WECHAT_BROWSER_MANAGER.set_action_state("sync_wechat_draft", "apply_publish_settings")
+    _apply_wechat_publish_settings(target, selector_profile, step_logs)
 
     save_selector = _pick_required_selector(
         target,
@@ -1126,21 +1769,13 @@ def _run_upload(context, page, draft: dict[str, object], channel: dict[str, obje
 
     def _save_draft_once() -> None:
         WECHAT_BROWSER_MANAGER.set_action_state("sync_wechat_draft", "save_draft")
-        target.locator(save_selector).first.click()
+        _pick_visible_locator(target, save_selector, timeout=4000).click()
         target.wait_for_timeout(3500)
 
     _retry_once("save_draft", step_logs, _save_draft_once)
     step_logs.append(f"已点击保存草稿 selector={save_selector}")
-
-    landing_page = page
-    if target != page:
-        try:
-            target.close()
-            step_logs.append("已关闭编辑页，准备返回公众号后台。")
-        except Exception:
-            step_logs.append("关闭编辑页失败，改为直接复用当前标签返回公众号后台。")
-            landing_page = target
-
+    _enforce_single_tab(context, target, step_logs, phase="after_save_draft", allow_recover=False)
+    landing_page = target
     _safe_return_home(landing_page, entry_url, selector_profile, step_logs, step_name="return_home_after_upload")
     return (
         {
@@ -1160,6 +1795,7 @@ def _run_verify(context, landing_page, draft: dict[str, object], entry_url: str,
     artifacts: list[str] = []
 
     def _verify_once() -> tuple[bool, list[dict[str, str | None]], dict[str, str | None] | None]:
+        _enforce_single_tab(context, landing_page, step_logs, phase="before_verify", allow_recover=False)
         WECHAT_BROWSER_MANAGER.set_action_state("sync_wechat_draft", "draft_box_verify")
         _safe_return_home(landing_page, entry_url, selector_profile, step_logs, step_name="return_home_before_verify")
         if not _open_wechat_draft_box(landing_page, selector_profile, step_logs):
@@ -1474,11 +2110,8 @@ def delete_wechat_remote_draft(
                 if "action=list_card" not in str(page.url or ""):
                     raise RuntimeError(f"直接跳转后仍未进入草稿箱：{page.url}")
                 step_logs.append(f"已直接跳转到草稿箱 url={page.url}")
+            _enforce_single_tab(_context, page, step_logs, phase="delete_remote_draft", allow_recover=False)
             active_page = page
-            for candidate in _context.pages:
-                if "action=list_card" in str(candidate.url or ""):
-                    active_page = candidate
-                    break
             active_page.wait_for_timeout(2000)
             if "action=list_card" not in str(active_page.url or ""):
                 raise RuntimeError(f"当前页面不是正式草稿箱：{active_page.url}")
@@ -1691,14 +2324,105 @@ def _fill_wechat_editor_with_retry(page, draft: dict[str, object], channel: dict
     )
 
 
-def _locate_editor_page_with_retry(context, fallback_page, selector_profile: dict[str, list[str] | str], step_logs: list[str]):
-    def _locate_once():
-        candidate = _locate_editor_page(context, fallback_page)
-        if not _validate_wechat_page_identity(candidate, selector_profile, expected="editor"):
-            raise RuntimeError(f"未能稳定定位到有效编辑页：{getattr(candidate, 'url', '')}")
-        return candidate
+def _ensure_wechat_author_before_publish_settings(
+    page,
+    channel: dict[str, object],
+    selector_profile: dict[str, list[str] | str],
+    step_logs: list[str],
+) -> str:
+    raw_author = str(channel.get("author") or "").strip()
+    author = _clamp_author(raw_author)
+    if not author:
+        raise RuntimeError("原创声明前需要先填写作者，且作者长度不能超过 8 个字。")
+    author_selector = _pick_required_selector(
+        page,
+        selector_profile.get("author_input", []),
+        step_logs,
+        step_name="pick_author_before_publish_settings",
+        timeout=5000,
+    )
+    current_author = _read_locator_value(page, author_selector, rich_text=False)
+    if current_author != author:
+        author_length = _write_plain_field(page, author_selector, author, step_logs, field_label="作者")
+        step_logs.append(f"声明前已补齐作者 selector={author_selector}")
+        step_logs.append(f"声明前作者最终长度={author_length}")
+        if raw_author and raw_author != author:
+            step_logs.append(f"声明前作者已截断为 {author}")
+    else:
+        step_logs.append(f"声明前作者已就绪 selector={author_selector}")
+    page.wait_for_timeout(600)
+    return author
 
-    return _retry_once("locate_editor_page", step_logs, _locate_once)
+
+def _click_required_selector_once(
+    page,
+    selectors: list[str] | str,
+    step_logs: list[str],
+    *,
+    step_name: str,
+    timeout: int = 5000,
+    settle_ms: int = 1200,
+) -> str:
+    selector = _pick_required_selector(
+        page,
+        selectors,
+        step_logs,
+        step_name=f"{step_name}_selector",
+        timeout=timeout,
+    )
+    _pick_visible_locator(page, selector, timeout=timeout).click()
+    page.wait_for_timeout(settle_ms)
+    step_logs.append(f"{step_name} 已点击 selector={selector}")
+    return selector
+
+
+def _apply_wechat_publish_settings(
+    page,
+    selector_profile: dict[str, list[str] | str],
+    step_logs: list[str],
+) -> None:
+    def _apply_once() -> None:
+        _click_required_selector_once(
+            page,
+            selector_profile.get("original_setting", []),
+            step_logs,
+            step_name="open_original_setting",
+            timeout=6000,
+            settle_ms=1200,
+        )
+        _click_required_selector_once(
+            page,
+            selector_profile.get("primary_confirm_button", []),
+            step_logs,
+            step_name="confirm_original_setting",
+            timeout=6000,
+            settle_ms=1800,
+        )
+        _click_required_selector_once(
+            page,
+            selector_profile.get("reward_setting", []),
+            step_logs,
+            step_name="open_reward_setting",
+            timeout=6000,
+            settle_ms=1200,
+        )
+        _click_required_selector_once(
+            page,
+            selector_profile.get("primary_confirm_button", []),
+            step_logs,
+            step_name="confirm_reward_setting",
+            timeout=6000,
+            settle_ms=1800,
+        )
+
+    _retry_once("apply_wechat_publish_settings", step_logs, _apply_once)
+
+
+def _wait_for_wechat_editor_in_current_page_with_retry(page, selector_profile: dict[str, list[str] | str], step_logs: list[str]):
+    def _locate_once():
+        return _wait_for_wechat_editor_in_current_page(page, selector_profile)
+
+    return _retry_once("wait_current_editor_page", step_logs, _locate_once)
 
 
 def _scrape_wechat_draft_items_strict(page) -> list[dict[str, str | None]]:
@@ -2327,6 +3051,376 @@ def inspect_wechat_session(channel: dict[str, object], browser_state: dict[str, 
     return browser_state, artifacts, step_logs
 
 
+def inspect_wechat_editor_dom(
+    channel: dict[str, object], browser_state: dict[str, object]
+) -> tuple[dict[str, object], dict[str, object], list[str], list[str]]:
+    channel = ensure_channel_defaults(channel)
+    browser_state = dict(browser_state)
+    selector_version = str(channel.get("selectors_version", "wechat-mp-v1"))
+    selector_profile = get_selector_profile(selector_version)
+    artifact_dir = ARTIFACT_ROOT / "session"
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    screenshot_path = artifact_dir / f"inspect-wechat-editor-{timestamp}.png"
+    debug_text_path = artifact_dir / f"inspect-wechat-editor-{timestamp}.txt"
+    html_path = artifact_dir / f"inspect-wechat-editor-{timestamp}.html"
+    snapshot: dict[str, object] = {
+        "checked_at": now_iso(),
+        "url": "",
+        "page_title": "",
+        "body_excerpt": "",
+        "message": "",
+        "items": [],
+        "artifacts": [],
+    }
+    step_logs = [
+        f"selector_profile={selector_version}",
+        "action=inspect_wechat_editor_dom",
+    ]
+    artifacts: list[str] = []
+
+    try:
+        def _run(_context, page):
+            current_url = str(page.url or "")
+            if "appmsg" not in current_url and "media/appmsg_edit" not in current_url:
+                raise RuntimeError(f"当前不在微信编辑页：{current_url}")
+
+            field_specs = [
+                ("title", "标题", selector_profile.get("title_input", [])),
+                ("author", "作者", selector_profile.get("author_input", [])),
+                ("digest", "摘要", selector_profile.get("digest_input", [])),
+                ("editor", "正文", selector_profile.get("editor", [])),
+            ]
+            fields: list[dict[str, object]] = []
+            for key, label, selectors in field_specs:
+                selector_list = selectors if isinstance(selectors, list) else [selectors]
+                matched_selector = None
+                matched_count = 0
+                visible = False
+                sample_text = ""
+                sample_html = ""
+                for selector in [str(item) for item in selector_list if str(item).strip()]:
+                    try:
+                        locator = page.locator(selector)
+                        count = locator.count()
+                        if count <= 0:
+                            continue
+                        matched_selector = selector
+                        matched_count = count
+                        try:
+                            locator.first.wait_for(state="visible", timeout=1500)
+                            visible = True
+                        except Exception:
+                            visible = False
+                        try:
+                            sample_text = str(locator.first.inner_text(timeout=1500) or "").strip()
+                        except Exception:
+                            sample_text = ""
+                        try:
+                            sample_html = str(locator.first.evaluate("(el) => el.outerHTML || ''") or "").strip()
+                        except Exception:
+                            sample_html = ""
+                        break
+                    except Exception:
+                        continue
+                fields.append(
+                    {
+                        "key": key,
+                        "label": label,
+                        "found": bool(matched_selector),
+                        "visible": visible,
+                        "selector": matched_selector,
+                        "count": matched_count,
+                        "sample_text": sample_text[:500],
+                        "sample_html": sample_html[:3000],
+                    }
+                )
+
+            page_title = ""
+            body_excerpt = ""
+            html_content = ""
+            try:
+                page_title = str(page.title() or "")
+            except Exception:
+                page_title = ""
+            try:
+                body_excerpt = str(page.locator("body").inner_text(timeout=2500) or "").strip()
+            except Exception:
+                body_excerpt = ""
+            try:
+                html_content = str(page.content() or "")
+                html_path.write_text(html_content, encoding="utf-8")
+                artifacts.append(str(html_path))
+            except Exception as exc:
+                step_logs.append(f"导出当前页 HTML 失败：{exc}")
+
+            page.screenshot(path=str(screenshot_path), full_page=True)
+            artifacts.append(str(screenshot_path))
+            debug_lines = [
+                f"url={page.url}",
+                f"title={page_title}",
+                "",
+                "body_excerpt:",
+                body_excerpt[:3000],
+                "",
+            ]
+            for field in fields:
+                debug_lines.extend(
+                    [
+                        f"[{field['key']}] {field['label']}",
+                        f"found={field['found']} visible={field['visible']} count={field['count']} selector={field['selector']}",
+                        f"text={field['sample_text']}",
+                        "html:",
+                        str(field["sample_html"]),
+                        "",
+                    ]
+                )
+            artifacts.append(_write_debug_artifact(debug_text_path, debug_lines))
+
+            snapshot["checked_at"] = now_iso()
+            snapshot["url"] = str(page.url or "")
+            snapshot["page_title"] = page_title
+            snapshot["body_excerpt"] = body_excerpt[:3000]
+            snapshot["items"] = fields
+            snapshot["artifacts"] = list(artifacts)
+            snapshot["message"] = f"已导出微信编辑页 DOM，命中 {sum(1 for field in fields if field.get('found'))}/{len(fields)} 个关键区块。"
+
+            browser_state["last_opened_url"] = str(page.url or "")
+            browser_state["current_page"] = str(page.url or "")
+            browser_state["resident_page"] = "editor"
+            browser_state["last_screenshot"] = str(screenshot_path)
+            browser_state["last_error"] = None
+            WECHAT_BROWSER_MANAGER.set_resident_page("editor")
+            step_logs.append(str(snapshot["message"]))
+
+        WECHAT_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run)
+        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
+        return browser_state, snapshot, artifacts, step_logs
+    except Exception as exc:
+        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
+        browser_state["last_error"] = f"导出微信编辑页 DOM 失败：{exc}"
+        step_logs.append(f"导出微信编辑页 DOM 失败：{exc}")
+        ok, current_url = WECHAT_BROWSER_MANAGER.capture_screenshot(screenshot_path)
+        if ok:
+            artifacts.append(str(screenshot_path))
+            browser_state["last_screenshot"] = str(screenshot_path)
+            if current_url:
+                browser_state["last_opened_url"] = current_url
+                browser_state["current_page"] = current_url
+                snapshot["url"] = current_url
+        snapshot["checked_at"] = now_iso()
+        snapshot["message"] = str(browser_state["last_error"])
+        snapshot["artifacts"] = list(artifacts)
+        return browser_state, snapshot, artifacts, step_logs
+
+
+def open_wechat_editor_debug(
+    channel: dict[str, object], browser_state: dict[str, object]
+) -> tuple[dict[str, object], list[str], list[str]]:
+    channel = ensure_channel_defaults(channel)
+    browser_state = dict(browser_state)
+    selector_version = str(channel.get("selectors_version", "wechat-mp-v1"))
+    entry_url = str(channel.get("publish_entry_url", "https://mp.weixin.qq.com/"))
+    selector_profile = get_selector_profile(selector_version)
+    step_logs = [
+        f"selector_profile={selector_version}",
+        "action=open_wechat_editor_debug",
+        f"entry_url={entry_url}",
+    ]
+    artifacts: list[str] = []
+    artifact_dir = ARTIFACT_ROOT / "session"
+    screenshot_path = artifact_dir / f"open-wechat-editor-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.png"
+
+    if not browser_state.get("logged_in"):
+        browser_state["last_error"] = "浏览器用户目录不存在或尚未建立登录态。"
+        browser_state["is_session_level_error"] = True
+        return browser_state, artifacts, step_logs + ["未执行打开编辑页：登录态不可用。"]
+
+    try:
+        def _run(context, page):
+            _enforce_single_tab(context, page, step_logs, phase="open_editor_debug_start", allow_recover=True)
+            _safe_return_home(page, entry_url, selector_profile, step_logs, step_name="open_editor_debug_go_home")
+            new_article_selector = _pick_required_selector(
+                page,
+                selector_profile.get("new_article", []),
+                step_logs,
+                step_name="open_editor_debug_pick_new_article",
+                timeout=8000,
+            )
+            page.locator(new_article_selector).first.click()
+            step_logs.append(f"已点击新建文章入口 selector={new_article_selector}")
+            page.wait_for_timeout(2500)
+            target = _locate_editor_page_with_retry(context, page, selector_profile, step_logs)
+            if target is not page:
+                step_logs.append(f"检测到新编辑页接管 URL={_page_url(target)}")
+                _converge_context_to_target(context, target, step_logs, phase="open_editor_debug_targeted")
+                try:
+                    WECHAT_BROWSER_MANAGER._page = target
+                except Exception:
+                    pass
+            try:
+                target.wait_for_load_state("domcontentloaded", timeout=4000)
+            except Exception:
+                pass
+            target.wait_for_timeout(1800)
+            _enforce_single_tab(context, target, step_logs, phase="open_editor_debug_after_open", allow_recover=False)
+            target.screenshot(path=str(screenshot_path), full_page=True)
+            artifacts.append(str(screenshot_path))
+            browser_state["last_opened_url"] = str(target.url or "")
+            browser_state["current_page"] = str(target.url or "")
+            browser_state["resident_page"] = "editor"
+            browser_state["last_screenshot"] = str(screenshot_path)
+            browser_state["last_error"] = None
+            WECHAT_BROWSER_MANAGER.set_resident_page("editor")
+            step_logs.append(f"已进入微信编辑页 URL={target.url}")
+
+        WECHAT_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run)
+        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
+        return browser_state, artifacts, step_logs
+    except Exception as exc:
+        ok, current_url = WECHAT_BROWSER_MANAGER.capture_screenshot(screenshot_path)
+        if ok:
+            artifacts.append(str(screenshot_path))
+            browser_state["last_screenshot"] = str(screenshot_path)
+            if current_url:
+                browser_state["last_opened_url"] = current_url
+                browser_state["current_page"] = current_url
+        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
+        browser_state["last_error"] = f"打开微信编辑页失败：{exc}"
+        browser_state["is_session_level_error"] = _browser_session_error_kind(exc, recovery_ok=False)
+        step_logs.append(f"打开微信编辑页失败：{exc}")
+        return browser_state, artifacts, step_logs
+
+
+def fill_wechat_author_only(
+    channel: dict[str, object], browser_state: dict[str, object]
+) -> tuple[dict[str, object], list[str], list[str]]:
+    channel = ensure_channel_defaults(channel)
+    browser_state = dict(browser_state)
+    selector_version = str(channel.get("selectors_version", "wechat-mp-v1"))
+    selector_profile = get_selector_profile(selector_version)
+    step_logs = [
+        f"selector_profile={selector_version}",
+        "action=fill_wechat_author_only",
+    ]
+    artifacts: list[str] = []
+    artifact_dir = ARTIFACT_ROOT / "session"
+    screenshot_path = artifact_dir / f"wechat-author-only-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.png"
+
+    if not browser_state.get("logged_in"):
+        browser_state["last_error"] = "浏览器用户目录不存在或尚未建立登录态。"
+        browser_state["is_session_level_error"] = True
+        return browser_state, artifacts, step_logs + ["未执行作者填写：登录态不可用。"]
+
+    try:
+        def _run(context, page):
+            _enforce_single_tab(context, page, step_logs, phase="author_only_start", allow_recover=True)
+            editor_page = _wait_for_wechat_editor_in_current_page_with_retry(page, selector_profile, step_logs)
+            _enforce_single_tab(context, editor_page, step_logs, phase="author_only_editor_ready", allow_recover=False)
+            editor_page.wait_for_timeout(1200)
+            step_logs.append(f"已锁定当前微信编辑页 URL={editor_page.url}")
+            WECHAT_BROWSER_MANAGER.set_resident_page("editor")
+            WECHAT_BROWSER_MANAGER.set_action_state("fill_wechat_author_only", "fill_author")
+            author = _ensure_wechat_author_before_publish_settings(editor_page, channel, selector_profile, step_logs)
+            step_logs.append(f"作者已填写为 {author}")
+
+            editor_page.screenshot(path=str(screenshot_path), full_page=True)
+            artifacts.append(str(screenshot_path))
+            browser_state["last_opened_url"] = str(editor_page.url or "")
+            browser_state["current_page"] = str(editor_page.url or "")
+            browser_state["resident_page"] = "editor"
+            browser_state["last_screenshot"] = str(screenshot_path)
+            browser_state["last_error"] = None
+            browser_state["is_session_level_error"] = False
+
+        WECHAT_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run)
+        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
+        return browser_state, artifacts, step_logs
+    except Exception as exc:
+        ok, current_url = WECHAT_BROWSER_MANAGER.capture_screenshot(screenshot_path)
+        if ok:
+            artifacts.append(str(screenshot_path))
+            browser_state["last_screenshot"] = str(screenshot_path)
+            if current_url:
+                browser_state["last_opened_url"] = current_url
+                browser_state["current_page"] = current_url
+        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
+        browser_state["last_error"] = f"微信作者填写失败：{exc}"
+        browser_state["is_session_level_error"] = _browser_session_error_kind(exc, recovery_ok=False)
+        step_logs.append(f"微信作者填写失败：{exc}")
+        return browser_state, artifacts, step_logs
+
+
+def test_wechat_publish_settings_only(
+    channel: dict[str, object], browser_state: dict[str, object]
+) -> tuple[dict[str, object], list[str], list[str]]:
+    channel = ensure_channel_defaults(channel)
+    browser_state = dict(browser_state)
+    selector_version = str(channel.get("selectors_version", "wechat-mp-v1"))
+    selector_profile = get_selector_profile(selector_version)
+    step_logs = [
+        f"selector_profile={selector_version}",
+        "action=test_wechat_publish_settings_only",
+    ]
+    artifacts: list[str] = []
+    artifact_dir = ARTIFACT_ROOT / "session"
+    screenshot_path = artifact_dir / f"wechat-settings-only-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.png"
+
+    if not browser_state.get("logged_in"):
+        browser_state["last_error"] = "浏览器用户目录不存在或尚未建立登录态。"
+        browser_state["is_session_level_error"] = True
+        return browser_state, artifacts, step_logs + ["未执行后半段调试：登录态不可用。"]
+
+    try:
+        def _run(context, page):
+            _enforce_single_tab(context, page, step_logs, phase="settings_only_start", allow_recover=True)
+            editor_page = _wait_for_wechat_editor_in_current_page_with_retry(page, selector_profile, step_logs)
+            _enforce_single_tab(context, editor_page, step_logs, phase="settings_only_editor_ready", allow_recover=False)
+            editor_page.wait_for_timeout(1200)
+            step_logs.append(f"已锁定当前微信编辑页 URL={editor_page.url}")
+            WECHAT_BROWSER_MANAGER.set_resident_page("editor")
+            _ensure_wechat_author_before_publish_settings(editor_page, channel, selector_profile, step_logs)
+            WECHAT_BROWSER_MANAGER.set_action_state("test_wechat_publish_settings_only", "apply_publish_settings")
+            _apply_wechat_publish_settings(editor_page, selector_profile, step_logs)
+
+            save_selector = _pick_required_selector(
+                editor_page,
+                selector_profile.get("save_draft_button", []),
+                step_logs,
+                step_name="settings_only_pick_save_draft_selector",
+                timeout=6000,
+            )
+            WECHAT_BROWSER_MANAGER.set_action_state("test_wechat_publish_settings_only", "save_draft")
+            _pick_visible_locator(editor_page, save_selector, timeout=4000).click()
+            editor_page.wait_for_timeout(3500)
+            step_logs.append(f"已点击保存草稿 selector={save_selector}")
+
+            editor_page.screenshot(path=str(screenshot_path), full_page=True)
+            artifacts.append(str(screenshot_path))
+            browser_state["last_opened_url"] = str(editor_page.url or "")
+            browser_state["current_page"] = str(editor_page.url or "")
+            browser_state["resident_page"] = "editor"
+            browser_state["last_screenshot"] = str(screenshot_path)
+            browser_state["last_error"] = None
+            browser_state["is_session_level_error"] = False
+
+        WECHAT_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run)
+        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
+        return browser_state, artifacts, step_logs
+    except Exception as exc:
+        ok, current_url = WECHAT_BROWSER_MANAGER.capture_screenshot(screenshot_path)
+        if ok:
+            artifacts.append(str(screenshot_path))
+            browser_state["last_screenshot"] = str(screenshot_path)
+            if current_url:
+                browser_state["last_opened_url"] = current_url
+                browser_state["current_page"] = current_url
+        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
+        browser_state["last_error"] = f"微信后半段流程调试失败：{exc}"
+        browser_state["is_session_level_error"] = _browser_session_error_kind(exc, recovery_ok=False)
+        step_logs.append(f"微信后半段流程调试失败：{exc}")
+        return browser_state, artifacts, step_logs
+
+
 def launch_douyin_dashboard(channel: dict[str, object], browser_state: dict[str, object]) -> tuple[dict[str, object], list[str], list[str]]:
     channel = ensure_douyin_channel_defaults(channel)
     browser_state = dict(browser_state)
@@ -2742,8 +3836,8 @@ def fill_douyin_article_from_brief(
             markdown = str(draft.get("markdown") or "").strip()
             body_markdown = _strip_markdown_title(markdown, raw_title)
             body_text = _plain_text_from_markdown(body_markdown)[:8000]
-            title = raw_title[:30]
-            summary = raw_summary[:30]
+            title = _build_douyin_title(raw_title)
+            summary = _build_douyin_summary(raw_summary, raw_title)
 
             if not title:
                 raise RuntimeError("待填充标题为空。")
@@ -2850,13 +3944,15 @@ def run_browser_action(
     try:
         if action != "sync_wechat_draft":
             def _run_generic(context, page):
+                _enforce_single_tab(context, page, step_logs, phase=f"{action}_start", allow_recover=True)
                 WECHAT_BROWSER_MANAGER.set_action_state(action, "go_home")
                 _return_to_wechat_home(page, entry_url, step_logs)
                 if action == "open_preview":
                     editor_url = resolve_editor_url(draft, browser_state, entry_url)
                     page.goto(editor_url, wait_until="domcontentloaded", timeout=30000)
                     page.wait_for_timeout(2200)
-                    target = _locate_editor_page(context, page)
+                    _enforce_single_tab(context, page, step_logs, phase="open_preview_editor", allow_recover=False)
+                    target = _wait_for_wechat_editor_in_current_page_with_retry(page, selector_profile, step_logs)
                     target.wait_for_timeout(1800)
                     preview_selector = _pick_selector(target, selector_profile.get("preview_button", []), timeout=6000)
                     if not preview_selector:

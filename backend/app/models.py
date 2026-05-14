@@ -79,6 +79,17 @@ BriefLevel = Literal["rule", "enhanced", "article"]
 BriefStage = Literal["prepared", "synced", "failed"]
 BriefRecordStatus = Literal["local_only", "draft_synced", "published"]
 BriefRecordException = Literal["pending_confirmation", "draft_check_failed", "publish_check_failed", "draft_missing"]
+WorkflowMode = Literal["traditional", "agent"]
+AgentWorkflowStatus = Literal["running", "completed", "failed", "abandoned"]
+AgentWorkflowStep = Literal[
+    "sources_sync",
+    "event_selected",
+    "deep_dive_ready",
+    "material_brief_ready",
+    "article_saved",
+    "wechat_uploaded",
+    "douyin_uploaded",
+]
 DeliveryMode = Literal["immediate", "scheduled_batch"]
 AdmissionStrategy = Literal["conservative", "balanced", "aggressive"]
 
@@ -298,6 +309,31 @@ class WeChatPublishHistorySnapshot(BaseModel):
 
 class WeChatPublishHistoryResponse(BaseModel):
     item: WeChatPublishHistorySnapshot
+
+
+class WeChatEditorDomField(BaseModel):
+    key: str
+    label: str
+    found: bool = False
+    visible: bool = False
+    selector: Optional[str] = None
+    count: int = 0
+    sample_text: str = ""
+    sample_html: str = ""
+
+
+class WeChatEditorDomSnapshot(BaseModel):
+    checked_at: str
+    url: str = ""
+    page_title: str = ""
+    body_excerpt: str = ""
+    message: str = ""
+    items: list[WeChatEditorDomField] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
+
+
+class WeChatEditorDomResponse(BaseModel):
+    item: WeChatEditorDomSnapshot
 
 
 class DouyinArticleStructureField(BaseModel):
@@ -860,6 +896,22 @@ class BriefItem(BaseModel):
     record_exception: Optional[BriefRecordException] = None
     draft_remote_updated_at: Optional[str] = None
     publish_record_published_at: Optional[str] = None
+    workflow_mode: WorkflowMode = "traditional"
+    workflow_session_id: Optional[str] = None
+
+
+class AgentWorkflowItem(BaseModel):
+    workflow_session_id: str
+    status: AgentWorkflowStatus = "running"
+    current_step: AgentWorkflowStep = "sources_sync"
+    event_id: Optional[str] = None
+    material_brief_id: Optional[str] = None
+    article_brief_id: Optional[str] = None
+    target_platforms: list[Literal["wechat", "douyin"]] = Field(default_factory=list)
+    last_error: Optional[str] = None
+    started_at: str
+    updated_at: str
+    finished_at: Optional[str] = None
 
 
 class AgentArticlePayload(BaseModel):
@@ -875,6 +927,7 @@ class AgentArticlePayload(BaseModel):
     source_links: list[str] = Field(default_factory=list)
     risk_notes: list[str] = Field(default_factory=list)
     publish_to_wechat_draft: bool = True
+    publish_to_douyin_article: bool = False
     triggered_by: str = "agent"
     driver_label: str = "external-ai"
 
@@ -1075,6 +1128,14 @@ class BriefsResponse(BaseModel):
     has_more: bool = False
     stage_counts: BriefStageCounts = Field(default_factory=BriefStageCounts)
     record_counts: BriefRecordCounts = Field(default_factory=BriefRecordCounts)
+
+
+class AgentWorkflowResponse(BaseModel):
+    item: AgentWorkflowItem
+
+
+class AgentWorkflowsResponse(BaseModel):
+    items: list[AgentWorkflowItem] = Field(default_factory=list)
 
 
 class DictOkResponse(BaseModel):

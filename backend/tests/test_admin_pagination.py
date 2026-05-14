@@ -559,6 +559,74 @@ def test_briefs_projection_marks_check_failures_and_pending_confirmation() -> No
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_briefs_projection_keeps_published_when_draft_snapshot_misses() -> None:
+    temp_dir = _make_repo_temp_dir()
+    try:
+        client = _build_client(temp_dir)
+        state_file = temp_dir / "data" / "state.json"
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        state["browser"]["wechat"]["last_draft_check"]["items"] = []
+        state["browser"]["wechat"]["last_draft_check"]["matched_count"] = 0
+        state["browser"]["wechat"]["last_draft_check"]["missing_count"] = 1
+        state["browser"]["wechat"]["last_draft_check"]["checked_at"] = "2026-05-05T12:30:00+00:00"
+        state["browser"]["wechat"]["last_publish_history_check"]["checked_at"] = "2026-05-05T13:30:00+00:00"
+        _write_json(state_file, state)
+
+        response = client.get("/api/admin/briefs")
+        assert response.status_code == 200
+        payload = response.json()
+        statuses = {item["id"]: item["record_status"] for item in payload["items"]}
+        exceptions = {item["id"]: item["record_exception"] for item in payload["items"]}
+        assert statuses["brief-1"] == "published"
+        assert exceptions["brief-1"] is None
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_briefs_projection_delays_draft_missing_until_publish_check_catches_up() -> None:
+    temp_dir = _make_repo_temp_dir()
+    try:
+        client = _build_client(temp_dir)
+        state_file = temp_dir / "data" / "state.json"
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        state["browser"]["wechat"]["last_draft_check"]["items"] = []
+        state["browser"]["wechat"]["last_draft_check"]["checked_at"] = "2026-05-05T13:30:00+00:00"
+        state["browser"]["wechat"]["last_publish_history_check"]["items"] = []
+        state["browser"]["wechat"]["last_publish_history_check"]["record_count"] = 0
+        state["browser"]["wechat"]["last_publish_history_check"]["checked_at"] = "2026-05-05T12:00:00+00:00"
+        state["briefs"][1]["stage"] = "synced"
+        state["briefs"][1]["delivery_status"] = "verified"
+        state["briefs"][1]["wechat_editor_url"] = "https://mp.weixin.qq.com/draft2"
+        state["briefs"][1]["wechat_remote_appmsg_id"] = "appmsg-2"
+        state["briefs"][1]["last_verified_at"] = "2026-05-05T11:00:00+00:00"
+        _write_json(state_file, state)
+
+        response = client.get("/api/admin/briefs")
+        assert response.status_code == 200
+        payload = response.json()
+        exceptions = {item["id"]: item["record_exception"] for item in payload["items"]}
+        assert exceptions["brief-2"] == "pending_confirmation"
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_wechat_mapping_message_uses_current_reconcile_snapshot() -> None:
+    temp_dir = _make_repo_temp_dir()
+    try:
+        client = _build_client(temp_dir)
+
+        response = client.get("/api/admin/wechat/mapping")
+        assert response.status_code == 200
+        payload = response.json()["item"]
+
+        assert payload["remote_count"] == 1
+        assert payload["matched_count"] == 1
+        assert payload["missing_count"] == 1
+        assert payload["message"] == "已检查微信草稿箱，共读取 1 条远端草稿；当前对账已映射 1 条，待核对 1 条。"
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def test_list_logs_supports_level_query_and_page_size_clamp() -> None:
     temp_dir = _make_repo_temp_dir()
     try:
