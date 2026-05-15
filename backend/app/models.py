@@ -879,8 +879,12 @@ class BriefItem(BaseModel):
     source_links: list[str] = Field(default_factory=list)
     risk_notes: list[str] = Field(default_factory=list)
     prompt_package_markdown: str = ""
+    douyin_prompt_package_markdown: str = ""
     wechat_markdown: str = ""
     wechat_html: str = ""
+    douyin_title: str = ""
+    douyin_summary: str = ""
+    douyin_markdown: str = ""
     wechat_target_id: Optional[str] = None
     wechat_editor_url: Optional[str] = None
     wechat_remote_appmsg_id: Optional[str] = None

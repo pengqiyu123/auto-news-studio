@@ -11,6 +11,10 @@ from ..deep_dive import fetch_and_extract_link
 from ..briefing import (
     build_agent_article_writing_guide,
     build_brief_summary,
+    build_douyin_article_markdown,
+    build_douyin_prompt_package_markdown,
+    build_douyin_summary,
+    build_douyin_title,
     build_prompt_package_markdown,
     build_rule_brief_payload,
     optimize_wechat_article_title,
@@ -212,6 +216,10 @@ class BriefsMixin:
                 source_links=list(base_payload.get("source_links", [])),
             )
             wechat_markdown = str(base_payload.get("wechat_markdown") or "")
+            douyin_prompt_package_markdown = str(base_payload.get("douyin_prompt_package_markdown") or "")
+            douyin_title = str(base_payload.get("douyin_title") or "")
+            douyin_summary = str(base_payload.get("douyin_summary") or "")
+            douyin_markdown = str(base_payload.get("douyin_markdown") or "")
             existing = self._find_brief_record_for_event_by_level(state, event_id, brief_level="rule")
             brief = {
                 "id": existing.get("id") if existing else f"brief-{uuid4().hex[:12]}",
@@ -230,8 +238,12 @@ class BriefsMixin:
                 "source_links": list(base_payload.get("source_links", [])),
                 "risk_notes": risk_notes,
                 "prompt_package_markdown": prompt_package_markdown,
+                "douyin_prompt_package_markdown": douyin_prompt_package_markdown,
                 "wechat_markdown": wechat_markdown,
                 "wechat_html": markdown_to_wechat_html(wechat_markdown),
+                "douyin_title": douyin_title,
+                "douyin_summary": douyin_summary,
+                "douyin_markdown": douyin_markdown,
                 "wechat_target_id": existing.get("wechat_target_id") if existing else None,
                 "wechat_editor_url": existing.get("wechat_editor_url") if existing else None,
                 "wechat_remote_appmsg_id": existing.get("wechat_remote_appmsg_id") if existing else None,
@@ -366,6 +378,37 @@ class BriefsMixin:
                 article_markdown=article_markdown,
             )
             article_markdown = rewrite_markdown_title(article_markdown, raw_title, title)
+            llm_service = self._make_llm_service(state)
+            douyin_title = build_douyin_title(title)
+            douyin_summary = build_douyin_summary(summary or one_line or why_it_matters, douyin_title or title)
+            douyin_markdown = build_douyin_article_markdown(
+                title=douyin_title or title,
+                summary=douyin_summary,
+                article_markdown=article_markdown,
+                one_line=one_line,
+                why_it_matters=why_it_matters,
+                facts=facts,
+                quotes=quotes,
+                timeline=timeline,
+                source_links=source_links,
+            )
+            douyin_title, douyin_summary, douyin_markdown = self._rewrite_article_for_douyin(
+                llm_service,
+                event=event,
+                deep_dive=deep_dive,
+                brief_payload={
+                    "one_line": one_line,
+                    "why_it_matters": why_it_matters,
+                    "facts": facts,
+                    "quotes": quotes,
+                    "timeline": timeline,
+                    "risk_notes": risk_notes,
+                },
+                article_markdown=article_markdown,
+                fallback_title=douyin_title,
+                fallback_summary=douyin_summary,
+                fallback_markdown=douyin_markdown,
+            )
 
             full_text_sources = self._build_full_text_sources_for_ai(deep_dive, limit=4)
             source_quotes: list[dict[str, str]] = []
@@ -399,6 +442,25 @@ class BriefsMixin:
                 + "\n\n## AI 成稿正文\n"
                 + article_markdown
             ).strip()
+            douyin_prompt_package_markdown = build_douyin_prompt_package_markdown(
+                title=title,
+                one_line=one_line,
+                why_it_matters=why_it_matters,
+                facts=facts,
+                full_text_sources=[
+                    {
+                        "source_name": str(item.get("source_name") or "未知来源"),
+                        "title": str(item.get("title") or ""),
+                        "full_text": str(item.get("cleaned_full_text") or ""),
+                    }
+                    for item in full_text_sources
+                ],
+                source_quotes=source_quotes[:4],
+                timeline=timeline,
+                risk_notes=risk_notes,
+                source_links=source_links,
+                article_markdown=article_markdown,
+            )
 
             existing = self._find_brief_record_for_event_by_level(state, payload.event_id, brief_level="article")
             existing_revision = self._brief_revision(existing) if existing else None
@@ -420,8 +482,12 @@ class BriefsMixin:
                 "source_links": source_links,
                 "risk_notes": risk_notes,
                 "prompt_package_markdown": prompt_package_markdown,
+                "douyin_prompt_package_markdown": douyin_prompt_package_markdown,
                 "wechat_markdown": article_markdown,
-            "wechat_html": markdown_to_wechat_html(article_markdown),
+                "wechat_html": markdown_to_wechat_html(article_markdown),
+                "douyin_title": douyin_title,
+                "douyin_summary": douyin_summary,
+                "douyin_markdown": douyin_markdown,
                 "wechat_target_id": existing.get("wechat_target_id") if existing else build_wechat_target_id(brief_id),
                 "wechat_editor_url": existing.get("wechat_editor_url") if existing else None,
                 "wechat_remote_appmsg_id": existing.get("wechat_remote_appmsg_id") if existing else None,
@@ -765,8 +831,12 @@ class BriefsMixin:
             "timeline": list(brief.get("timeline", [])),
             "risk_notes": list(brief.get("risk_notes", [])),
             "source_links": list(brief.get("source_links", [])),
+            "douyin_prompt_package_markdown": str(brief.get("douyin_prompt_package_markdown") or ""),
             "wechat_markdown": str(brief.get("wechat_markdown") or ""),
             "wechat_html": str(brief.get("wechat_html") or ""),
+            "douyin_title": str(brief.get("douyin_title") or ""),
+            "douyin_summary": str(brief.get("douyin_summary") or ""),
+            "douyin_markdown": str(brief.get("douyin_markdown") or ""),
         }
         digest = hashlib.sha256(
             json.dumps(stable_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -986,42 +1056,43 @@ class BriefsMixin:
         return str(brief.get("prompt_package_markdown") or "")
 
     def delete_brief(self, brief_id: str, remote: str = "auto", triggered_by: str = "briefs") -> DictOkResponse:
-        state = self._upgrade_state(self._read())
-        brief = self._find_brief(state, brief_id)
-        should_delete_remote = False
-        if remote == "true":
-            should_delete_remote = True
-        elif remote == "auto":
-            should_delete_remote = str(brief.get("stage") or "") == "synced"
-        if should_delete_remote:
-            remote_id = str(brief.get("wechat_remote_appmsg_id") or brief.get("wechat_editor_url") or "").strip()
-            if not remote_id:
-                raise ValueError("该简报缺少远端草稿标识，无法删除微信草稿。")
-            self.delete_wechat_remote_draft(remote_id, triggered_by=triggered_by)
+        with self._lock:
             state = self._upgrade_state(self._read())
             brief = self._find_brief(state, brief_id)
-            if str(brief.get("stage") or "") == "synced":
-                raise ValueError("远端草稿删除后，本地状态尚未完成回写，请稍后重试。")
+            should_delete_remote = False
+            if remote == "true":
+                should_delete_remote = True
+            elif remote == "auto":
+                should_delete_remote = str(brief.get("stage") or "") == "synced"
+            if should_delete_remote:
+                remote_id = str(brief.get("wechat_remote_appmsg_id") or brief.get("wechat_editor_url") or "").strip()
+                if not remote_id:
+                    raise ValueError("该简报缺少远端草稿标识，无法删除微信草稿。")
+                self.delete_wechat_remote_draft(remote_id, triggered_by=triggered_by)
+                state = self._upgrade_state(self._read())
+                brief = self._find_brief(state, brief_id)
+                if str(brief.get("stage") or "") == "synced":
+                    raise ValueError("远端草稿删除后，本地状态尚未完成回写，请稍后重试。")
 
-        briefs = [item for item in state.get("briefs", []) if not (isinstance(item, dict) and str(item.get("id") or "") == brief_id)]
-        state["briefs"] = briefs
-        for event in state.get("intel_events", []):
-            if isinstance(event, dict) and str(event.get("brief_id") or "") == brief_id:
-                event["brief_id"] = None
-        state["publish_tasks"].insert(
-            0,
-            create_publish_task(
-                brief_id,
-                "delete_brief",
-                "completed",
-                "已删除本地简报。",
-                triggered_by,
-                str(state["channels"]["wechat"]["selectors_version"]),
-            ),
-        )
-        self._append_log(state, "success", "brief", f"已删除本地简报：{brief.get('title') or brief_id}")
-        self._write(state)
-        return DictOkResponse(ok=True, message="已删除本地简报。")
+            briefs = [item for item in state.get("briefs", []) if not (isinstance(item, dict) and str(item.get("id") or "") == brief_id)]
+            state["briefs"] = briefs
+            for event in state.get("intel_events", []):
+                if isinstance(event, dict) and str(event.get("brief_id") or "") == brief_id:
+                    event["brief_id"] = None
+            state["publish_tasks"].insert(
+                0,
+                create_publish_task(
+                    brief_id,
+                    "delete_brief",
+                    "completed",
+                    "已删除本地简报。",
+                    triggered_by,
+                    str(state["channels"]["wechat"]["selectors_version"]),
+                ),
+            )
+            self._append_log(state, "success", "brief", f"已删除本地简报：{brief.get('title') or brief_id}")
+            self._write(state)
+            return DictOkResponse(ok=True, message="已删除本地简报。")
 
     def _utc_tz(self):
         from ..store_base import UTC

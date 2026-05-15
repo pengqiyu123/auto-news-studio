@@ -238,6 +238,9 @@ def test_create_agent_article_optimizes_title_and_rewrites_markdown_heading() ->
         assert article.title == "英伟达财报：数据中心收入再创新高"
         assert article.summary == "数据中心收入再创新高，市场预期继续上修"
         assert article.wechat_markdown.startswith("# 英伟达财报：数据中心收入再创新高")
+        assert article.douyin_title == "英伟达财报"
+        assert article.douyin_summary
+        assert article.douyin_markdown.startswith("# 英伟达财报")
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -447,4 +450,57 @@ def test_create_agent_article_persists_workflow_before_generating_deep_dive() ->
     finally:
         store_mixins_pkg.briefs_mixin.fetch_and_extract_link = original_fetch
         StudioStore._event_deep_dive_inputs = original_event_inputs
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_delete_brief_removes_local_record_and_event_pointer() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["intel_events"] = [
+            {
+                "id": "evt-delete-1",
+                "title": "Delete me",
+                "summary": "summary",
+                "alert_state": "watch",
+                "entity_names": [],
+                "entity_ids": [],
+                "brief_id": "brief-delete-1",
+                "watchlisted": True,
+                "ignored": False,
+            }
+        ]
+        state["briefs"] = [
+            {
+                "id": "brief-delete-1",
+                "event_id": "evt-delete-1",
+                "deep_dive_id": "dd-delete-1",
+                "brief_level": "article",
+                "stage": "prepared",
+                "title": "Delete me",
+                "summary": "summary",
+                "one_line": "one line",
+                "why_it_matters": "why",
+                "facts": [],
+                "quotes": [],
+                "timeline": [],
+                "entity_names": [],
+                "source_links": [],
+                "risk_notes": [],
+                "prompt_package_markdown": "pkg",
+                "wechat_markdown": "# Delete me\n\nbody",
+                "wechat_html": "<h1>Delete me</h1>",
+                "updated_at": "2026-05-14T10:00:00+08:00",
+                "delivery_status": "idle",
+            }
+        ]
+        store._write(state)
+
+        result = store.delete_brief("brief-delete-1", remote="false", triggered_by="test")
+        assert result.ok is True
+
+        refreshed = store._upgrade_state(store._read())
+        assert refreshed["briefs"] == []
+        assert refreshed["intel_events"][0]["brief_id"] is None
+    finally:
         shutil.rmtree(temp_root, ignore_errors=True)

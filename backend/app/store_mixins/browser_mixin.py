@@ -11,6 +11,12 @@ from ..models import (
     DouyinArticleStructureSnapshot,
     DouyinChannelConfig,
 )
+from ..briefing import (
+    build_douyin_article_markdown,
+    build_douyin_summary,
+    build_douyin_title,
+    should_refresh_douyin_summary,
+)
 from ..publishers import (
     create_publish_task,
     ensure_douyin_channel_defaults,
@@ -185,11 +191,50 @@ class BrowserMixin:
         if not brief:
             raise ValueError("未找到可用于抖音填充的本地简报。")
 
+        douyin_title = str(brief.get("douyin_title") or "").strip()
+        douyin_summary = str(brief.get("douyin_summary") or "").strip()
+        douyin_markdown = str(brief.get("douyin_markdown") or "").strip()
+        if not douyin_title:
+            douyin_title = build_douyin_title(str(brief.get("title") or ""))
+            brief["douyin_title"] = douyin_title
+        source_summary = str(
+            brief.get("summary")
+            or brief.get("one_line")
+            or brief.get("why_it_matters")
+            or douyin_summary
+            or ""
+        )
+        regenerated_summary = build_douyin_summary(
+            source_summary,
+            douyin_title or str(brief.get("title") or ""),
+        )
+        if should_refresh_douyin_summary(
+            douyin_summary,
+            douyin_title or str(brief.get("title") or ""),
+        ):
+            douyin_summary = regenerated_summary or douyin_summary
+        if douyin_summary != str(brief.get("douyin_summary") or "").strip():
+            douyin_summary = regenerated_summary
+            brief["douyin_summary"] = douyin_summary
+        if not douyin_markdown:
+            douyin_markdown = build_douyin_article_markdown(
+                title=douyin_title or str(brief.get("title") or ""),
+                summary=douyin_summary,
+                article_markdown=str(brief.get("wechat_markdown") or ""),
+                one_line=str(brief.get("one_line") or ""),
+                why_it_matters=str(brief.get("why_it_matters") or ""),
+                facts=list(brief.get("facts", [])),
+                quotes=list(brief.get("quotes", [])),
+                timeline=list(brief.get("timeline", [])),
+                source_links=list(brief.get("source_links", [])),
+            )
+            brief["douyin_markdown"] = douyin_markdown
+
         browser_payload = {
             "id": str(brief.get("id") or ""),
-            "title": str(brief.get("title") or ""),
-            "summary": str(brief.get("one_line") or ""),
-            "markdown": str(brief.get("wechat_markdown") or ""),
+            "title": douyin_title or str(brief.get("title") or ""),
+            "summary": douyin_summary or str(brief.get("one_line") or ""),
+            "markdown": douyin_markdown or str(brief.get("wechat_markdown") or ""),
         }
         browser, artifacts, step_logs = fill_douyin_article_from_brief(
             state["channels"]["douyin"], browser, browser_payload

@@ -1059,48 +1059,9 @@ def _build_douyin_title(raw_title: str, limit: int = 30) -> str:
 
 
 def _build_douyin_summary(raw_summary: str, raw_title: str, limit: int = 30) -> str:
-    summary = _normalize_compact_text(raw_summary)
-    title = _normalize_compact_text(raw_title)
-    if summary and len(summary) <= limit:
-        return summary
+    from .briefing import build_douyin_summary
 
-    sentence = _pick_first_sentence(summary)
-    if sentence and len(sentence) <= limit:
-        return sentence
-
-    clause = _pick_best_prefix_within_limit(summary, limit, ("，", ",", "、", "：", ":", "；", ";"))
-    if clause and len(clause) <= limit:
-        return clause
-
-    if summary and title and summary.startswith(title):
-        remainder = summary[len(title) :].strip(" ，,、:：;；-")
-        sentence = _pick_first_sentence(remainder)
-        if sentence and len(sentence) <= limit:
-            return sentence
-        clause = _pick_best_prefix_within_limit(remainder, limit, ("，", ",", "、", "：", ":", "；", ";"))
-        if clause and len(clause) <= limit:
-            return clause
-        if remainder and len(remainder) <= limit:
-            return remainder
-
-    if title:
-        derived = title
-        for marker in ("：", ":"):
-            if marker in title:
-                prefix, suffix = title.split(marker, 1)
-                prefix = prefix.strip()
-                suffix = suffix.strip()
-                if suffix and len(suffix) <= limit:
-                    derived = suffix
-                    break
-                if prefix and len(prefix) <= limit:
-                    derived = prefix
-                    break
-        if derived and len(derived) <= limit:
-            return derived
-
-    fallback = sentence or summary or title
-    return _trim_to_limit(fallback, limit)
+    return build_douyin_summary(raw_summary, raw_title, limit)
 
 
 def _clamp_author(author: str) -> str:

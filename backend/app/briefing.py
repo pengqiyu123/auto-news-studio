@@ -3,9 +3,35 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .wechat_format import strip_markdown_title
+
 
 WECHAT_TITLE_LIMIT = 64
 WECHAT_TITLE_HOOK_LIMIT = 28
+DOUYIN_TITLE_LIMIT = 30
+DOUYIN_SUMMARY_LIMIT = 30
+_DOUYIN_SUMMARY_WEAK_ENDINGS = (
+    "正式",
+    "已经",
+    "正在",
+    "将于",
+    "关于",
+    "有关",
+    "相关",
+)
+_DOUYIN_SUMMARY_SHORTENERS = (
+    (r"国行\s*Nintendo\s+Switch", "国行Switch"),
+    (r"国行\s*Switch", "国行Switch"),
+    (r"\bNintendo\s+Switch\b", "Switch"),
+    (r"\bNintendo\s+e\s*商店\b", "e商店"),
+    (r"\be\s+商店\b", "e商店"),
+    (r"网络相关运营服务", "网络服务"),
+    (r"网络相关服务", "网络服务"),
+    (r"网络运营服务", "网络服务"),
+    (r"正式停止", "停止"),
+    (r"正式关停", "关停"),
+    (r"正式结束", "结束"),
+)
 _LOW_SIGNAL_TITLE_TAILS = {
     "summary",
     "body",
@@ -65,6 +91,16 @@ _AI_STYLE_BANNED_PHRASES = (
     "不可或缺",
     "举足轻重",
 )
+
+_DOUYIN_DROP_SECTION_TITLES = {
+    "来源链接",
+    "参考资料",
+    "延伸阅读",
+    "相关阅读",
+    "资料来源",
+    "引用来源",
+    "消息来源",
+}
 
 
 def _contains_cjk(value: str) -> bool:
@@ -253,6 +289,431 @@ def build_brief_summary(
     return ""
 
 
+def _normalize_compact_text(value: str) -> str:
+    compact = re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip()
+    return compact.strip(" \t\r\n-—_|｜/\\:：;；，,。！？!?")
+
+
+def _remove_inline_markdown(text: str) -> str:
+    value = str(text or "")
+    value = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
+    value = value.replace("**", "").replace("__", "")
+    value = re.sub(r"`([^`]+)`", r"\1", value)
+    value = re.sub(r"(?<!\*)\*(?!\*)([^*]+)(?<!\*)\*(?!\*)", r"\1", value)
+    value = re.sub(r"(?<!_)_(?!_)([^_]+)(?<!_)_(?!_)", r"\1", value)
+    return value
+
+
+def _pick_first_sentence(value: str) -> str:
+    compact = _normalize_compact_text(value)
+    if not compact:
+        return ""
+    match = re.search(r"[。！？?!；;\n]", compact)
+    if not match:
+        return compact
+    return compact[: match.end()].strip(" \t\r\n-—_|｜/\\:：;；，,。！？!?")
+
+
+def _pick_best_prefix_within_limit(value: str, limit: int, markers: tuple[str, ...]) -> str:
+    compact = _normalize_compact_text(value)
+    if not compact:
+        return ""
+    best = ""
+    for marker in markers:
+        start = 0
+        while True:
+            index = compact.find(marker, start)
+            if index < 0 or index >= limit:
+                break
+            candidate = compact[:index].strip(" ，,、:：;；-")
+            if len(candidate) > len(best):
+                best = candidate
+            start = index + len(marker)
+    return best
+
+
+def _trim_to_limit(value: str, limit: int) -> str:
+    compact = _normalize_compact_text(value)
+    if len(compact) <= limit:
+        return compact
+    trimmed = compact[:limit].rstrip(" ，,、:：;；-")
+    return trimmed or compact[:limit]
+
+
+def _compact_douyin_summary_text(value: str) -> str:
+    compact = _normalize_compact_text(_remove_inline_markdown(value))
+    if not compact:
+        return ""
+    for pattern, replacement in _DOUYIN_SUMMARY_SHORTENERS:
+        compact = re.sub(pattern, replacement, compact, flags=re.IGNORECASE)
+    compact = re.sub(r"(?<=[A-Za-z0-9])\s+(?=[的地得])", "", compact)
+    compact = re.sub(r"\s{2,}", " ", compact)
+    return _normalize_compact_text(compact)
+
+
+def _strip_douyin_summary_time_prefix(value: str) -> str:
+    compact = _compact_douyin_summary_text(value)
+    if not compact:
+        return ""
+    stripped = re.sub(
+        r"^(今天|今日|今晚|今夜|当地时间)?\s*\d{0,4}(?:年)?\d{0,2}(?:月)?\d{0,2}(?:日)?\s*(?:凌晨|早上|上午|中午|下午|傍晚|晚上|晚间)?\s*\d{0,2}(?::\d{2})?(?:时|点|分)?\s*[，,:：]\s*",
+        "",
+        compact,
+    ).strip()
+    return _compact_douyin_summary_text(stripped)
+
+
+def _is_complete_douyin_summary_candidate(value: str, *, min_len: int = 4) -> bool:
+    candidate = _normalize_compact_text(value)
+    if not candidate or len(candidate) < min_len:
+        return False
+    if candidate.endswith(("，", ",", "、", "：", ":", "；", ";", "-", "的")):
+        return False
+    return not candidate.endswith(_DOUYIN_SUMMARY_WEAK_ENDINGS)
+
+
+def _pick_douyin_summary_candidate(value: str, limit: int) -> str:
+    compact = _compact_douyin_summary_text(value)
+    if not compact:
+        return ""
+    sentence = _pick_first_sentence(compact)
+    if sentence and len(sentence) <= limit and _is_complete_douyin_summary_candidate(sentence):
+        return sentence
+    clause = _pick_best_prefix_within_limit(compact, limit, ("，", ",", "、", "：", ":", "；", ";"))
+    if clause and len(clause) <= limit and len(clause) >= 8 and _is_complete_douyin_summary_candidate(clause):
+        return clause
+    if len(compact) <= limit and _is_complete_douyin_summary_candidate(compact):
+        return compact
+    return ""
+
+
+def should_refresh_douyin_summary(raw_summary: str, raw_title: str, limit: int = DOUYIN_SUMMARY_LIMIT) -> bool:
+    summary = _compact_douyin_summary_text(raw_summary)
+    title = _compact_douyin_summary_text(raw_title)
+    if not summary:
+        return True
+    if len(summary) > limit:
+        return True
+    if summary == title:
+        return True
+    return not _is_complete_douyin_summary_candidate(summary)
+
+
+def build_douyin_title(raw_title: str, limit: int = DOUYIN_TITLE_LIMIT) -> str:
+    compact = _normalize_compact_text(raw_title)
+    if len(compact) <= limit:
+        return compact
+
+    headline = _pick_first_sentence(compact)
+    if headline and len(headline) <= limit:
+        return headline
+
+    for marker in ("：", ":"):
+        if marker in compact:
+            prefix, suffix = compact.split(marker, 1)
+            prefix = prefix.strip()
+            suffix = suffix.strip()
+            if prefix and len(prefix) <= limit:
+                return prefix
+            if suffix and len(suffix) <= limit:
+                return suffix
+            if prefix and suffix:
+                merged = f"{prefix}{marker}{suffix}"
+                if len(merged) <= limit:
+                    return merged
+
+    for marker in ("，", ",", "、", " - ", "-"):
+        if marker in compact:
+            segment = compact.split(marker, 1)[0].strip()
+            if segment and len(segment) <= limit:
+                return segment
+
+    return _trim_to_limit(compact, limit)
+
+
+def build_douyin_summary(
+    raw_summary: str,
+    raw_title: str,
+    limit: int = DOUYIN_SUMMARY_LIMIT,
+) -> str:
+    summary = _compact_douyin_summary_text(raw_summary)
+    title = _compact_douyin_summary_text(raw_title)
+
+    stripped_time_prefix = _strip_douyin_summary_time_prefix(summary)
+    for candidate_source in (stripped_time_prefix, summary):
+        candidate = _pick_douyin_summary_candidate(candidate_source, limit)
+        if candidate and candidate != title:
+            return candidate
+
+    if summary and title and summary.startswith(title):
+        remainder = _compact_douyin_summary_text(summary[len(title) :].strip(" ，,、:：;；-"))
+        candidate = _pick_douyin_summary_candidate(remainder, limit)
+        if candidate:
+            return candidate
+
+    if title:
+        derived = title
+        for marker in ("：", ":"):
+            if marker in title:
+                prefix, suffix = title.split(marker, 1)
+                prefix = prefix.strip()
+                suffix = suffix.strip()
+                if suffix and len(suffix) <= limit:
+                    derived = suffix
+                    break
+                if prefix and len(prefix) <= limit:
+                    derived = prefix
+                    break
+        if derived and len(derived) <= limit and derived != title:
+            return derived
+
+    fallback_candidates = [
+        _pick_first_sentence(stripped_time_prefix),
+        _pick_best_prefix_within_limit(stripped_time_prefix, limit, ("，", ",", "、", "：", ":", "；", ";")),
+        _pick_first_sentence(summary),
+        _pick_best_prefix_within_limit(summary, limit, ("，", ",", "、", "：", ":", "；", ";")),
+        summary,
+        title,
+    ]
+    for fallback in fallback_candidates:
+        compact = _compact_douyin_summary_text(fallback)
+        if compact and len(compact) <= limit and compact != title:
+            return compact
+
+    fallback = summary or title
+    return _trim_to_limit(_compact_douyin_summary_text(fallback), limit)
+
+
+def ensure_markdown_title(markdown: str, title: str) -> str:
+    normalized_title = _normalize_title_text(title)
+    if not normalized_title:
+        return str(markdown or "").strip()
+
+    lines = str(markdown or "").splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and lines[0].strip().startswith("#"):
+        lines[0] = f"# {normalized_title}"
+        return "\n".join(lines).strip()
+
+    body = str(markdown or "").strip()
+    if not body:
+        return f"# {normalized_title}"
+    return f"# {normalized_title}\n\n{body}".strip()
+
+
+def _normalize_douyin_heading(text: str) -> str:
+    return re.sub(r"[：:：。！？?!]+$", "", _normalize_compact_text(text))
+
+
+def _is_douyin_source_heading(text: str) -> bool:
+    compact = _normalize_douyin_heading(text)
+    return compact in _DOUYIN_DROP_SECTION_TITLES
+
+
+def _is_url_only(text: str) -> bool:
+    return bool(re.fullmatch(r"https?://\S+", str(text or "").strip()))
+
+
+def _extract_markdown_blocks(markdown: str) -> list[tuple[str, str]]:
+    blocks: list[tuple[str, str]] = []
+    paragraph_lines: list[str] = []
+    in_code_block = False
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph_lines
+        if paragraph_lines:
+            blocks.append(("paragraph", " ".join(paragraph_lines).strip()))
+            paragraph_lines = []
+
+    for raw in str(markdown or "").splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        if not stripped:
+            flush_paragraph()
+            continue
+        if stripped.startswith("#"):
+            flush_paragraph()
+            blocks.append(("heading", stripped.lstrip("#").strip()))
+            continue
+        quote_match = re.match(r"^>\s*(.*)$", stripped)
+        if quote_match:
+            flush_paragraph()
+            blocks.append(("quote", quote_match.group(1).strip()))
+            continue
+        unordered_match = re.match(r"^[-*+]\s+(.*)$", stripped)
+        if unordered_match:
+            flush_paragraph()
+            blocks.append(("item", unordered_match.group(1).strip()))
+            continue
+        ordered_match = re.match(r"^\d+\.\s+(.*)$", stripped)
+        if ordered_match:
+            flush_paragraph()
+            blocks.append(("item", ordered_match.group(1).strip()))
+            continue
+        paragraph_lines.append(stripped)
+
+    flush_paragraph()
+    return blocks
+
+
+def _drop_leading_markdown_heading(markdown: str) -> str:
+    lines = list(str(markdown or "").splitlines())
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and lines[0].strip().startswith("#"):
+        lines.pop(0)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+    return "\n".join(lines).strip()
+
+
+def _split_mobile_paragraph(text: str, *, max_chars: int = 72, max_sentences: int = 2) -> list[str]:
+    compact = _normalize_compact_text(text)
+    if not compact:
+        return []
+
+    sentences = [item.strip() for item in re.split(r"(?<=[。！？?!])\s*", compact) if item.strip()]
+    if not sentences:
+        sentences = [compact]
+
+    parts: list[str] = []
+    current = ""
+    sentence_count = 0
+
+    for sentence in sentences:
+        if not sentence:
+            continue
+        candidate = f"{current}{sentence}" if current else sentence
+        if current and (len(candidate) > max_chars or sentence_count >= max_sentences):
+            parts.append(current.strip())
+            current = sentence
+            sentence_count = 1
+            continue
+        current = candidate
+        sentence_count += 1
+
+    if current.strip():
+        parts.append(current.strip())
+
+    if len(parts) == 1 and len(parts[0]) > max_chars:
+        clauses = [item.strip() for item in re.split(r"(?<=[，、；;])\s*", parts[0]) if item.strip()]
+        if len(clauses) > 1:
+            parts = []
+            current = ""
+            for clause in clauses:
+                candidate = f"{current}{clause}" if current else clause
+                if current and len(candidate) > max_chars:
+                    parts.append(current.strip())
+                    current = clause
+                    continue
+                current = candidate
+            if current.strip():
+                parts.append(current.strip())
+
+    return [item for item in parts if item]
+
+
+def build_douyin_article_markdown(
+    *,
+    title: str,
+    summary: str,
+    article_markdown: str,
+    one_line: str = "",
+    why_it_matters: str = "",
+    facts: list[str] | None = None,
+    quotes: list[str] | None = None,
+    timeline: list[str] | None = None,
+    source_links: list[str] | None = None,
+    max_body_chars: int = 2600,
+) -> str:
+    douyin_title = build_douyin_title(title)
+    seed_summary = build_douyin_summary(summary or one_line or why_it_matters, douyin_title or title)
+    body_markdown = _drop_leading_markdown_heading(article_markdown)
+    if not body_markdown:
+        body_markdown = strip_markdown_title(article_markdown, title)
+    if title and body_markdown == str(article_markdown or "").strip():
+        body_markdown = strip_markdown_title(article_markdown, douyin_title or title)
+
+    blocks = _extract_markdown_blocks(body_markdown)
+    paragraphs: list[str] = []
+    seen: set[str] = set()
+    stop_collecting = False
+
+    def append_paragraph(text: str, *, keep_heading: bool = False) -> None:
+        normalized = _normalize_compact_text(text)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        paragraphs.append(f"## {normalized}" if keep_heading else normalized)
+
+    if seed_summary:
+        for part in _split_mobile_paragraph(seed_summary, max_chars=60, max_sentences=1):
+            append_paragraph(part)
+    if why_it_matters:
+        for part in _split_mobile_paragraph(why_it_matters, max_chars=60, max_sentences=1):
+            append_paragraph(part)
+            break
+
+    skip_first_title_like_heading = True
+    for kind, raw_text in blocks:
+        if stop_collecting:
+            break
+        text = _normalize_compact_text(_remove_inline_markdown(raw_text))
+        if not text or _is_url_only(text):
+            continue
+        if _is_douyin_source_heading(text):
+            stop_collecting = True
+            continue
+        if kind == "heading":
+            heading = _normalize_douyin_heading(text)
+            if heading and skip_first_title_like_heading and heading.startswith(_normalize_douyin_heading(douyin_title)):
+                skip_first_title_like_heading = False
+                continue
+            if heading and heading != _normalize_douyin_heading(douyin_title):
+                append_paragraph(heading, keep_heading=True)
+                skip_first_title_like_heading = False
+            continue
+        for chunk in _split_mobile_paragraph(text):
+            append_paragraph(chunk)
+
+    if not paragraphs:
+        fallback_candidates = [
+            str(one_line or "").strip(),
+            *[str(item).strip() for item in list(facts or []) if str(item).strip()],
+            *[str(item).strip() for item in list(quotes or [])[:2] if str(item).strip()],
+            *[str(item).strip() for item in list(timeline or [])[:2] if str(item).strip()],
+        ]
+        for candidate in fallback_candidates:
+            for chunk in _split_mobile_paragraph(candidate):
+                append_paragraph(chunk)
+            if paragraphs:
+                break
+
+    trimmed: list[str] = []
+    used_chars = 0
+    for paragraph in paragraphs:
+        normalized = paragraph.strip()
+        if not normalized:
+            continue
+        if trimmed and trimmed[-1].startswith("## ") and normalized.startswith("## "):
+            continue
+        next_len = used_chars + len(normalized)
+        if trimmed and next_len > max_body_chars:
+            break
+        trimmed.append(normalized)
+        used_chars = next_len
+
+    body = "\n\n".join(trimmed).strip()
+    if not body:
+        body = seed_summary or why_it_matters or douyin_title or _normalize_compact_text(article_markdown)
+    return ensure_markdown_title(body, douyin_title or title)
+
+
 def build_prompt_package_markdown(
     *,
     title: str,
@@ -350,6 +811,147 @@ def build_prompt_package_markdown(
     return "\n".join(lines).strip()
 
 
+def build_douyin_article_writing_guide() -> str:
+    banned_phrases = "、".join(_AI_STYLE_BANNED_PHRASES)
+    return f"""\
+## 抖音文章写作规范
+
+### 目标
+- 输出适合抖音创作者中心“文章”页的正文，而不是公众号长文
+- 信息仍然要完整，但呈现必须更像移动端阅读：更短、更直接、更前置结论
+
+### 标题
+- 标题控制在 30 个字以内
+- 优先把产品名、时间点、结果放到前半句
+- 不要用公众号双段式长标题，不要用“背后”“深度解析”这类拖长结构
+
+### 摘要
+- 摘要控制在 30 个字以内
+- 只说最核心的新信息，不重复空话
+- 适合直接出现在抖音文章摘要输入框
+
+### 正文结构
+- 正文建议 600-1200 字，最多不要超过 1500 字
+- 开头 1-2 句内必须交代时间点、发生了什么、对谁有影响
+- 全文以短段落为主，每段 1-2 句，避免连续大段分析
+- 如确有必要，可保留 2-4 个短小标题，但标题必须口语化、有信息量
+- 不要保留“来源链接”“延伸阅读”“参考资料”等公众号尾巴
+
+### 风格要求
+- 语气更直接，像在告诉用户“这件事现在到底意味着什么”
+- 保持事实密度，但少写宏大铺垫，少写行业腔
+- 可以有判断，但判断必须紧贴已核验事实
+- 允许比公众号更口语一点，但不能夸张、不能煽动、不能标题党
+
+### 事实底线
+- 所有数字、日期、产品名、公司名必须来自已核验素材
+- 引号内内容必须来自真实原文摘录
+- 不要把国行服务停止写成全球 Switch 停服
+- 不要新增素材里没有的背景信息
+
+### 禁止事项
+- 不要写“本文将”“接下来我们来看”
+- 不要堆来源链接到正文
+- 不要用公众号结尾式总结
+- 禁止使用这些高频 AI 味词或近义表达：{banned_phrases}
+""".strip()
+
+
+def build_douyin_prompt_package_markdown(
+    *,
+    title: str,
+    one_line: str,
+    why_it_matters: str,
+    facts: list[str],
+    full_text_sources: list[dict[str, str]],
+    source_quotes: list[dict[str, str]],
+    timeline: list[str],
+    risk_notes: list[str],
+    source_links: list[str],
+    article_markdown: str,
+    article_writing_guide: str = "",
+) -> str:
+    guide = str(article_writing_guide or build_douyin_article_writing_guide()).strip()
+    lines = [
+        "## 写作任务",
+        "基于以下已核验素材，把现有成稿改写成适合抖音创作者中心文章页的版本。",
+        "",
+    ]
+    if guide:
+        lines.extend(["## 写作要求", guide, ""])
+    lines.extend(
+        [
+            "## 事件标题",
+            title.strip() or "未命名事件",
+            "",
+            "## 一句话结论",
+            one_line.strip() or "请基于核心事实给出一句话结论。",
+            "",
+            "## 为什么值得关注",
+            why_it_matters.strip() or "请结合事实与用户影响判断其重要性。",
+            "",
+            "## 核心事实",
+        ]
+    )
+    if facts:
+        lines.extend([f"- {item}" for item in facts])
+    else:
+        lines.append("- 暂无足够正文事实，请结合来源链接补充核验。")
+
+    lines.extend(["", "## 已抓取完整正文"])
+    if full_text_sources:
+        for item in full_text_sources:
+            source_name = item.get("source_name", "未知来源")
+            source_title = item.get("title", "")
+            full_text = item.get("full_text", "")
+            if not full_text:
+                continue
+            lines.append(f"来源：{source_name}")
+            if source_title:
+                lines.append(f"标题：{source_title}")
+            lines.append("正文：")
+            lines.append(full_text)
+            lines.append("")
+    else:
+        lines.append("暂无可用完整正文")
+        lines.append("")
+
+    lines.extend(["## 正文摘录"])
+    if source_quotes:
+        for item in source_quotes:
+            source_name = item.get("source_name", "未知来源")
+            quote = item.get("quote", "")
+            if not quote:
+                continue
+            lines.append(f"来源：{source_name}")
+            lines.append(f"> {quote}")
+            lines.append("")
+    else:
+        lines.append("> 暂无可用正文摘录")
+        lines.append("")
+
+    lines.extend(["## 现有成稿（供改写参考）", article_markdown.strip() or "暂无现有成稿", ""])
+
+    lines.extend(["## 时间线"])
+    if timeline:
+        lines.extend([f"- {item}" for item in timeline])
+    else:
+        lines.append("- 时间线待补充")
+
+    lines.extend(["", "## 风险与不确定性"])
+    if risk_notes:
+        lines.extend([f"- {item}" for item in risk_notes])
+    else:
+        lines.append("- 暂未发现额外风险说明")
+
+    lines.extend(["", "## 来源链接"])
+    if source_links:
+        lines.extend([f"- {item}" for item in source_links])
+    else:
+        lines.append("- 暂无来源链接")
+    return "\n".join(lines).strip()
+
+
 def build_rule_brief_payload(event: dict[str, Any], deep_dive: dict[str, Any]) -> dict[str, Any]:
     title = str(event.get("title") or deep_dive.get("title") or "未命名事件").strip()
     facts = [str(item).strip() for item in deep_dive.get("facts", []) if str(item).strip()]
@@ -426,6 +1028,32 @@ def build_rule_brief_payload(event: dict[str, Any], deep_dive: dict[str, Any]) -
     if source_links:
         wechat_lines.extend(["", "## 来源链接"])
         wechat_lines.extend([f"- {item}" for item in source_links[:6]])
+    wechat_markdown = "\n".join(wechat_lines).strip()
+    douyin_title = build_douyin_title(title)
+    douyin_summary = build_douyin_summary(summary or one_line, douyin_title or title)
+    douyin_markdown = build_douyin_article_markdown(
+        title=douyin_title or title,
+        summary=douyin_summary,
+        article_markdown=wechat_markdown,
+        one_line=one_line,
+        why_it_matters=why_it_matters,
+        facts=facts[:6],
+        quotes=quotes[:4],
+        timeline=timeline[:6],
+        source_links=source_links[:10],
+    )
+    douyin_prompt_package_markdown = build_douyin_prompt_package_markdown(
+        title=title,
+        one_line=one_line,
+        why_it_matters=why_it_matters,
+        facts=facts[:6],
+        full_text_sources=full_text_sources[:4],
+        source_quotes=source_quotes[:4],
+        timeline=timeline[:6],
+        risk_notes=risk_notes[:5],
+        source_links=source_links[:10],
+        article_markdown=wechat_markdown,
+    )
     return {
         "title": title,
         "one_line": one_line,
@@ -439,7 +1067,11 @@ def build_rule_brief_payload(event: dict[str, Any], deep_dive: dict[str, Any]) -
         "risk_notes": risk_notes[:5],
         "article_writing_guide": writing_guide,
         "prompt_package_markdown": prompt_package_markdown,
-        "wechat_markdown": "\n".join(wechat_lines).strip(),
+        "wechat_markdown": wechat_markdown,
+        "douyin_prompt_package_markdown": douyin_prompt_package_markdown,
+        "douyin_title": douyin_title,
+        "douyin_summary": douyin_summary,
+        "douyin_markdown": douyin_markdown,
     }
 
 
