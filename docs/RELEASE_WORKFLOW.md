@@ -16,25 +16,34 @@
 2. 更新版本号
    - `version.json`
    - `frontend/package.json`
+   - `frontend/package-lock.json`
+   - `backend/app/store_base.py`
+   - `backend/app/main.py`
+   - `backend/app/store_mixins/settings_mixin.py`
+   - `frontend/src/lib/api.ts`
+   - 如有测试里写死的版本号，一并更新
    - 如有默认版本常量，一并更新
 3. 编写本次更新说明
-   - 新建 `RELEASE_NOTES_x.y.z.md`
+   - 新建 `docs/RELEASE_NOTES_x.y.z.md`
+   - 同步更新 `README.md` 里的当前版本和 release notes 链接
 4. 构建验证
-   - `.\.venv\Scripts\python.exe -m pytest backend/tests/test_intel_pipeline.py backend/tests/test_admin_pagination.py backend/tests/test_agent_upload_guard.py`
-   - `.\.venv\Scripts\python.exe -m compileall backend/app`
+   - 先跑与本次改动直接相关的测试
    - `cd frontend && npm run build`
+   - `.\.venv\Scripts\python.exe -m compileall backend/app`
+   - 再补一轮基础回归，例如：`.\.venv\Scripts\python.exe -m pytest backend/tests/test_intel_pipeline.py backend/tests/test_admin_pagination.py backend/tests/test_agent_upload_guard.py`
    - `cd frontend && npm run test -- --run`
 5. 生成 Windows 分发包
    - 运行 `powershell -ExecutionPolicy Bypass -File scripts/build_release.ps1`
    - 产物位于 `runtime/release/auto-news-studio-windows.zip`
 6. 提交并推送 GitHub
+   - 建议先确认只提交本次版本相关文件，避免把工作区无关改动一并推上去
 7. 打 Git tag
    - 例如：`git tag vX.Y.Z`
    - `git push origin vX.Y.Z`
 8. 在 GitHub 仓库发布 Release
    - Tag: `vX.Y.Z`
    - Title: `vX.Y.Z`
-   - Body: 使用 `RELEASE_NOTES_X.Y.Z.md`
+   - Body: 使用 `docs/RELEASE_NOTES_X.Y.Z.md`
    - 如本机已安装 `gh` 并已登录，可直接用 `gh release create`
    - 如本机未安装 `gh`，但 `git push` 已可用，则优先复用 Git 凭据发 Release：
      - 用 `cmd /c "echo protocol=https&echo host=github.com&echo.&exit" | git credential fill` 读取 GitHub 凭据
@@ -48,7 +57,9 @@
 ## 本地验证注意事项
 
 - 发版前的 Python 测试、打包、自检都应使用项目 `.venv`，不要依赖机器全局环境。
+- 某些后端接口测试会读取 `frontend/dist/assets`，所以发布前必须先执行一次 `cd frontend && npm run build`，再跑完整后端回归。
 - 只要改过后端代码，手工 API 验证前必须先 `stop.bat`，再 `start.bat`。否则很容易命中旧的常驻进程，看到“代码已改、接口没变”的假象。
+- 如果发布内容涉及抖音 / 微信浏览器链，必须补一次真实页面链路验证，并保留最新 artifact 作为证据。
 - Agent 回归时，先确认 `GET /api/admin/runtime/status` 显示传统调度器已停止，再做：
   1. `POST /api/admin/sources/sync?triggered_by=agent`
   2. `POST /api/admin/intel/events/{event_id}/deep-dive?triggered_by=agent`
@@ -63,6 +74,13 @@
 - `scripts/build_release.ps1` 会把项目 `.venv` 一起打包进去
 - 目标是让 Windows 用户解压后直接安装、直接启动
 - 正式发布前应先生成并检查分发包，再执行 GitHub Release
+
+## 当前流程缺口与补齐约定
+
+- `release notes` 已迁移到 `docs/` 目录，发布正文与 README 链接都应使用 `docs/RELEASE_NOTES_x.y.z.md`。
+- 版本号不只在 `version.json` 与 `frontend/package.json`，还散落在后端默认常量、前端兜底值和测试里；发版必须统一替换。
+- 仅 `git push` 与 `git tag` 还不够，必须继续创建 GitHub Release 并上传 zip，旧版本客户端才会检测到更新。
+- 如果本次改动是渠道链路优化，release notes 里必须明确写清是哪条链路，例如“抖音链路优化”或“微信公众号链路修复”。
 
 ## 本次实测结果
 
@@ -94,7 +112,7 @@ $headers = @{
 }
 
 $tag = "vX.Y.Z"
-$notes = "RELEASE_NOTES_X.Y.Z.md"
+$notes = "docs/RELEASE_NOTES_X.Y.Z.md"
 
 $body = @{
   tag_name = $tag

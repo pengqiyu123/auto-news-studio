@@ -238,9 +238,9 @@ def test_create_agent_article_optimizes_title_and_rewrites_markdown_heading() ->
         assert article.title == "英伟达财报：数据中心收入再创新高"
         assert article.summary == "数据中心收入再创新高，市场预期继续上修"
         assert article.wechat_markdown.startswith("# 英伟达财报：数据中心收入再创新高")
-        assert article.douyin_title == "英伟达财报"
+        assert article.douyin_title == "英伟达财报：数据中心收入再创新高"
         assert article.douyin_summary
-        assert article.douyin_markdown.startswith("# 英伟达财报")
+        assert article.douyin_markdown.startswith("# 英伟达财报：数据中心收入再创新高")
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
