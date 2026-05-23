@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 .ruff_cache/
+.pytest_cache/
 *.py[cod]
 *$py.class
 *.so
@@ -17,6 +18,7 @@ frontend/node_modules/
 
 # Build output
 frontend/dist/
+dist/
 
 # Runtime data (contains API keys, state, logs)
 backend/data/

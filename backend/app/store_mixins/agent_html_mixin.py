@@ -24,12 +24,12 @@ from ..models import (
     AgentHtmlTargetUpdatePayload,
     SourceSyncResponse,
 )
-from ..store_base import MAX_RAW_ITEMS, UTC, atomic_write_json, now_iso, parse_time
+from ..store_base import MAX_RAW_ITEMS, RUNTIME_CACHE_DIR, UTC, atomic_write_json, now_iso, parse_time
 
 
 class AgentHtmlMixin:
     def _agent_html_cache_root(self) -> Path:
-        return Path(__file__).resolve().parents[3] / "runtime" / "agent_html_cache"
+        return RUNTIME_CACHE_DIR / "agent_html"
 
     def _agent_html_list_cache_dir(self) -> Path:
         return self._agent_html_cache_root() / "list_pages"

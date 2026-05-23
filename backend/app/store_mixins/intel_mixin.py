@@ -615,3 +615,29 @@ class IntelMixin:
             setup_status=setup_status,
             doctor_summary=doctor.model_dump(),
         )
+
+    def get_dashboard_lite(self) -> DashboardResponse:
+        """Lightweight dashboard for polling — only fields the frontend actually uses."""
+        with self._lock:
+            state = self._read_live()
+            recovered_run_id = self._recover_stale_runtime_run(state, actor="dashboard")
+            if recovered_run_id:
+                self._write(state)
+            snapshot = deepcopy(state)
+
+        browser = self._refresh_browser_session(snapshot)
+        runtime = self._runtime(snapshot)
+        app_version = self.get_app_version_info()
+        runtime_status = self._scheduler_status_from_state(snapshot)
+        entity_watchlist_summary = self._build_entity_watchlist_summary(snapshot)
+        snapshot["browser"]["wechat"] = browser
+
+        return DashboardResponse(
+            app_version=app_version,
+            update_info=self.get_app_update_info(force=False),
+            runtime_plan=self._runtime_plan_from_state(snapshot),
+            runtime_status=runtime_status,
+            entity_watchlist_summary=[EntityWatchlistSummaryItem(**item) for item in entity_watchlist_summary],
+            browser_session=BrowserSessionState(**browser),
+            recent_logs=[LogItem(**item) for item in snapshot["logs"][:8]],
+        )

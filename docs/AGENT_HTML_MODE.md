@@ -21,8 +21,8 @@
 
 缓存：
 
-- `runtime/agent_html_cache/list_pages/`
-- `runtime/agent_html_cache/detail_pages/`
+- `runtime/cache/agent_html/list_pages/`
+- `runtime/cache/agent_html/detail_pages/`
 
 ## 接口
 
@@ -96,6 +96,6 @@
 
 - 优先配置品牌官方新闻列表页、博客列表页
 - 每个 target 都尽量提供 `link_allow_patterns`
-- 页面结构变更时，先检查 `runtime/agent_html_cache/` 中的列表页和详情页缓存
+- 页面结构变更时，先检查 `runtime/cache/agent_html/` 中的列表页和详情页缓存
 - 抽取失败但页面可打开时，优先使用 `reextract` 验证是否只是正文提取失效
 - 站点已确认存在稳定 RSS 时，优先走 RSS，不重复消耗 HTML 维护成本

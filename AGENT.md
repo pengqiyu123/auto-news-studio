@@ -186,6 +186,8 @@ Key requirements from the guide: 1500-3000 word full article (not a bullet-point
 | Read publish tasks | `GET /api/admin/publish-tasks?page=1&page_size=20` |
 | Check real WeChat publish history | `POST /api/admin/browser/wechat/check-publish-history?triggered_by=agent` |
 
+Note: The publish history check now also fetches article engagement metrics (reads, likes, shares, comments, etc.) from WeChat and writes them back to the corresponding brief records. After calling this endpoint, the brief items will have `read_count`, `like_count`, `share_count`, etc. populated.
+
 ### Tab 9: 微信草稿箱 (Draft Box)
 
 | UI action | Agent API |
@@ -272,6 +274,29 @@ Behavior:
 
 These refresh the shared information layer and write results into the same `state.json` used by the normal product.
 
+### Check text quality (for Critique step)
+
+- `POST /api/admin/agent/text-quality`
+
+JSON body:
+
+```json
+{
+  "text": "文章正文",
+  "max_banned": 3,
+  "min_burstiness": 0.4
+}
+```
+
+Returns a quality report with:
+- `burstiness_score` — sentence length variance / mean (higher = more varied rhythm)
+- `avg_sentence_length` — average characters per sentence
+- `banned_phrase_hits` — list of AI-style phrases detected
+- `banned_phrase_count` — number of banned phrases found
+- `passed` — `true` if burstiness >= min_burstiness AND banned count <= max_banned
+
+Use this during Critique to detect AI-sounding writing patterns.
+
 How to judge whether collection really succeeded:
 
 1. the sync endpoint returns HTTP `200`
@@ -327,6 +352,7 @@ WeChat browser operations (check-drafts, check-publish-history, delete remote dr
 14. **Do NOT use `POST /api/admin/briefs/{id}/wechat-draft` to upload a traditional brief.** Agent-authored articles must go through `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true`. The backend will reject `triggered_by=agent` if the target record is still a traditional brief.
 15. **Do NOT invent side paths for Douyin or WeChat.** Platform actions are allowed only after the article already exists in the shared `briefs` ledger through the standard project flow.
 16. **Do NOT skip the brief/article linkage.** Even when the final destination is Douyin, the content must still come from the shared event -> deep-dive -> brief -> article chain defined by this project.
+17. **写完文章后必须经过 Critique 审稿才能保存。** Critique 是独立于写作的检查步骤，不是可选优化。未通过 Critique 的文章不得调用 `POST /api/admin/agent/articles`。
 
 ## Basic error-handling rules
 

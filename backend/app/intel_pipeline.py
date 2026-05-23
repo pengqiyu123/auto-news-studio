@@ -8,7 +8,7 @@ import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from .entity_extractor import extract_entities, extract_keyword_entities
+from .store_base import now_iso
 
 UTC = timezone.utc
 TRACKING_QUERY_KEYS = {
@@ -108,10 +108,6 @@ def parse_time(value: str | None) -> datetime | None:
             return parsedate_to_datetime(value).astimezone(UTC)
         except (TypeError, ValueError, IndexError, OverflowError):
             return None
-
-
-def now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 def canonical_link(link: str) -> str:

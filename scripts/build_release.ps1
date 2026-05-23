@@ -2,7 +2,8 @@ $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $appRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
-$releaseRoot = Join-Path $appRoot "runtime\release"
+$distRoot = Join-Path $appRoot "dist"
+$releaseRoot = Join-Path $distRoot "windows"
 $stageDir = Join-Path $releaseRoot "auto-news-studio-windows"
 $zipPath = Join-Path $releaseRoot "auto-news-studio-windows.zip"
 
@@ -77,9 +78,10 @@ Copy-FileSafe (Join-Path $appRoot "LICENSE") (Join-Path $stageDir "LICENSE")
 Copy-FileSafe (Join-Path $appRoot "docs\DISTRIBUTION.md") (Join-Path $stageDir "DISTRIBUTION.md")
 
 Ensure-Dir (Join-Path $stageDir "config")
-Ensure-Dir (Join-Path $stageDir "data")
-Ensure-Dir (Join-Path $stageDir "logs")
-Ensure-Dir (Join-Path $stageDir "runtime")
+Ensure-Dir (Join-Path $stageDir "data\state")
+Ensure-Dir (Join-Path $stageDir "runtime\logs")
+Ensure-Dir (Join-Path $stageDir "runtime\cache")
+Ensure-Dir (Join-Path $stageDir "runtime\temp")
 
 Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -Force
 Write-Host "[OK] Release folder created: $stageDir"

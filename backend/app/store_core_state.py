@@ -401,7 +401,7 @@ class StoreCoreStateMixin:
         return self._upgrade_user_settings(config)
 
     def _migrate_legacy_config(self) -> None:
-        legacy_state = read_json_file(self.data_file, {})
+        legacy_state = read_json_file(self._active_state_read_file(), {})
         migrated = self._extract_config_from_state(legacy_state)
         self._write_config(migrated)
 
@@ -617,7 +617,8 @@ class StoreCoreStateMixin:
 
     def _read(self) -> dict[str, Any]:
         with self._lock:
-            state = json.loads(self.data_file.read_text(encoding="utf-8"))
+            state_file = self._active_state_read_file()
+            state = json.loads(state_file.read_text(encoding="utf-8"))
             config = self._upgrade_user_settings(read_json_file(self.config_file, self._bootstrap_user_settings()))
             return self._apply_user_settings_to_state(state, config)
 
@@ -698,6 +699,7 @@ class StoreCoreStateMixin:
         browser_wechat.setdefault("last_action_phase", None)
         browser_wechat.setdefault("is_session_level_error", False)
         browser_wechat.setdefault("last_draft_check", None)
+        browser_wechat.setdefault("last_analytics_overview", None)
 
         browser_douyin = browser.setdefault("douyin", {})
         browser_douyin.setdefault("platform", "douyin_creator")
@@ -1006,7 +1008,8 @@ class StoreCoreStateMixin:
         return state
 
     def _read_live(self) -> dict[str, Any]:
-        state = json.loads(self.data_file.read_text(encoding="utf-8"))
+        state_file = self._active_state_read_file()
+        state = json.loads(state_file.read_text(encoding="utf-8"))
         config = self._upgrade_user_settings(read_json_file(self.config_file, self._bootstrap_user_settings()))
         state = self._apply_user_settings_to_state(state, config)
         state.setdefault("llm", deepcopy_json(config.get("llm", default_llm_state())))
@@ -1035,6 +1038,7 @@ class StoreCoreStateMixin:
                 pass
             if last_error:
                 raise last_error
+            self.state_read_file = self.data_file
 
     def _upgrade_state(self, state: dict[str, Any]) -> dict[str, Any]:
         config = self._upgrade_user_settings(read_json_file(self.config_file, self._bootstrap_user_settings()))
@@ -1169,6 +1173,7 @@ class StoreCoreStateMixin:
         browser_wechat.setdefault("last_action_phase", None)
         browser_wechat.setdefault("is_session_level_error", False)
         browser_wechat.setdefault("last_draft_check", None)
+        browser_wechat.setdefault("last_analytics_overview", None)
         browser_douyin = browser.setdefault("douyin", {})
         browser_douyin.setdefault("platform", "douyin_creator")
         browser_douyin["browser_name"] = douyin_channel["browser_name"]

@@ -12,9 +12,11 @@ from ..models import (
     PublishTask,
     WeChatChannelConfig,
     WeChatDraftSyncCheckResult,
+    WeChatAnalyticsOverview,
     WeChatMappingRow,
     WeChatMappingSnapshot,
     WeChatEditorDomSnapshot,
+    WeChatAnalyticsDomSnapshot,
     WeChatPublishHistorySnapshot,
     WeChatPublishRecordItem,
     WeChatRemoteDraftItem,
@@ -25,7 +27,9 @@ from ..publishers import (
     delete_wechat_remote_draft,
     ensure_channel_defaults,
     inspect_wechat_editor_dom,
+    inspect_wechat_analytics_dom,
     inspect_wechat_draft_box,
+    inspect_wechat_publish_history_with_overview,
     inspect_wechat_publish_history,
     inspect_wechat_session,
     launch_wechat_dashboard,
@@ -297,6 +301,36 @@ class WeChatMixin:
         )
         self._write(state)
         return WeChatEditorDomSnapshot(**snapshot)
+
+    def inspect_wechat_analytics_dom(self) -> WeChatAnalyticsDomSnapshot:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_browser_session(state)
+        browser, snapshot, artifacts, step_logs = inspect_wechat_analytics_dom(state["channels"]["wechat"], browser)
+        state["browser"]["wechat"] = browser
+        self._append_log(
+            state,
+            "success" if not browser.get("last_error") else "warning",
+            "browser",
+            "已导出微信数据分析页 DOM。" if not browser.get("last_error") else "导出微信数据分析页 DOM 失败。",
+            stream="business_event",
+            actor="dashboard",
+            detail=" | ".join(step_logs[-2:]),
+        )
+        state["publish_tasks"].insert(
+            0,
+            create_publish_task(
+                "session-wechat",
+                "inspect_wechat_analytics_dom",
+                "completed" if not browser.get("last_error") else "failed",
+                "已导出微信数据分析页 DOM。",
+                "dashboard",
+                str(state["channels"]["wechat"]["selectors_version"]),
+                artifacts=artifacts,
+                step_logs=step_logs,
+            ),
+        )
+        self._write(state)
+        return WeChatAnalyticsDomSnapshot(**snapshot)
 
     def open_wechat_editor_debug(self) -> BrowserSessionState:
         state = self._upgrade_state(self._read())
@@ -595,7 +629,15 @@ class WeChatMixin:
                 if isinstance(browser.get("last_publish_history_check"), dict)
                 else {}
             )
-            browser, artifacts, step_logs, remote_items = inspect_wechat_publish_history(state["channels"]["wechat"], browser)
+            previous_overview = (
+                browser.get("last_analytics_overview")
+                if isinstance(browser.get("last_analytics_overview"), dict)
+                else None
+            )
+            browser, artifacts, step_logs, remote_items, overview = inspect_wechat_publish_history_with_overview(
+                state["channels"]["wechat"],
+                browser,
+            )
             state["browser"]["wechat"] = browser
             diff_logs: list[str] = []
 
@@ -605,6 +647,7 @@ class WeChatMixin:
                     "checked_at": now_iso(),
                     "record_count": int(previous_check.get("record_count", len(previous_items)) or 0),
                     "items": previous_items[:50],
+                    "overview": previous_check.get("overview") if isinstance(previous_check.get("overview"), dict) else previous_overview,
                     "message": (
                         f"本次发表记录检查失败，当前展示最近一次成功读取结果：{int(previous_check.get('record_count', len(previous_items)) or 0)} 条。"
                         if previous_items
@@ -617,11 +660,17 @@ class WeChatMixin:
                     [brief for brief in state.get("briefs", []) if isinstance(brief, dict)],
                     [item for item in remote_items if isinstance(item, dict)],
                 )
+                overview_payload = overview if isinstance(overview, dict) else None
+                state["browser"]["wechat"]["last_analytics_overview"] = overview_payload
+                message = f"已检查微信发表记录，共读取 {len(remote_items)} 条远端记录；命中本地 {matched_count} 条。"
+                if not overview_payload:
+                    message += " 文章数据已刷新，账号总览暂未抓到。"
                 result_payload = {
                     "checked_at": now_iso(),
                     "record_count": len(remote_items),
                     "items": remote_items[:50],
-                    "message": f"已检查微信发表记录，共读取 {len(remote_items)} 条远端记录；命中本地 {matched_count} 条。",
+                    "overview": overview_payload,
+                    "message": message,
                     "check_ok": True,
                 }
 
@@ -654,6 +703,7 @@ class WeChatMixin:
                 checked_at=str(result_payload["checked_at"]),
                 record_count=int(result_payload["record_count"]),
                 items=[WeChatPublishRecordItem(**item) for item in result_payload["items"]],
+                overview=WeChatAnalyticsOverview(**result_payload["overview"]) if isinstance(result_payload.get("overview"), dict) else None,
                 message=str(result_payload["message"]),
                 check_ok=bool(result_payload.get("check_ok", True)),
             )

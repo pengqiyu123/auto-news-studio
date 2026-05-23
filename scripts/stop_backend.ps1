@@ -23,7 +23,8 @@ function Is-ProjectBackend($ProcessInfo) {
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $appRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $runtimeDir = Join-Path $appRoot "runtime"
-$pidFile = Join-Path $runtimeDir "backend.pid"
+$logDir = Join-Path $runtimeDir "logs"
+$pidFile = Join-Path $logDir "backend.pid"
 $stopped = $false
 $killed = [System.Collections.Generic.HashSet[int]]::new()
 

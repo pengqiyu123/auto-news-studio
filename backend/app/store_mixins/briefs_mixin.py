@@ -91,6 +91,7 @@ class BriefsMixin:
         self,
         state: dict[str, Any],
         *,
+        brief_id: str | None = None,
         event_id: str,
         current_step: str,
         target_platforms: list[str] | None = None,
@@ -221,59 +222,32 @@ class BriefsMixin:
             douyin_summary = str(base_payload.get("douyin_summary") or "")
             douyin_markdown = str(base_payload.get("douyin_markdown") or "")
             existing = self._find_brief_record_for_event_by_level(state, event_id, brief_level="rule")
-            brief = {
-                "id": existing.get("id") if existing else f"brief-{uuid4().hex[:12]}",
-                "event_id": event_id,
-                "deep_dive_id": str(deep_dive.get("id") or ""),
-                "brief_level": brief_level,
-                "stage": existing.get("stage") if existing else "prepared",
-                "title": str(base_payload.get("title") or event.get("title") or ""),
-                "summary": summary,
-                "one_line": one_line,
-                "why_it_matters": why_it_matters,
-                "facts": list(base_payload.get("facts", [])),
-                "quotes": list(base_payload.get("quotes", [])),
-                "timeline": list(base_payload.get("timeline", [])),
-                "entity_names": list(base_payload.get("entity_names", [])),
-                "source_links": list(base_payload.get("source_links", [])),
-                "risk_notes": risk_notes,
-                "prompt_package_markdown": prompt_package_markdown,
-                "douyin_prompt_package_markdown": douyin_prompt_package_markdown,
-                "wechat_markdown": wechat_markdown,
-                "wechat_html": markdown_to_wechat_html(wechat_markdown),
-                "douyin_title": douyin_title,
-                "douyin_summary": douyin_summary,
-                "douyin_markdown": douyin_markdown,
-                "wechat_target_id": existing.get("wechat_target_id") if existing else None,
-                "wechat_editor_url": existing.get("wechat_editor_url") if existing else None,
-                "wechat_remote_appmsg_id": existing.get("wechat_remote_appmsg_id") if existing else None,
-                "preview_url": existing.get("preview_url") if existing else None,
-                "last_error": None,
-                "delivery_status": existing.get("delivery_status") if existing else "idle",
-                "delivery_attempt_count": int(existing.get("delivery_attempt_count", 0) or 0) if existing else 0,
-                "last_delivery_attempt_at": existing.get("last_delivery_attempt_at") if existing else None,
-                "last_verified_at": existing.get("last_verified_at") if existing else None,
-                "last_delivery_error_kind": existing.get("last_delivery_error_kind") if existing else None,
-                "needs_resync": bool(existing.get("needs_resync")) if existing else False,
-                "last_synced_revision": existing.get("last_synced_revision") if existing else None,
-                "last_successful_upload_at": existing.get("last_successful_upload_at") if existing else None,
-                "updated_at": now_iso(),
-                "driver_label": str(existing.get("driver_label") or "") if existing else "",
-                "workflow_mode": self._workflow_mode_for_trigger(triggered_by),
-                "workflow_session_id": (
-                    str(workflow.get("workflow_session_id") or "")
-                    if workflow
-                    else (existing.get("workflow_session_id") if existing else None)
-                ),
-            }
-            if existing:
-                index = next(
-                    idx for idx, item in enumerate(state.get("briefs", []))
-                    if isinstance(item, dict) and str(item.get("id") or "") == str(existing.get("id") or "")
-                )
-                state["briefs"][index] = brief
-            else:
-                state.setdefault("briefs", []).insert(0, brief)
+            brief = self._build_brief_dict(
+                event_id=event_id,
+                deep_dive_id=str(deep_dive.get("id") or ""),
+                brief_level=brief_level,
+                title=str(base_payload.get("title") or event.get("title") or ""),
+                summary=summary,
+                one_line=one_line,
+                why_it_matters=why_it_matters,
+                facts=list(base_payload.get("facts", [])),
+                quotes=list(base_payload.get("quotes", [])),
+                timeline=list(base_payload.get("timeline", [])),
+                entity_names=list(base_payload.get("entity_names", [])),
+                source_links=list(base_payload.get("source_links", [])),
+                risk_notes=risk_notes,
+                prompt_package_markdown=prompt_package_markdown,
+                douyin_prompt_package_markdown=douyin_prompt_package_markdown,
+                wechat_markdown=wechat_markdown,
+                douyin_title=douyin_title,
+                douyin_summary=douyin_summary,
+                douyin_markdown=douyin_markdown,
+                workflow_mode=self._workflow_mode_for_trigger(triggered_by),
+                driver_label=str(existing.get("driver_label") or "") if existing else "",
+                existing=existing,
+                workflow_session_id=str(workflow.get("workflow_session_id") or "") if workflow else None,
+            )
+            self._upsert_brief(state, brief, existing)
             event["brief_id"] = brief["id"]
             if workflow:
                 self._set_agent_workflow_step(
@@ -465,51 +439,32 @@ class BriefsMixin:
             existing = self._find_brief_record_for_event_by_level(state, payload.event_id, brief_level="article")
             existing_revision = self._brief_revision(existing) if existing else None
             brief_id = str(existing.get("id") or "") if existing else f"brief-{uuid4().hex[:12]}"
-            brief = {
-                "id": brief_id,
-                "event_id": payload.event_id,
-                "deep_dive_id": str(deep_dive.get("id") or ""),
-                "brief_level": "article",
-                "stage": existing.get("stage") if existing else "prepared",
-                "title": title,
-                "summary": summary,
-                "one_line": one_line,
-                "why_it_matters": why_it_matters,
-                "facts": facts,
-                "quotes": quotes,
-                "timeline": timeline,
-                "entity_names": entity_names,
-                "source_links": source_links,
-                "risk_notes": risk_notes,
-                "prompt_package_markdown": prompt_package_markdown,
-                "douyin_prompt_package_markdown": douyin_prompt_package_markdown,
-                "wechat_markdown": article_markdown,
-                "wechat_html": markdown_to_wechat_html(article_markdown),
-                "douyin_title": douyin_title,
-                "douyin_summary": douyin_summary,
-                "douyin_markdown": douyin_markdown,
-                "wechat_target_id": existing.get("wechat_target_id") if existing else build_wechat_target_id(brief_id),
-                "wechat_editor_url": existing.get("wechat_editor_url") if existing else None,
-                "wechat_remote_appmsg_id": existing.get("wechat_remote_appmsg_id") if existing else None,
-                "preview_url": existing.get("preview_url") if existing else build_preview_url(brief_id),
-                "last_error": None,
-                "delivery_status": existing.get("delivery_status") if existing else "idle",
-                "delivery_attempt_count": int(existing.get("delivery_attempt_count", 0) or 0) if existing else 0,
-                "last_delivery_attempt_at": existing.get("last_delivery_attempt_at") if existing else None,
-                "last_verified_at": existing.get("last_verified_at") if existing else None,
-                "last_delivery_error_kind": existing.get("last_delivery_error_kind") if existing else None,
-                "needs_resync": bool(existing.get("needs_resync")) if existing else False,
-                "last_synced_revision": existing.get("last_synced_revision") if existing else None,
-                "last_successful_upload_at": existing.get("last_successful_upload_at") if existing else None,
-                "updated_at": now_iso(),
-                "driver_label": str(payload.driver_label or "").strip(),
-                "workflow_mode": self._workflow_mode_for_trigger(payload.triggered_by),
-                "workflow_session_id": (
-                    str(workflow.get("workflow_session_id") or "")
-                    if workflow
-                    else (existing.get("workflow_session_id") if existing else None)
-                ),
-            }
+            brief = self._build_brief_dict(
+                brief_id=brief_id,
+                event_id=payload.event_id,
+                deep_dive_id=str(deep_dive.get("id") or ""),
+                brief_level="article",
+                title=title,
+                summary=summary,
+                one_line=one_line,
+                why_it_matters=why_it_matters,
+                facts=facts,
+                quotes=quotes,
+                timeline=timeline,
+                entity_names=entity_names,
+                source_links=source_links,
+                risk_notes=risk_notes,
+                prompt_package_markdown=prompt_package_markdown,
+                douyin_prompt_package_markdown=douyin_prompt_package_markdown,
+                wechat_markdown=article_markdown,
+                douyin_title=douyin_title,
+                douyin_summary=douyin_summary,
+                douyin_markdown=douyin_markdown,
+                workflow_mode=self._workflow_mode_for_trigger(payload.triggered_by),
+                driver_label=str(payload.driver_label or "").strip(),
+                existing=existing,
+                workflow_session_id=str(workflow.get("workflow_session_id") or "") if workflow else None,
+            )
             if not brief.get("wechat_target_id"):
                 brief["wechat_target_id"] = build_wechat_target_id(brief_id)
             if not brief.get("preview_url"):
@@ -535,14 +490,7 @@ class BriefsMixin:
                 brief["last_delivery_error_kind"] = None
                 brief["last_error"] = None
 
-            if existing:
-                index = next(
-                    idx for idx, item in enumerate(state.get("briefs", []))
-                    if isinstance(item, dict) and str(item.get("id") or "") == str(existing.get("id") or "")
-                )
-                state["briefs"][index] = brief
-            else:
-                state.setdefault("briefs", []).insert(0, brief)
+            self._upsert_brief(state, brief, existing)
             self._append_log(
                 state,
                 "success",
@@ -1093,6 +1041,90 @@ class BriefsMixin:
             self._append_log(state, "success", "brief", f"已删除本地简报：{brief.get('title') or brief_id}")
             self._write(state)
             return DictOkResponse(ok=True, message="已删除本地简报。")
+
+    @staticmethod
+    def _build_brief_dict(
+        *,
+        brief_id: str | None = None,
+        event_id: str,
+        deep_dive_id: str,
+        brief_level: str,
+        title: str,
+        summary: str,
+        one_line: str,
+        why_it_matters: str,
+        facts: list[str],
+        quotes: list[str],
+        timeline: list[str],
+        entity_names: list[str],
+        source_links: list[str],
+        risk_notes: list[str],
+        prompt_package_markdown: str,
+        douyin_prompt_package_markdown: str,
+        wechat_markdown: str,
+        douyin_title: str,
+        douyin_summary: str,
+        douyin_markdown: str,
+        workflow_mode: str,
+        driver_label: str,
+        existing: dict[str, Any] | None,
+        workflow_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Shared brief dict constructor for both traditional and agent paths."""
+        brief_id = str(brief_id or "").strip() or (str(existing.get("id") or "") if existing else f"brief-{uuid4().hex[:12]}")
+        return {
+            "id": brief_id,
+            "event_id": event_id,
+            "deep_dive_id": deep_dive_id,
+            "brief_level": brief_level,
+            "stage": existing.get("stage") if existing else "prepared",
+            "title": title,
+            "summary": summary,
+            "one_line": one_line,
+            "why_it_matters": why_it_matters,
+            "facts": facts,
+            "quotes": quotes,
+            "timeline": timeline,
+            "entity_names": entity_names,
+            "source_links": source_links,
+            "risk_notes": risk_notes,
+            "prompt_package_markdown": prompt_package_markdown,
+            "douyin_prompt_package_markdown": douyin_prompt_package_markdown,
+            "wechat_markdown": wechat_markdown,
+            "wechat_html": markdown_to_wechat_html(wechat_markdown),
+            "douyin_title": douyin_title,
+            "douyin_summary": douyin_summary,
+            "douyin_markdown": douyin_markdown,
+            "wechat_target_id": existing.get("wechat_target_id") if existing else None,
+            "wechat_editor_url": existing.get("wechat_editor_url") if existing else None,
+            "wechat_remote_appmsg_id": existing.get("wechat_remote_appmsg_id") if existing else None,
+            "preview_url": existing.get("preview_url") if existing else None,
+            "last_error": None,
+            "delivery_status": existing.get("delivery_status") if existing else "idle",
+            "delivery_attempt_count": int(existing.get("delivery_attempt_count", 0) or 0) if existing else 0,
+            "last_delivery_attempt_at": existing.get("last_delivery_attempt_at") if existing else None,
+            "last_verified_at": existing.get("last_verified_at") if existing else None,
+            "last_delivery_error_kind": existing.get("last_delivery_error_kind") if existing else None,
+            "needs_resync": bool(existing.get("needs_resync")) if existing else False,
+            "last_synced_revision": existing.get("last_synced_revision") if existing else None,
+            "last_successful_upload_at": existing.get("last_successful_upload_at") if existing else None,
+            "updated_at": now_iso(),
+            "driver_label": driver_label,
+            "workflow_mode": workflow_mode,
+            "workflow_session_id": workflow_session_id or (existing.get("workflow_session_id") if existing else None),
+        }
+
+    @staticmethod
+    def _upsert_brief(state: dict[str, Any], brief: dict[str, Any], existing: dict[str, Any] | None) -> None:
+        """Insert or update a brief dict in state."""
+        if existing:
+            index = next(
+                idx for idx, item in enumerate(state.get("briefs", []))
+                if isinstance(item, dict) and str(item.get("id") or "") == str(existing.get("id") or "")
+            )
+            state["briefs"][index] = brief
+        else:
+            state.setdefault("briefs", []).insert(0, brief)
 
     def _utc_tz(self):
         from ..store_base import UTC

@@ -558,6 +558,47 @@ class RuntimeMixin:
             self._write(state)
             return self._scheduler_status_from_state(state)
 
+    def _finalize_cycle(
+        self,
+        state: dict[str, Any],
+        runtime: dict[str, Any],
+        *,
+        finish: datetime,
+        duration: float,
+        run_outcome: str,
+        error: str | None = None,
+        triggered_by: str = "scheduler",
+    ) -> None:
+        """Shared cleanup after a cycle completes or fails."""
+        plan = self._runtime_plan(state)
+        runtime["last_cycle_finished_at"] = finish.replace(microsecond=0).isoformat()
+        runtime["last_cycle_duration_seconds"] = duration
+        runtime["current_cycle_started_at"] = None
+        self._finish_runtime_run(
+            runtime,
+            status=run_outcome,
+            stage="done" if run_outcome == "completed" else "failed",
+            error=error,
+            last_run_outcome=run_outcome,
+            now=finish,
+        )
+        runtime["last_cycle_summary"] = self._build_last_cycle_summary(state, runtime)
+        launch_mode = str(runtime.get("launch_mode") or plan.get("launch_mode") or "interval_now")
+        if not runtime.get("scheduler_running") or launch_mode in {"once_now", "once_at"}:
+            runtime["scheduler_running"] = False
+            runtime["control_state"] = "stopped"
+            runtime["current_cycle"] = "idle"
+            self._reset_runtime_progress(runtime)
+            runtime["enabled_at"] = None
+            runtime["scheduled_start_at"] = None
+            runtime["active_interval_minutes"] = None
+            runtime["next_collect_at"] = None
+        else:
+            runtime["control_state"] = "waiting"
+            runtime["current_cycle"] = "idle"
+            self._reset_runtime_progress(runtime)
+            runtime["next_collect_at"] = self._calculate_runtime_next_collect_at(state, finish)
+
     def _run_automation_cycle_locked(self, state: dict[str, Any], triggered_by: str, force: bool = False) -> dict[str, Any]:
         runtime = self._runtime(state)
         run = self._runtime_run(runtime)
@@ -673,36 +714,10 @@ class RuntimeMixin:
             finish = datetime.now(UTC)
             duration = round((finish - start).total_seconds(), 1)
             self._append_log(state, "info", "runtime", f"轮次完成，总耗时 {duration}s", stream="system_runtime", actor=triggered_by)
-            runtime["last_cycle_finished_at"] = finish.replace(microsecond=0).isoformat()
-            runtime["last_cycle_duration_seconds"] = duration
-            runtime["current_cycle_started_at"] = None
             self._set_runtime_progress(runtime, percent=100, done=1, total=1, label="本轮已完成")
-            self._finish_runtime_run(
-                runtime,
-                status="completed",
-                stage="done",
-                error=None,
-                last_run_outcome="completed",
-                now=finish,
-            )
-            runtime["last_cycle_summary"] = self._build_last_cycle_summary(state, runtime)
+            self._finalize_cycle(state, runtime, finish=finish, duration=duration, run_outcome="completed", triggered_by=triggered_by)
             self._completion_hold_until = time.monotonic() + 5
             runtime["completed_cycles_today"] = int(runtime.get("completed_cycles_today", 0) or 0) + 1
-            launch_mode = str(runtime.get("launch_mode") or plan.get("launch_mode") or "interval_now")
-            if not runtime.get("scheduler_running") or launch_mode in {"once_now", "once_at"}:
-                runtime["scheduler_running"] = False
-                runtime["control_state"] = "stopped"
-                runtime["current_cycle"] = "idle"
-                self._reset_runtime_progress(runtime)
-                runtime["enabled_at"] = None
-                runtime["scheduled_start_at"] = None
-                runtime["active_interval_minutes"] = None
-                runtime["next_collect_at"] = None
-            else:
-                runtime["control_state"] = "waiting"
-                runtime["current_cycle"] = "idle"
-                self._reset_runtime_progress(runtime)
-                runtime["next_collect_at"] = self._calculate_runtime_next_collect_at(state, finish)
             self._append_job(
                 state,
                 "collect_news",
@@ -732,34 +747,14 @@ class RuntimeMixin:
             tb = traceback.format_exc()
             finish = datetime.now(UTC)
             duration = round((finish - start).total_seconds(), 1)
-            runtime["last_cycle_finished_at"] = finish.replace(microsecond=0).isoformat()
-            runtime["last_cycle_duration_seconds"] = duration
-            runtime["current_cycle_started_at"] = None
-            runtime["current_cycle_progress_label"] = f"本轮失败：{exc}"
             self._progress_snapshot["label"] = f"本轮失败：{exc}"
             self._progress_snapshot["cycle"] = "failed"
             self._completion_hold_until = 0
             runtime["failed_cycles_today"] = int(runtime.get("failed_cycles_today", 0) or 0) + 1
             runtime["last_error"] = str(exc)
             runtime["current_cycle"] = "failed"
-            self._finish_runtime_run(
-                runtime,
-                status="failed",
-                stage="failed",
-                error=str(exc),
-                last_run_outcome="failed",
-                now=finish,
-            )
-            runtime["last_cycle_summary"] = self._build_last_cycle_summary(state, runtime)
-            if not runtime.get("scheduler_running") or str(runtime.get("launch_mode") or plan.get("launch_mode")) in {"once_now", "once_at"}:
-                runtime["scheduler_running"] = False
-                runtime["control_state"] = "stopped"
-                runtime["enabled_at"] = None
-                runtime["scheduled_start_at"] = None
-                runtime["next_collect_at"] = None
-            else:
-                runtime["control_state"] = "waiting"
-                runtime["next_collect_at"] = self._calculate_runtime_next_collect_at(state, finish)
+            runtime["current_cycle_progress_label"] = f"本轮失败：{exc}"
+            self._finalize_cycle(state, runtime, finish=finish, duration=duration, run_outcome="failed", error=str(exc), triggered_by=triggered_by)
             self._append_job(
                 state,
                 "collect_news",

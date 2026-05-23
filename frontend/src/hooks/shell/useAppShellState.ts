@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { useAdaptivePolling } from "../shared/useAdaptivePolling";
+import { useAdaptivePolling } from "../../hooks/shared/useAdaptivePolling";
 import { pageMeta, type TabKey } from "../../navigation/tabs";
 import type { LogItem, SchedulerStatus } from "../../types";
 
@@ -48,7 +48,7 @@ interface UseAppShellStateParams {
   loadBriefsData: (page?: number, pageSize?: number, stage?: BriefWorkbenchView, workflowMode?: BriefWorkflowFilter, query?: string) => Promise<unknown>;
   loadLogsData: (page?: number, pageSize?: number, level?: LogLevelFilter, query?: string) => Promise<unknown>;
   loadTabDataImpl: (tab: TabKey, options: { forceBrowserRefresh: boolean }) => Promise<void>;
-  refreshOverviewData: (includeEntityWatchlist?: boolean) => Promise<void>;
+  refreshOverviewData: (includeEntityWatchlist?: boolean, lite?: boolean) => Promise<void>;
   onError: (message: string | null) => void;
 }
 
@@ -128,7 +128,7 @@ export function useAppShellState({
   const pollActiveTabData = useCallback(async () => {
     try {
       if (activeTab === "overview") {
-        await refreshOverviewData(false);
+        await refreshOverviewData(false, true);
         return;
       }
       await loadTabDataImpl(activeTab, { forceBrowserRefresh: false });

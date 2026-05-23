@@ -8,33 +8,35 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { BriefTable } from "./components/BriefTable";
-import { DeepDivePoolPanel } from "./components/DeepDivePoolPanel";
-import { IntelAlertsPage } from "./components/IntelAlertsPage";
-import { IntelEventsPage } from "./components/IntelEventsPage";
-import { IntelOverviewPage } from "./components/IntelOverviewPage";
-import { IntelStreamPage } from "./components/IntelStreamPage";
-import { LogsPanel } from "./components/LogsPanel";
-import { SettingsPanel } from "./components/SettingsPanel";
-import { SourceHealthPage } from "./components/SourceHealthPage";
-import { WeChatDraftBoxPanel } from "./components/WeChatDraftBoxPanel";
-import { WeChatPublishHistoryPanel } from "./components/WeChatPublishHistoryPanel";
-import { useBriefsState } from "./hooks/content/useBriefsState";
-import { useAlertsState } from "./hooks/intel/useAlertsState";
-import { useEventsState } from "./hooks/intel/useEventsState";
-import { useOverviewState } from "./hooks/intel/useOverviewState";
-import { useSourceHealthState } from "./hooks/intel/useSourceHealthState";
-import { useStreamState } from "./hooks/intel/useStreamState";
-import { useWatchlistState } from "./hooks/intel/useWatchlistState";
 import { useAdaptivePolling } from "./hooks/shared/useAdaptivePolling";
 import { useRuntimeState } from "./hooks/shared/useRuntimeState";
 import { useManagedDashboardTab } from "./hooks/shell/useManagedDashboardTab";
-import { type BriefWorkbenchView, type BriefWorkflowFilter, type ShellLogLevelFilter, useAppShellState } from "./hooks/shell/useAppShellState";
-import { useSettingsState } from "./hooks/system/useSettingsState";
-import { useWechatState } from "./hooks/wechat/useWechatState";
+import { type BriefWorkbenchView, type BriefWorkflowFilter, type ShellLogLevelFilter } from "./hooks/shell/useAppShellState";
 import { api } from "./lib/api";
 import { deriveRuntimeDisplayStatus, RUNTIME_INTENT_LABELS } from "./lib/runtimeIntent";
 import { draftTabs, intelTabs, systemTabs, type TabKey } from "./navigation/tabs";
+import { AlertsPage } from "./screens/alerts/page";
+import { useAlertsState } from "./screens/alerts/state";
+import { BriefsPage } from "./screens/briefs/page";
+import { useBriefsState } from "./screens/briefs/state";
+import { DraftBoxPage } from "./screens/draft_box/page";
+import { useWechatState } from "./screens/draft_box/state";
+import { EventsPage } from "./screens/events/page";
+import { useEventsState } from "./screens/events/state";
+import { LogsPage } from "./screens/logs/page";
+import { useAppShellState } from "./hooks/shell/useAppShellState";
+import { useLogsState } from "./screens/logs/state";
+import { OverviewPage } from "./screens/overview/page";
+import { useOverviewState } from "./screens/overview/state";
+import { PublishHistoryPage } from "./screens/publish_history/page";
+import { SettingsPage } from "./screens/settings/page";
+import { useSettingsState } from "./screens/settings/state";
+import { SourceHealthPage } from "./screens/source_health/page";
+import { useSourceHealthState } from "./screens/source_health/state";
+import { StreamPage } from "./screens/stream/page";
+import { useStreamState } from "./screens/stream/state";
+import { WatchlistPage } from "./screens/watchlist/page";
+import { useWatchlistState } from "./screens/watchlist/state";
 import type { AppUpdateInfo, AppVersionInfo, BrowserSessionState, EntityWatchlistItem } from "./types";
 
 const DEFAULT_STREAM_TAB_PAGE_SIZE = 50;
@@ -207,6 +209,7 @@ export default function App() {
   } = useWechatState({
     browserSession,
     onBrowserSessionChange: setBrowserSession,
+    initialWechatPublishHistory: browserSession?.last_publish_history_check ?? null,
     initialPublishTasksPageSize: DEFAULT_PUBLISH_TASKS_PAGE_SIZE,
     onError: (message) => setError(message),
     onToast: showToast,
@@ -226,22 +229,11 @@ export default function App() {
     llmConfig,
     appSettings,
     systemDoctor,
-    logs,
-    logsPage,
-    setLogsPage,
-    logsPageSize,
-    setLogsPageSize,
-    logsTotal,
-    logLevelFilter,
-    setLogLevelFilter,
-    logSearchQuery,
-    setLogSearchQuery,
     savingChannel,
     savingLLMConfig,
     refreshingBrowser,
     openingBrowser,
     loadSettingsData,
-    loadLogsData,
     loadUpdateInfo,
     handleCheckUpdate,
     handleDismissUpdate,
@@ -253,7 +245,6 @@ export default function App() {
     handleRefreshBrowser,
     handleOpenBrowserDashboard,
   } = useSettingsState({
-    initialLogsPageSize: DEFAULT_LOGS_PAGE_SIZE,
     browserSession,
     onBrowserSessionChange: setBrowserSession,
     updateInfo,
@@ -262,6 +253,22 @@ export default function App() {
     onToast: showToast,
     onReloadOverview: refreshOverviewData,
     onLoadSources: loadSourcesForSettings,
+  });
+
+  const {
+    logs,
+    logsPage,
+    setLogsPage,
+    logsPageSize,
+    setLogsPageSize,
+    logsTotal,
+    logLevelFilter,
+    setLogLevelFilter,
+    logSearchQuery,
+    setLogSearchQuery,
+    loadLogsData,
+  } = useLogsState({
+    initialPageSize: DEFAULT_LOGS_PAGE_SIZE,
   });
 
   const activateWatchlist = useCallback(() => {
@@ -596,7 +603,7 @@ export default function App() {
         {dashboard && summary ? (
           <div className="page-content">
             {activeTab === "overview" ? (
-              <IntelOverviewPage
+              <OverviewPage
                 summary={summary}
                 runtime={dashboard.runtime_status}
                 entityWatchlistSummary={dashboard.entity_watchlist_summary}
@@ -610,8 +617,8 @@ export default function App() {
                 onStop={handleStopRuntime}
                 onRunIntent={handleRunRuntimeIntent}
                 onRefresh={refreshAll}
-                onNavigate={(tab) => setActiveTab(tab)}
-                onOpenEntity={(entityId) => {
+                onNavigate={(tab: "alerts" | "events" | "source-health") => setActiveTab(tab)}
+                onOpenEntity={(entityId: string) => {
                   handleOpenEntity(entityId);
                   setActiveTab("events");
                 }}
@@ -621,7 +628,7 @@ export default function App() {
             ) : null}
 
             {activeTab === "stream" ? (
-              <IntelStreamPage
+              <StreamPage
                 items={streamItems}
                 page={streamPage}
                 pageSize={streamPageSize}
@@ -648,7 +655,7 @@ export default function App() {
               />
             ) : null}
             {activeTab === "events" ? (
-              <IntelEventsPage
+              <EventsPage
                 items={events}
                 page={eventsPage}
                 pageSize={eventsPageSize}
@@ -690,7 +697,7 @@ export default function App() {
               />
             ) : null}
             {activeTab === "alerts" ? (
-              <IntelAlertsPage
+              <AlertsPage
                 items={alerts}
                 historyItems={alertHistory}
                 runtime={dashboard.runtime_status}
@@ -714,7 +721,7 @@ export default function App() {
             ) : null}
 
             {activeTab === "watchlist" ? (
-              <DeepDivePoolPanel
+              <WatchlistPage
                 items={watchlistEvents.filter((event) => (event.watchlisted || event.deep_dive_id || event.brief_id) && !event.ignored)}
                 selectedDeepDive={selectedDeepDive}
                 busyEventId={busyEventId}
@@ -725,7 +732,7 @@ export default function App() {
             ) : null}
 
             {activeTab === "briefs" ? (
-              <BriefTable
+              <BriefsPage
                 briefs={briefs}
                 page={briefsPage}
                 pageSize={briefsPageSize}
@@ -770,7 +777,7 @@ export default function App() {
             ) : null}
 
             {activeTab === "publish-history" ? (
-              <WeChatPublishHistoryPanel
+              <PublishHistoryPage
                 history={wechatPublishHistory}
                 refreshing={refreshingPublishHistory}
                 onRefresh={handleRefreshWeChatPublishHistory}
@@ -778,7 +785,7 @@ export default function App() {
             ) : null}
 
             {activeTab === "draft-box" ? (
-              <WeChatDraftBoxPanel
+              <DraftBoxPage
                 mapping={wechatMapping}
                 briefs={briefs}
                 agentWorkflows={agentWorkflows}
@@ -815,7 +822,7 @@ export default function App() {
             ) : null}
 
             {activeTab === "settings" ? (
-              <SettingsPanel
+              <SettingsPage
                 referenceProjects={referenceProjects}
                 llmConfig={llmConfig}
                 sources={sources}
@@ -851,7 +858,7 @@ export default function App() {
             ) : null}
 
             {activeTab === "logs" ? (
-              <LogsPanel
+              <LogsPage
                 logs={logs}
                 page={logsPage}
                 pageSize={logsPageSize}

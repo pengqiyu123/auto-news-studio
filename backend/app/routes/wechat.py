@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from ..features.draft_box.read import (
+    check_wechat_draft_box_page as check_wechat_draft_box_page_view,
+    get_wechat_mapping_page as get_wechat_mapping_page_view,
+    refresh_wechat_mapping_page as refresh_wechat_mapping_page_view,
+)
+from ..features.draft_box.write import delete_wechat_remote_draft_page as delete_wechat_remote_draft_page_action
+from ..features.publish_history.read import check_wechat_publish_history_page as check_wechat_publish_history_page_view
 from ..models import (
     BrowserSessionResponse,
     DictOkResponse,
     WeChatDraftSyncCheckResponse,
+    WeChatAnalyticsDomResponse,
     WeChatEditorDomResponse,
     WeChatMappingResponse,
     WeChatPublishHistoryResponse,
@@ -19,7 +27,7 @@ def build_wechat_router() -> APIRouter:
     @router.post("/api/admin/browser/wechat/check-drafts", response_model=WeChatDraftSyncCheckResponse)
     def check_wechat_draft_box(triggered_by: str = "dashboard"):
         try:
-            return WeChatDraftSyncCheckResponse(item=get_store().check_wechat_draft_box(triggered_by=triggered_by))
+            return WeChatDraftSyncCheckResponse(**check_wechat_draft_box_page_view(triggered_by=triggered_by))
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
         except Exception as exc:
@@ -28,7 +36,7 @@ def build_wechat_router() -> APIRouter:
     @router.post("/api/admin/browser/wechat/check-publish-history", response_model=WeChatPublishHistoryResponse)
     def check_wechat_publish_history(triggered_by: str = "dashboard"):
         try:
-            return WeChatPublishHistoryResponse(item=get_store().check_wechat_publish_history(triggered_by=triggered_by))
+            return WeChatPublishHistoryResponse(**check_wechat_publish_history_page_view(triggered_by=triggered_by))
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
         except Exception as exc:
@@ -42,6 +50,15 @@ def build_wechat_router() -> APIRouter:
             raise http_from_value_error(exc) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"微信编辑页源码导出失败：{exc}") from exc
+
+    @router.post("/api/admin/browser/wechat/inspect-analytics-dom", response_model=WeChatAnalyticsDomResponse)
+    def inspect_analytics_dom():
+        try:
+            return WeChatAnalyticsDomResponse(item=get_store().inspect_wechat_analytics_dom())
+        except ValueError as exc:
+            raise http_from_value_error(exc) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"微信数据分析页源码导出失败：{exc}") from exc
 
     @router.post("/api/admin/browser/wechat/open-editor-debug", response_model=BrowserSessionResponse)
     def open_editor_debug():
@@ -72,19 +89,19 @@ def build_wechat_router() -> APIRouter:
 
     @router.get("/api/admin/wechat/mapping", response_model=WeChatMappingResponse)
     def get_wechat_mapping():
-        return WeChatMappingResponse(item=get_store().get_wechat_mapping())
+        return WeChatMappingResponse(**get_wechat_mapping_page_view())
 
     @router.post("/api/admin/wechat/mapping/refresh", response_model=WeChatMappingResponse)
     def refresh_wechat_mapping(triggered_by: str = "dashboard"):
         try:
-            return WeChatMappingResponse(item=get_store().refresh_wechat_mapping(triggered_by=triggered_by))
+            return WeChatMappingResponse(**refresh_wechat_mapping_page_view(triggered_by=triggered_by))
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 
     @router.delete("/api/admin/wechat/remote-drafts/{remote_id}", response_model=DictOkResponse)
     def delete_wechat_remote_draft(remote_id: str):
         try:
-            return get_store().delete_wechat_remote_draft(remote_id)
+            return delete_wechat_remote_draft_page_action(remote_id)
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 

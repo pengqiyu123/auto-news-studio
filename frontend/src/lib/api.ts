@@ -278,6 +278,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getDashboard: async () => normalizeDashboard(await request<DashboardResponse>("/api/admin/dashboard")),
+  getDashboardLite: async () => normalizeDashboard(await request<DashboardResponse>("/api/admin/dashboard/lite")),
   getIntelSummary: () => request<{ item: IntelOverviewSummary }>("/api/admin/intel/summary"),
   getDiscoveryItems: (params?: { page?: number; page_size?: number }) => {
     const query = new URLSearchParams();

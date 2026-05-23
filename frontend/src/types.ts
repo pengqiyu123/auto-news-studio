@@ -189,6 +189,7 @@ export interface BrowserSessionState {
   last_action_phase?: string | null;
   is_session_level_error?: boolean;
   last_draft_check?: WeChatDraftSyncCheckResult | null;
+  last_analytics_overview?: WeChatAnalyticsOverview | null;
   last_publish_history_check?: WeChatPublishHistorySnapshot | null;
 }
 
@@ -216,12 +217,34 @@ export interface WeChatPublishRecordItem {
   appmsg_id?: string | null;
   published_at?: string | null;
   remote_key?: string | null;
+  read_count: number;
+  like_count: number;
+  share_count: number;
+  recommend_count: number;
+  comment_count: number;
+  highlight_count: number;
+  tip_amount: string;
+  reprint_count: number;
+  thumbnail?: string;
+}
+
+export interface WeChatAnalyticsOverview {
+  total_users: number;
+  yesterday_reads: number;
+  yesterday_shares: number;
+  yesterday_new_follows: number;
+  stats_window_label: string;
+  fetched_at: string;
+  avatar_url?: string;
+  account_name?: string;
+  original_count?: number;
 }
 
 export interface WeChatPublishHistorySnapshot {
   checked_at: string;
   record_count: number;
   items: WeChatPublishRecordItem[];
+  overview?: WeChatAnalyticsOverview | null;
   message: string;
   check_ok?: boolean;
 }
@@ -549,6 +572,15 @@ export interface BriefItem {
   publish_record_published_at?: string | null;
   workflow_mode: WorkflowMode;
   workflow_session_id?: string | null;
+  read_count?: number;
+  like_count?: number;
+  share_count?: number;
+  recommend_count?: number;
+  comment_count?: number;
+  highlight_count?: number;
+  tip_amount?: string;
+  reprint_count?: number;
+  metrics_fetched_at?: string | null;
 }
 
 export interface AgentWorkflowItem {

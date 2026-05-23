@@ -70,3 +70,45 @@ def test_build_douyin_article_markdown_removes_source_tail_and_shortens_paragrap
     assert "来源链接" not in result
     assert "https://example.com/a" not in result
     assert "机器还能玩，但数字购买、兑换、下载和部分联网能力正式收尾" in result
+
+
+def test_build_douyin_article_markdown_frontloads_conclusion_and_judgment() -> None:
+    markdown = """# 高通逼近5GHz，小米18把旗舰芯片竞争重新拉满
+
+5 月 21 日晚间，关于高通下一代旗舰平台的消息开始集中发酵。按照驱动之家披露的说法，骁龙 8 Elite Gen6 系列不仅会切到台积电 2nm，最高主频还将逼近 5GHz。
+
+## 2nm 和接近 5GHz，说明高通这次不是常规迭代
+
+从现有披露信息看，骁龙 8 Elite Gen6 系列最抓眼球的两个点，就是 2nm 工艺和接近 5GHz 的主频。
+
+## 来源链接
+
+- https://example.com/a
+"""
+
+    result = build_douyin_article_markdown(
+        title="高通逼近5GHz，小米18把旗舰芯片竞争重新拉满",
+        summary="2nm、接近 5GHz、Pro 版分层",
+        article_markdown=markdown,
+        one_line="高通下一代旗舰平台最值得盯的，不是某一个夸张参数，而是手机 SoC 正在再次进入性能极限优先的周期。",
+        why_it_matters="如果 2nm 和接近 5GHz 真落地，接下来两年的安卓旗舰竞争会重新围着芯片展开。",
+    )
+
+    assert result.startswith("# 高通逼近5GHz，小米18把旗舰芯片竞争重新拉满")
+    assert "高通下一代旗舰平台最值得盯的" in result
+    assert "接下来两年的安卓旗舰竞争会重新围着芯片展开" in result
+    assert "来源链接" not in result
+
+
+def test_build_douyin_article_markdown_stays_under_1000_chars() -> None:
+    markdown = "# 标题\n\n" + "这是一段很长的正文。" * 400
+    result = build_douyin_article_markdown(
+        title="高通逼近5GHz，小米18把旗舰芯片竞争重新拉满",
+        summary="2nm、接近 5GHz、Pro 版分层",
+        article_markdown=markdown,
+        one_line="高通下一代旗舰平台最值得盯的，不是某一个夸张参数，而是手机 SoC 正在再次进入性能极限优先的周期。",
+        why_it_matters="如果 2nm 和接近 5GHz 真落地，接下来两年的安卓旗舰竞争会重新围着芯片展开。",
+    )
+    body = result.split("\n", 1)[1].replace("\n", "")
+
+    assert len(body) <= 1000

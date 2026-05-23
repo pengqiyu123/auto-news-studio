@@ -261,6 +261,7 @@ class BrowserSessionState(BaseModel):
     last_action_phase: Optional[str] = None
     is_session_level_error: bool = False
     last_draft_check: Optional["WeChatDraftSyncCheckResult"] = None
+    last_analytics_overview: Optional["WeChatAnalyticsOverview"] = None
     last_publish_history_check: Optional["WeChatPublishHistorySnapshot"] = None
 
 
@@ -297,12 +298,48 @@ class WeChatPublishRecordItem(BaseModel):
     appmsg_id: Optional[str] = None
     published_at: Optional[str] = None
     remote_key: Optional[str] = None
+    read_count: int = 0
+    like_count: int = 0
+    share_count: int = 0
+    recommend_count: int = 0
+    comment_count: int = 0
+    highlight_count: int = 0
+    tip_amount: str = "0.00"
+    reprint_count: int = 0
+    thumbnail: str = ""
+
+
+class WeChatArticleMetrics(BaseModel):
+    appmsg_id: Optional[str] = None
+    title: str = ""
+    read_count: int = 0
+    like_count: int = 0
+    share_count: int = 0
+    recommend_count: int = 0
+    comment_count: int = 0
+    highlight_count: int = 0
+    tip_amount: str = "0.00"
+    reprint_count: int = 0
+    fetched_at: str = ""
+
+
+class WeChatAnalyticsOverview(BaseModel):
+    total_users: int = 0
+    yesterday_reads: int = 0
+    yesterday_shares: int = 0
+    yesterday_new_follows: int = 0
+    stats_window_label: str = ""
+    fetched_at: str = ""
+    avatar_url: str = ""
+    account_name: str = ""
+    original_count: int = 0
 
 
 class WeChatPublishHistorySnapshot(BaseModel):
     checked_at: str
     record_count: int = 0
     items: list[WeChatPublishRecordItem] = Field(default_factory=list)
+    overview: Optional[WeChatAnalyticsOverview] = None
     message: str = ""
     check_ok: bool = True
 
@@ -334,6 +371,20 @@ class WeChatEditorDomSnapshot(BaseModel):
 
 class WeChatEditorDomResponse(BaseModel):
     item: WeChatEditorDomSnapshot
+
+
+class WeChatAnalyticsDomSnapshot(BaseModel):
+    checked_at: str
+    url: str = ""
+    page_title: str = ""
+    body_excerpt: str = ""
+    message: str = ""
+    items: list[WeChatEditorDomField] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
+
+
+class WeChatAnalyticsDomResponse(BaseModel):
+    item: WeChatAnalyticsDomSnapshot
 
 
 class DouyinArticleStructureField(BaseModel):
@@ -906,6 +957,15 @@ class BriefItem(BaseModel):
     publish_record_published_at: Optional[str] = None
     workflow_mode: WorkflowMode = "traditional"
     workflow_session_id: Optional[str] = None
+    read_count: int = 0
+    like_count: int = 0
+    share_count: int = 0
+    recommend_count: int = 0
+    comment_count: int = 0
+    highlight_count: int = 0
+    tip_amount: str = "0.00"
+    reprint_count: int = 0
+    metrics_fetched_at: Optional[str] = None
 
 
 class AgentWorkflowItem(BaseModel):
@@ -1284,30 +1344,30 @@ class LogItem(BaseModel):
 
 
 class DashboardResponse(BaseModel):
-    app_version: AppVersionInfo
-    update_info: AppUpdateInfo
-    stats: DashboardStats
-    top_bar: DashboardTopBar
-    freshness: FreshnessSnapshot
-    intel_stream: list[IntelStreamItem]
-    hot_clusters: list[HotClusterCard]
-    github_watch: list[GithubSignalItem]
-    execution_chain: ExecutionChainSnapshot
-    current_automation_mode: AutomationModeDefinition
-    current_automation_profile: AutomationModeProfile
-    automation_profiles: list[AutomationModeProfile]
-    runtime_plan: RuntimePlan
-    runtime_status: SchedulerStatus
+    app_version: Optional[AppVersionInfo] = None
+    update_info: Optional[AppUpdateInfo] = None
+    stats: Optional[DashboardStats] = None
+    top_bar: Optional[DashboardTopBar] = None
+    freshness: Optional[FreshnessSnapshot] = None
+    intel_stream: list[IntelStreamItem] = Field(default_factory=list)
+    hot_clusters: list[HotClusterCard] = Field(default_factory=list)
+    github_watch: list[GithubSignalItem] = Field(default_factory=list)
+    execution_chain: Optional[ExecutionChainSnapshot] = None
+    current_automation_mode: Optional[AutomationModeDefinition] = None
+    current_automation_profile: Optional[AutomationModeProfile] = None
+    automation_profiles: list[AutomationModeProfile] = Field(default_factory=list)
+    runtime_plan: Optional[RuntimePlan] = None
+    runtime_status: Optional[SchedulerStatus] = None
     last_cycle_summary: Optional[RuntimeCycleSummary] = None
     recent_alerts_24h: list[IntelAlertHistoryItem] = Field(default_factory=list)
     recent_events_24h: list[IntelEventHistoryItem] = Field(default_factory=list)
     entity_watchlist_summary: list[EntityWatchlistSummaryItem] = Field(default_factory=list)
-    recent_logs: list[LogItem]
+    recent_logs: list[LogItem] = Field(default_factory=list)
     briefs: list[BriefItem] = Field(default_factory=list)
     deep_dives: list[EventDeepDive] = Field(default_factory=list)
     sources: list[SourceConnector] = Field(default_factory=list)
-    browser_session: BrowserSessionState
-    publish_backends: list[PublishBackendStatus]
+    browser_session: Optional[BrowserSessionState] = None
+    publish_backends: list[PublishBackendStatus] = Field(default_factory=list)
     setup_status: dict[str, Any] = Field(default_factory=dict)
     doctor_summary: dict[str, Any] = Field(default_factory=dict)
 

@@ -69,6 +69,9 @@ function getOrCreateDashboardTabId(): string {
 }
 
 function retireManagedDashboardTab(): void {
+  if (window.location.port === "4173") {
+    return;
+  }
   window.setTimeout(() => {
     try {
       window.close();
@@ -98,6 +101,7 @@ function buildHealthcheckUrl(): string {
 }
 
 export function useManagedDashboardTab(): void {
+  return;
   const tabIdRef = useRef<string>("");
   const channelRef = useRef<BroadcastChannel | null>(null);
   const launcherAckIdsRef = useRef<string[]>([]);

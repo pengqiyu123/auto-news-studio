@@ -13,12 +13,12 @@ from urllib.parse import parse_qs, urlparse
 import webbrowser
 from uuid import uuid4
 
+from .store_base import PROJECT_ROOT, RUNTIME_TEMP_DIR, now_iso
 from .wechat_format import markdown_to_plain_text, markdown_to_wechat_html, strip_markdown_title
 
 
 UTC = timezone.utc
-ARTIFACT_ROOT = Path(__file__).resolve().parent.parent / "data" / "artifacts"
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ARTIFACT_ROOT = RUNTIME_TEMP_DIR / "publish_artifacts"
 BROWSER_PROFILE_ROOT = PROJECT_ROOT / "runtime" / "browser"
 DEFAULT_BROWSER_LOCK_TIMEOUT_SECONDS = 60
 DEFAULT_EMPTY_CHECK_CONFIRMATIONS = 3
@@ -68,6 +68,12 @@ SELECTOR_PROFILES: dict[str, dict[str, list[str] | str]] = {
             "div:has-text('发表记录')",
             "a[href*='appmsgpublish']",
             "text=发表记录",
+        ],
+        "analytics": [
+            "a[href*='/misc/appmsganalysis'][title='内容分析']",
+            "a[href*='appmsganalysis?action=report']",
+            "a:has-text('内容分析')",
+            "text=内容分析",
         ],
         "content_manage": [
             "span.weui-desktop-menu__link[title='内容管理']",
@@ -212,10 +218,6 @@ SELECTOR_PROFILES: dict[str, dict[str, list[str] | str]] = {
         ],
     },
 }
-
-
-def now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 def normalize_browser_name(value: object | None) -> str:
@@ -1075,140 +1077,6 @@ def _strip_markdown_title(markdown: str, title: str) -> str:
     return strip_markdown_title(markdown, title)
 
 
-def _fill_locator_value(page, selector: str, value: str, *, is_rich_text: bool = False) -> None:
-    locator = _pick_visible_locator(page, selector)
-    locator.click()
-    if is_rich_text:
-        try:
-            locator.fill(value)
-            return
-        except Exception:
-            page.evaluate(
-                """({ selector, value }) => {
-                    const node = document.querySelector(selector);
-                    if (!node) return;
-                    node.focus();
-                    node.textContent = value;
-                    node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
-                }""",
-                {"selector": selector, "value": value},
-            )
-            return
-    try:
-        locator.fill(value)
-        return
-    except Exception:
-        pass
-    try:
-        locator.press("Control+A")
-        locator.type(value, delay=10)
-        return
-    except Exception:
-        page.evaluate(
-            """({ selector, value }) => {
-                const node = document.querySelector(selector);
-                if (!node) return;
-                node.focus();
-                if ('value' in node) {
-                    node.value = value;
-                } else {
-                    node.textContent = value;
-                }
-                node.dispatchEvent(new Event('input', { bubbles: true }));
-                node.dispatchEvent(new Event('change', { bubbles: true }));
-            }""",
-            {"selector": selector, "value": value},
-        )
-
-
-def _clipboard_paste_text(page, text: str) -> None:
-    """Simulate clipboard paste via JS + Ctrl+V, the only reliable way to write into ProseMirror."""
-    page.evaluate(
-        """(text) => {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.left = '-9999px';
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-        }""",
-        text,
-    )
-    page.keyboard.press("Control+v")
-
-
-def _clipboard_paste_into_element(page, selector: str, text: str) -> None:
-    """Focus element via selector, select all existing content, then paste new text."""
-    loc = page.locator(selector).first
-    loc.click(timeout=4000)
-    page.wait_for_timeout(300)
-    page.keyboard.press("Control+a")
-    page.wait_for_timeout(200)
-    _clipboard_paste_text(page, text)
-    page.wait_for_timeout(500)
-
-
-def _dump_wechat_editor_dom(page, artifact_dir: Path, step_logs: list[str], *, label: str) -> None:
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    html_path = artifact_dir / f"{label}.html"
-    report_path = artifact_dir / f"{label}.txt"
-    try:
-        html_path.write_text(str(page.content() or ""), encoding="utf-8")
-        step_logs.append(f"已导出编辑页 HTML={html_path}")
-    except Exception as exc:
-        step_logs.append(f"导出编辑页 HTML 失败：{exc}")
-        return
-
-    selector_groups = {
-        "title": [
-            "div.ProseMirror[data-placeholder*='请在这里输入标题']",
-            "div.ProseMirror[data-placeholder*='标题']",
-            "textarea.js_article_title",
-        ],
-        "author": [
-            "input.js_author",
-            "input[placeholder*='作者']",
-        ],
-        "digest": [
-            "textarea.js_desc",
-            "textarea[placeholder*='摘要']",
-        ],
-        "editor": [
-            "#edui1_iframeholder .mock-iframe-body .rich_media_content > div.ProseMirror[contenteditable='true']",
-            "#edui1_iframeholder .mock-iframe-body .rich_media_content div.ProseMirror[contenteditable='true']",
-            ".editor-v-root .mock-iframe-body .rich_media_content > div.ProseMirror[contenteditable='true']",
-            "div.ProseMirror[contenteditable='true'][style*='min-height']",
-            "div.ProseMirror:not([data-placeholder*='请在这里输入标题']):not([data-placeholder*='标题'])",
-            "div.ProseMirror:not([data-placeholder*='请在这里输入标题']):not([data-placeholder*='标题'])[style*='min-height']",
-            ".rich_media_content .ProseMirror:not([data-placeholder*='请在这里输入标题']):not([data-placeholder*='标题'])",
-            "#edui1_iframeholder .mock-iframe-body .rich_media_content > div.ProseMirror",
-            ".editor-v-root .mock-iframe-body .rich_media_content > div.ProseMirror",
-            "div.ProseMirror:has(.editor_content_placeholder)",
-            ".ProseMirror",
-        ],
-    }
-    lines = [f"url={_page_url(page)}"]
-    for group, selectors in selector_groups.items():
-        for selector in selectors:
-            try:
-                locator = page.locator(selector)
-                count = locator.count()
-                lines.append(f"[{group}] selector={selector} count={count}")
-                if count <= 0:
-                    continue
-                first = locator.first
-                outer_html = str(first.evaluate("(el) => el.outerHTML || ''")).strip()
-                inner_text = str(first.evaluate("(el) => el.innerText || el.textContent || ''")).strip()
-                lines.append(f"[{group}] outerHTML={outer_html[:4000]}")
-                lines.append(f"[{group}] innerText={inner_text[:1000]}")
-            except Exception as exc:
-                lines.append(f"[{group}] selector={selector} error={exc}")
-    _write_debug_artifact(report_path, lines)
-    step_logs.append(f"已导出编辑页节点报告={report_path}")
-
-
 def _read_locator_value(page, selector: str, *, rich_text: bool = False) -> str:
     script = """({ selector, richText }) => {
         const node = document.querySelector(selector);
@@ -2026,205 +1894,6 @@ def _delete_wechat_draft_in_page(page, target: dict[str, object], step_logs: lis
     step_logs.append("已等待远端草稿卡片消失或列表刷新。")
 
 
-def delete_wechat_remote_draft(
-    target: dict[str, object],
-    channel: dict[str, object],
-    browser_state: dict[str, object],
-) -> tuple[dict[str, object], list[str], list[str]]:
-    channel = ensure_channel_defaults(channel)
-    selector_version = str(channel.get("selectors_version", "wechat-mp-v1"))
-    entry_url = str(channel.get("publish_entry_url", "https://mp.weixin.qq.com/"))
-    selector_profile = get_selector_profile(selector_version)
-    step_logs = [
-        f"selector_profile={selector_version}",
-        "action=delete_wechat_draft",
-        f"entry_url={entry_url}",
-    ]
-    artifacts: list[str] = []
-    browser_state = dict(browser_state)
-    browser_state.pop("verification_status", None)
-    browser_state.pop("verification_message", None)
-    browser_state.pop("last_synced_editor_url", None)
-    browser_state.pop("last_verified_remote_url", None)
-    browser_state.pop("last_verified_remote_appmsg_id", None)
-    if not browser_state.get("logged_in"):
-        browser_state["last_error"] = "浏览器登录态不可用，无法删除微信草稿。"
-        return browser_state, artifacts, step_logs + ["未执行远端删除：登录态不可用。"]
-
-    artifact_dir = ARTIFACT_ROOT / f"remote-delete-{uuid4().hex[:8]}"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    screenshot_path = artifact_dir / f"delete-wechat-draft-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.png"
-
-    try:
-        def _run(_context, page):
-            page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(1800)
-            if not _validate_wechat_page_identity(page, selector_profile, expected="home"):
-                page.wait_for_timeout(3000)
-                if not _validate_wechat_page_identity(page, selector_profile, expected="home"):
-                    step_logs.append("首页验证未通过，尝试继续导航。")
-            if not _open_wechat_draft_box(page, selector_profile, step_logs):
-                direct_url = "https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=list_card"
-                step_logs.append(f"侧栏导航失败，尝试直接跳转草稿箱 {direct_url}")
-                page.goto(direct_url, wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(2500)
-                if "action=list_card" not in str(page.url or ""):
-                    raise RuntimeError(f"直接跳转后仍未进入草稿箱：{page.url}")
-                step_logs.append(f"已直接跳转到草稿箱 url={page.url}")
-            _enforce_single_tab(_context, page, step_logs, phase="delete_remote_draft", allow_recover=False)
-            active_page = page
-            active_page.wait_for_timeout(2000)
-            if "action=list_card" not in str(active_page.url or ""):
-                raise RuntimeError(f"当前页面不是正式草稿箱：{active_page.url}")
-            _delete_wechat_draft_in_page(active_page, target, step_logs)
-            active_page.screenshot(path=str(screenshot_path), full_page=True)
-            artifacts.append(str(screenshot_path))
-            browser_state["last_opened_url"] = active_page.url
-            browser_state["current_page"] = active_page.url
-            browser_state["last_screenshot"] = str(screenshot_path)
-            browser_state["resident_page"] = "draft_box"
-            WECHAT_BROWSER_MANAGER.set_resident_page("draft_box")
-            browser_state["last_error"] = None
-
-        WECHAT_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run)
-        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
-        return browser_state, artifacts, step_logs
-    except Exception as exc:
-        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
-        browser_state["last_error"] = f"远端草稿删除失败：{exc}"
-        step_logs.append(f"远端草稿删除失败：{exc}")
-        ok, current_url = WECHAT_BROWSER_MANAGER.capture_screenshot(screenshot_path)
-        if ok:
-            artifacts.append(str(screenshot_path))
-            browser_state["last_screenshot"] = str(screenshot_path)
-            if current_url:
-                browser_state["last_opened_url"] = current_url
-                browser_state["current_page"] = current_url
-        return browser_state, artifacts, step_logs
-
-
-def _open_wechat_draft_box(page, selector_profile: dict[str, list[str] | str], step_logs: list[str]) -> bool:
-    content_manage_selector = _pick_selector(page, selector_profile.get("content_manage", []), timeout=2500)
-    if content_manage_selector:
-        try:
-            page.locator(content_manage_selector).first.click()
-            page.wait_for_timeout(1200)
-            step_logs.append(f"已展开内容管理 selector={content_manage_selector}")
-        except Exception:
-            step_logs.append(f"尝试展开内容管理失败 selector={content_manage_selector}")
-
-    selector_candidates = selector_profile.get("draft_box", [])
-    selector_list = selector_candidates if isinstance(selector_candidates, list) else [selector_candidates]
-    if not selector_list:
-        return False
-    failed_selectors: list[str] = []
-    for selector in [str(item) for item in selector_list if str(item).strip()]:
-        try:
-            locator = page.locator(selector).first
-            try:
-                locator.wait_for(timeout=4000)
-            except Exception:
-                href = ""
-                try:
-                    href = str(locator.get_attribute("href", timeout=1200) or "").strip()
-                except Exception:
-                    href = ""
-                if href and "action=list_card" in href:
-                    target_url = href if href.startswith("http") else f"https://mp.weixin.qq.com{href}"
-                    page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_timeout(1200)
-                else:
-                    raise
-            else:
-                try:
-                    locator.click(timeout=2000)
-                except Exception:
-                    href = ""
-                    try:
-                        href = str(locator.get_attribute("href", timeout=1200) or "").strip()
-                    except Exception:
-                        href = ""
-                    if href and "action=list_card" in href:
-                        target_url = href if href.startswith("http") else f"https://mp.weixin.qq.com{href}"
-                        page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-                        page.wait_for_timeout(1200)
-                    else:
-                        locator.click(timeout=2000, force=True)
-            try:
-                page.wait_for_url("**action=list_card**", timeout=8000)
-            except Exception:
-                page.wait_for_timeout(2500)
-            current_url = str(page.url or "")
-            if "action=list_card" not in current_url:
-                failed_selectors.append(selector)
-                step_logs.append(f"草稿箱入口未跳转 selector={selector} url={current_url}")
-                continue
-            step_logs.append(f"已点击草稿箱入口 selector={selector}")
-            step_logs.append(f"已进入草稿箱页面 url={current_url}")
-            return True
-        except Exception as exc:
-            failed_selectors.append(selector)
-            step_logs.append(f"草稿箱入口点击失败 selector={selector} error={exc}")
-            continue
-    if failed_selectors:
-        step_logs.append(f"草稿箱入口全部尝试失败：{', '.join(failed_selectors)}")
-    return False
-
-
-def _return_to_wechat_home(page, entry_url: str, step_logs: list[str]) -> None:
-    page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
-    page.wait_for_timeout(1500)
-    step_logs.append("已返回公众号后台首页。")
-
-
-def _validate_wechat_page_identity(page, selector_profile: dict[str, list[str] | str], *, expected: str) -> bool:
-    current_url = str(getattr(page, "url", "") or "")
-    if "mp.weixin.qq.com" not in current_url:
-        return False
-    if expected == "home":
-        selectors = [
-            *[str(item) for item in selector_profile.get("logged_in", []) if isinstance(item, str)],
-            *[str(item) for item in selector_profile.get("content_manage", []) if isinstance(item, str)],
-        ]
-        for selector in selectors:
-            try:
-                if page.locator(selector).first.count() > 0:
-                    return True
-            except Exception:
-                continue
-        return False
-    if expected == "draft_box":
-        if "action=list_card" not in current_url:
-            return False
-        for selector in [
-            ".publish_card_container",
-            ".weui-desktop-card.weui-desktop-publish",
-            ".weui-desktop-media__list-col .weui-desktop-card",
-            ".weui-desktop-panel__bd",
-        ]:
-            try:
-                if page.locator(selector).count() > 0:
-                    return True
-            except Exception:
-                continue
-        return False
-    if expected == "editor":
-        if "appmsg" not in current_url and "media/appmsg_edit" not in current_url:
-            return False
-        selectors = [
-            *[str(item) for item in selector_profile.get("title_input", []) if isinstance(item, str)],
-            *[str(item) for item in selector_profile.get("editor", []) if isinstance(item, str)],
-        ]
-        for selector in selectors:
-            try:
-                if page.locator(selector).first.count() > 0:
-                    return True
-            except Exception:
-                continue
-        return False
-    return False
-
-
 def _browser_session_error_kind(exc: Exception | None, *, recovery_ok: bool) -> bool:
     if recovery_ok:
         return False
@@ -2256,16 +1925,6 @@ def _retry_once(step_name: str, step_logs: list[str], fn):
         step_logs.append(f"{step_name} 首次失败：{exc}；5 秒后重试一次。")
         time.sleep(5)
         return fn()
-
-
-def _safe_return_home(page, entry_url: str, selector_profile: dict[str, list[str] | str], step_logs: list[str], *, step_name: str) -> None:
-    def _go_home_once() -> None:
-        _return_to_wechat_home(page, entry_url, step_logs)
-        if not _validate_wechat_page_identity(page, selector_profile, expected="home"):
-            raise RuntimeError("未能恢复到有效首页。")
-
-    _retry_once(step_name, step_logs, _go_home_once)
-
 
 def _pick_required_selector(page, selectors: list[str] | str, step_logs: list[str], *, step_name: str, timeout: int) -> str:
     def _pick_once() -> str:
@@ -2385,88 +2044,6 @@ def _wait_for_wechat_editor_in_current_page_with_retry(page, selector_profile: d
 
     return _retry_once("wait_current_editor_page", step_logs, _locate_once)
 
-
-def _scrape_wechat_draft_items_strict(page) -> list[dict[str, str | None]]:
-    rows = page.evaluate(
-        """() => {
-            const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
-            const results = [];
-            const seenStable = new Set();
-            const normalizeTitleKey = (value) =>
-                normalize(value)
-                    .replace(/[“”]/g, '"')
-                    .replace(/[‘’]/g, "'")
-                    .replace(/[：:]/g, ':')
-                    .toLowerCase();
-            const containers = Array.from(
-                document.querySelectorAll(
-                    '.publish_card_container, .weui-desktop-card.weui-desktop-publish, .weui-desktop-media__list-col .weui-desktop-card'
-                )
-            );
-
-            const resolveTitleNode = (container) =>
-                container.querySelector('.weui-desktop-publish__cover__title span') ||
-                container.querySelector('.weui-desktop-publish__cover__title') ||
-                container.querySelector('.weui-desktop-card__title') ||
-                container.querySelector('a[title]');
-
-            const resolveLinkNode = (container) =>
-                container.querySelector('a.weui-desktop-publish__cover__title[href]') ||
-                container.querySelector('.weui-desktop-publish__cover__title[href]') ||
-                container.querySelector('a[href]');
-
-            containers.forEach((container, index) => {
-                const titleNode = resolveTitleNode(container);
-                const linkNode = resolveLinkNode(container);
-                const title = normalize(titleNode ? titleNode.textContent : '');
-                const href = normalize(linkNode ? linkNode.getAttribute('href') : '');
-                if (!title && !href) return;
-                const containerText = normalize(container.innerText || '');
-                const updatedAtMatch = containerText.match(/(昨天\s*[0-9]{1,2}:[0-9]{2}|星期[一二三四五六日天]\s*[0-9]{1,2}:[0-9]{2}|[0-9]{1,2}月[0-9]{1,2}日|[0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2}|[0-9]{1,2}:[0-9]{2})/);
-                const updatedAt = updatedAtMatch ? normalize(updatedAtMatch[1]) : '';
-                const normalizedHref = href && !href.startsWith('javascript:') ? (href.startsWith('/') ? `${window.location.origin}${href}` : href) : '';
-                let appmsgId = null;
-                try {
-                    if (normalizedHref) {
-                        const parsed = new URL(normalizedHref, window.location.origin);
-                        appmsgId = parsed.searchParams.get('appmsgid');
-                    }
-                } catch (_) {}
-                const titleKey = normalizeTitleKey(title);
-                const stableKey = appmsgId ? `appmsg:${appmsgId}` : normalizedHref ? `url:${normalizedHref}` : '';
-                const dedupeKey = stableKey || `title:${titleKey}|updated:${updatedAt}`;
-                if (seenStable.has(dedupeKey)) return;
-                seenStable.add(dedupeKey);
-                results.push({
-                    title,
-                    url: normalizedHref,
-                    appmsg_id: appmsgId,
-                    updated_at: updatedAt,
-                    remote_key: stableKey || `card:${titleKey}|updated:${updatedAt}|${index}`,
-                });
-            });
-
-            return results.slice(0, 80);
-        }"""
-    )
-    if not isinstance(rows, list):
-        raise RuntimeError("草稿箱抓取结果格式异常。")
-    items: list[dict[str, str | None]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        items.append(
-            {
-                "title": str(row.get("title") or "").strip(),
-                "url": str(row.get("url") or "").strip(),
-                "appmsg_id": str(row.get("appmsg_id") or "").strip() or None,
-                "updated_at": str(row.get("updated_at") or "").strip() or None,
-                "remote_key": str(row.get("remote_key") or "").strip() or None,
-            }
-        )
-    return items
-
-
 def _open_wechat_publish_history(page, selector_profile: dict[str, list[str] | str], step_logs: list[str]) -> bool:
     content_manage_selector = _pick_selector(page, selector_profile.get("content_manage", []), timeout=2500)
     if content_manage_selector:
@@ -2535,481 +2112,215 @@ def _open_wechat_publish_history(page, selector_profile: dict[str, list[str] | s
     return False
 
 
-def _inspect_wechat_publish_history_document(target) -> dict[str, object]:
-    result = target.evaluate(
-        """() => {
-            const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
-            const titleAnchors = Array.from(document.querySelectorAll('a.weui-desktop-mass-appmsg__title, a.weui-desktop-publish__title, a[href*="mp.weixin.qq.com/s/"]'));
-            const timeNodes = Array.from(document.querySelectorAll('.weui-desktop-mass__time, .weui-desktop-publish__time, .publish_time'));
-            const hoverCards = Array.from(document.querySelectorAll('.publish_hover_content'));
-            const massCards = Array.from(document.querySelectorAll('.weui-desktop-mass-media, .weui-desktop-mass-appmsg'));
-            const sampleTitles = titleAnchors
-                .map((node) => normalize(node.textContent || node.getAttribute('title') || ''))
-                .filter(Boolean)
-                .slice(0, 5);
-            const sampleTimes = timeNodes
-                .map((node) => normalize(node.textContent || ''))
-                .filter(Boolean)
-                .slice(0, 5);
-            return {
-                href: window.location.href,
-                title: document.title || '',
-                readyState: document.readyState || '',
-                title_anchor_count: titleAnchors.length,
-                time_count: timeNodes.length,
-                hover_card_count: hoverCards.length,
-                mass_card_count: massCards.length,
-                sample_titles: sampleTitles,
-                sample_times: sampleTimes,
-                body_text_head: normalize((document.body && document.body.innerText) || '').slice(0, 240),
-            };
-        }"""
-    )
-    if not isinstance(result, dict):
-        return {}
-    return result
-
-
-def _scrape_wechat_publish_history_from_target(target) -> list[dict[str, str | None]]:
-    rows = target.evaluate(
-        """() => {
-            const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
-            const cleanTitleLabel = (value) => normalize(value).replace(/\\s*原创\\s*$/u, '').trim();
-            const results = [];
-            const seenStable = new Set();
-            const cardSelector = '.publish_hover_content, .weui-desktop-mass-media, .weui-desktop-mass-appmsg, .publish_card_container, .weui-desktop-card.weui-desktop-publish, .weui-desktop-media__list-col .weui-desktop-card, .publish_list .publish_item';
-
-            const absolutize = (value) => {
-                const raw = normalize(value);
-                if (!raw || raw.startsWith('javascript:')) return '';
-                if (raw.startsWith('//')) return `${window.location.protocol}${raw}`;
-                if (raw.startsWith('/')) return `${window.location.origin}${raw}`;
-                return raw;
-            };
-
-            const pushItem = (title, url, publishedAt, occurrence) => {
-                const cleanTitle = cleanTitleLabel(title);
-                const normalizedUrl = absolutize(url);
-                if (cleanTitle.length < 2) return;
-                let appmsgId = null;
-                try {
-                    if (normalizedUrl) {
-                        const parsed = new URL(normalizedUrl, window.location.origin);
-                        appmsgId = parsed.searchParams.get('appmsgid');
-                    }
-                } catch (_) {}
-                const stableKey = appmsgId
-                    ? `appmsg:${appmsgId}`
-                    : normalizedUrl
-                        ? `url:${normalizedUrl}`
-                        : `publish:${cleanTitle}|${normalize(publishedAt)}|${occurrence}`;
-                if (seenStable.has(stableKey)) return;
-                seenStable.add(stableKey);
-                results.push({
-                    title: cleanTitle,
-                    url: normalizedUrl,
-                    appmsg_id: appmsgId,
-                    published_at: normalize(publishedAt),
-                    remote_key: stableKey,
-                });
-            };
-
-            const extractPublishedAt = (container) => {
-                const dateNode =
-                    container?.querySelector('.weui-desktop-mass__time') ||
-                    container?.querySelector('.weui-desktop-publish__time') ||
-                    container?.querySelector('.publish_time') ||
-                    container?.querySelector('.weui-desktop-card__time');
-                let publishedAt = normalize(dateNode ? dateNode.textContent : '');
-                if (!publishedAt) {
-                    const text = normalize(container?.innerText || '');
-                    const match = text.match(/((?:昨天|前天|星期[一二三四五六日天])?\\s*[0-9]{1,2}:[0-9]{2}|[0-9]{1,2}月[0-9]{1,2}日|[0-9]{4}[-/.][0-9]{1,2}[-/.][0-9]{1,2})/);
-                    publishedAt = match ? normalize(match[1]) : '';
-                }
-                return publishedAt;
-            };
-
-            const findBestContainer = (node) => {
-                if (!node) return null;
-                const directPublish = node.closest('.publish_hover_content');
-                if (directPublish) return directPublish;
-                let current = node;
-                while (current && current !== document.body) {
-                    if (current.matches && current.matches(cardSelector)) {
-                        const hasTimeNode = current.querySelector('.weui-desktop-mass__time, .weui-desktop-publish__time, .publish_time, .weui-desktop-card__time');
-                        if (hasTimeNode) return current;
-                    }
-                    current = current.parentElement;
-                }
-                return node.closest(cardSelector) || node.parentElement || node;
-            };
-
-            const titleAnchors = Array.from(
-                document.querySelectorAll('a.weui-desktop-mass-appmsg__title, a.weui-desktop-publish__title, a[href*="mp.weixin.qq.com/s/"]')
-            );
-            titleAnchors.forEach((anchor, index) => {
-                const container = findBestContainer(anchor);
-                const href = anchor.getAttribute('href') || '';
-                const title =
-                    cleanTitleLabel(anchor.textContent || '') ||
-                    cleanTitleLabel(anchor.getAttribute('title') || '') ||
-                    cleanTitleLabel(anchor.querySelector('span')?.textContent || '');
-                const publishedAt = extractPublishedAt(container);
-                pushItem(title, href, publishedAt, index);
-            });
-
-            if (!results.length) {
-                const containers = Array.from(document.querySelectorAll(cardSelector));
-                containers.forEach((container, index) => {
-                    const titleNode =
-                        container.querySelector('.weui-desktop-mass-appmsg__title span') ||
-                        container.querySelector('.weui-desktop-mass-appmsg__title') ||
-                        container.querySelector('.weui-desktop-publish__title span') ||
-                        container.querySelector('.weui-desktop-publish__title') ||
-                        container.querySelector('.weui-desktop-publish__cover__title span') ||
-                        container.querySelector('.weui-desktop-publish__cover__title') ||
-                        container.querySelector('.weui-desktop-card__title') ||
-                        container.querySelector('a[title]') ||
-                        container.querySelector('h3');
-                    const linkNode =
-                        container.querySelector('a.weui-desktop-mass-appmsg__title') ||
-                        container.querySelector('a.weui-desktop-publish__title') ||
-                        container.querySelector('a[href*="mp.weixin.qq.com/s/"]') ||
-                        container.querySelector('a[href]');
-                    const title = cleanTitleLabel(titleNode ? titleNode.textContent : '');
-                    const href = linkNode ? linkNode.getAttribute('href') || '' : '';
-                    const publishedAt = extractPublishedAt(container);
-                    pushItem(title, href, publishedAt, index);
-                });
-            }
-
-            return results.slice(0, 80);
-        }"""
-    )
-    if not isinstance(rows, list):
-        raise RuntimeError("发表记录抓取结果格式异常。")
-    items: list[dict[str, str | None]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        items.append(
-            {
-                "title": str(row.get("title") or "").strip(),
-                "url": str(row.get("url") or "").strip(),
-                "appmsg_id": str(row.get("appmsg_id") or "").strip() or None,
-                "published_at": str(row.get("published_at") or "").strip() or None,
-                "remote_key": str(row.get("remote_key") or "").strip() or None,
-            }
-        )
-    return items
-
-
-def _scrape_wechat_publish_history_items(page, step_logs: list[str] | None = None) -> list[dict[str, str | None]]:
-    diagnostic_logs = step_logs if step_logs is not None else []
-    targets = [("page", page)]
-    try:
-        frames = list(page.frames)
-    except Exception:
-        frames = []
-    for index, frame in enumerate(frames):
-        if frame is page.main_frame:
-            continue
-        targets.append((f"frame[{index}]", frame))
-
-    merged: list[dict[str, str | None]] = []
-    seen: set[str] = set()
-    for label, target in targets:
+def _open_wechat_analytics(page, selector_profile: dict[str, list[str] | str], step_logs: list[str]) -> bool:
+    selector_candidates = selector_profile.get("analytics", [])
+    selector_list = selector_candidates if isinstance(selector_candidates, list) else [selector_candidates]
+    if not selector_list:
+        return False
+    failed_selectors: list[str] = []
+    for selector in [str(item) for item in selector_list if str(item).strip()]:
         try:
-            diag = _inspect_wechat_publish_history_document(target)
-            if diag:
-                diagnostic_logs.append(
-                    "发表记录DOM "
-                    f"{label} url={diag.get('href') or ''} "
-                    f"titleAnchors={diag.get('title_anchor_count', 0)} "
-                    f"timeNodes={diag.get('time_count', 0)} "
-                    f"hoverCards={diag.get('hover_card_count', 0)} "
-                    f"massCards={diag.get('mass_card_count', 0)} "
-                    f"samples={','.join(str(item) for item in (diag.get('sample_titles') or [])[:3]) or 'none'}"
-                )
-            rows = _scrape_wechat_publish_history_from_target(target)
-            diagnostic_logs.append(f"发表记录抽取 {label} rows={len(rows)}")
-        except Exception as exc:
-            diagnostic_logs.append(f"发表记录抽取 {label} 失败：{exc}")
-            continue
-        for row in rows:
-            stable_key = (
-                str(row.get("remote_key") or "").strip()
-                or str(row.get("url") or "").strip()
-                or f"{str(row.get('title') or '').strip()}|{str(row.get('published_at') or '').strip()}"
-            )
-            if not stable_key or stable_key in seen:
-                continue
-            seen.add(stable_key)
-            merged.append(row)
-    return merged
-
-
-def inspect_wechat_draft_box(
-    channel: dict[str, object],
-    browser_state: dict[str, object],
-) -> tuple[dict[str, object], list[str], list[str], list[dict[str, str | None]]]:
-    channel = ensure_channel_defaults(channel)
-    selector_version = str(channel.get("selectors_version", "wechat-mp-v1"))
-    entry_url = str(channel.get("publish_entry_url", "https://mp.weixin.qq.com/"))
-    selector_profile = get_selector_profile(selector_version)
-    step_logs = [
-        f"selector_profile={selector_version}",
-        f"entry_url={entry_url}",
-        "action=check_draft_box",
-    ]
-    artifacts: list[str] = []
-    browser_state = dict(browser_state)
-    browser_state["is_session_level_error"] = False
-
-    if not browser_state.get("logged_in"):
-        browser_state["last_error"] = "浏览器登录态不可用，无法检查微信草稿箱。"
-        browser_state["is_session_level_error"] = True
-        return browser_state, artifacts, step_logs + ["未执行草稿箱检查：登录态不可用。"], []
-
-    artifact_dir = ARTIFACT_ROOT / "session"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    screenshot_path = artifact_dir / f"check-draft-box-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.png"
-
-    try:
-        def _run(_context, page):
-            WECHAT_BROWSER_MANAGER.set_action_state("check_draft_box", "go_home")
-            _safe_return_home(page, entry_url, selector_profile, step_logs, step_name="check_draft_box_return_home")
-            WECHAT_BROWSER_MANAGER.set_action_state("check_draft_box", "open_draft_box")
-            if not _open_wechat_draft_box(page, selector_profile, step_logs):
-                raise RuntimeError("未能进入正式草稿箱页面（/cgi-bin/appmsg?...action=list_card...）。")
-            current_page = page
-            current_page.wait_for_timeout(2000)
-            if not _validate_wechat_page_identity(current_page, selector_profile, expected="draft_box"):
-                raise RuntimeError(f"当前页面不是正式草稿箱：{current_page.url}")
-            WECHAT_BROWSER_MANAGER.set_action_state("check_draft_box", "scrape")
-            items = _scrape_wechat_draft_items_strict(current_page)
-            current_page.screenshot(path=str(screenshot_path), full_page=True)
-            artifacts.append(str(screenshot_path))
-            browser_state["last_opened_url"] = current_page.url
-            browser_state["current_page"] = current_page.url
-            browser_state["last_screenshot"] = str(screenshot_path)
-            browser_state["resident_page"] = "draft_box"
-            WECHAT_BROWSER_MANAGER.set_resident_page("draft_box")
-            browser_state["last_error"] = None
-            step_logs.append(f"共读取到 {len(items)} 条微信草稿记录。")
-            WECHAT_BROWSER_MANAGER.set_action_state("check_draft_box", "return_home")
-            _safe_return_home(page, entry_url, selector_profile, step_logs, step_name="check_draft_box_return_home_final")
-            browser_state["last_opened_url"] = page.url
-            browser_state["current_page"] = page.url
-            browser_state["resident_page"] = "home"
-            WECHAT_BROWSER_MANAGER.set_resident_page("home")
-            return items
-
-        remote_items = WECHAT_BROWSER_MANAGER.with_session(
-            channel,
-            restore_window=False,
-            action_fn=_run,
-        )
-        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
-        return browser_state, artifacts, step_logs, remote_items
-    except Exception as exc:
-        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
-        browser_state["last_error"] = f"草稿箱检查失败：{exc}"
-        browser_state["is_session_level_error"] = _browser_session_error_kind(exc, recovery_ok=False)
-        step_logs.append(f"草稿箱检查失败：{exc}")
-        ok, current_url = WECHAT_BROWSER_MANAGER.capture_screenshot(screenshot_path)
-        if ok:
-            artifacts.append(str(screenshot_path))
-            browser_state["last_screenshot"] = str(screenshot_path)
-            if current_url:
-                browser_state["last_opened_url"] = current_url
-                browser_state["current_page"] = current_url
-        return browser_state, artifacts, step_logs, []
-
-
-def inspect_wechat_publish_history(
-    channel: dict[str, object],
-    browser_state: dict[str, object],
-) -> tuple[dict[str, object], list[str], list[str], list[dict[str, str | None]]]:
-    channel = ensure_channel_defaults(channel)
-    selector_version = str(channel.get("selectors_version", "wechat-mp-v1"))
-    entry_url = str(channel.get("publish_entry_url", "https://mp.weixin.qq.com/"))
-    selector_profile = get_selector_profile(selector_version)
-    step_logs = [
-        f"selector_profile={selector_version}",
-        f"entry_url={entry_url}",
-        "action=check_publish_history",
-    ]
-    artifacts: list[str] = []
-    browser_state = dict(browser_state)
-    browser_state["is_session_level_error"] = False
-
-    if not browser_state.get("logged_in"):
-        browser_state["last_error"] = "浏览器登录态不可用，无法检查微信发表记录。"
-        browser_state["is_session_level_error"] = True
-        return browser_state, artifacts, step_logs + ["未执行发表记录检查：登录态不可用。"], []
-
-    artifact_dir = ARTIFACT_ROOT / "session"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    screenshot_path = artifact_dir / f"check-publish-history-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.png"
-
-    try:
-        def _run(_context, page):
-            WECHAT_BROWSER_MANAGER.set_action_state("check_publish_history", "go_home")
-            _safe_return_home(page, entry_url, selector_profile, step_logs, step_name="check_publish_history_return_home")
-            WECHAT_BROWSER_MANAGER.set_action_state("check_publish_history", "open_publish_history")
-            if not _open_wechat_publish_history(page, selector_profile, step_logs):
-                raise RuntimeError("未能进入正式发表记录页面（/cgi-bin/appmsgpublish?...）。")
-            current_page = page
-            current_page.wait_for_timeout(2000)
-            if "appmsgpublish" not in str(current_page.url or ""):
-                raise RuntimeError(f"当前页面不是发表记录：{current_page.url}")
-            WECHAT_BROWSER_MANAGER.set_action_state("check_publish_history", "scrape")
-            items = _scrape_wechat_publish_history_items(current_page, step_logs)
-            current_page.screenshot(path=str(screenshot_path), full_page=True)
-            artifacts.append(str(screenshot_path))
-            browser_state["last_opened_url"] = current_page.url
-            browser_state["current_page"] = current_page.url
-            browser_state["last_screenshot"] = str(screenshot_path)
-            browser_state["resident_page"] = "publish_history"
-            WECHAT_BROWSER_MANAGER.set_resident_page("publish_history")
-            browser_state["last_error"] = None
-            step_logs.append(f"共读取到 {len(items)} 条微信发表记录。")
-            WECHAT_BROWSER_MANAGER.set_action_state("check_publish_history", "return_home")
-            _safe_return_home(page, entry_url, selector_profile, step_logs, step_name="check_publish_history_return_home_final")
-            browser_state["last_opened_url"] = page.url
-            browser_state["current_page"] = page.url
-            browser_state["resident_page"] = "home"
-            WECHAT_BROWSER_MANAGER.set_resident_page("home")
-            return items
-
-        remote_items = WECHAT_BROWSER_MANAGER.with_session(
-            channel,
-            restore_window=False,
-            action_fn=_run,
-        )
-        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
-        return browser_state, artifacts, step_logs, remote_items
-    except Exception as exc:
-        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
-        browser_state["last_error"] = f"发表记录检查失败：{exc}"
-        browser_state["is_session_level_error"] = _browser_session_error_kind(exc, recovery_ok=False)
-        step_logs.append(f"发表记录检查失败：{exc}")
-        ok, current_url = WECHAT_BROWSER_MANAGER.capture_screenshot(screenshot_path)
-        if ok:
-            artifacts.append(str(screenshot_path))
-            browser_state["last_screenshot"] = str(screenshot_path)
-            if current_url:
-                browser_state["last_opened_url"] = current_url
-                browser_state["current_page"] = current_url
-        return browser_state, artifacts, step_logs, []
-
-
-def launch_wechat_dashboard(channel: dict[str, object], browser_state: dict[str, object]) -> tuple[dict[str, object], list[str], list[str]]:
-    channel = ensure_channel_defaults(channel)
-    browser_state = dict(browser_state)
-    entry_url = str(channel.get("publish_entry_url", "https://mp.weixin.qq.com/"))
-    step_logs = [
-        f"browser={normalize_browser_name(channel.get('browser_name'))}",
-        f"profile={resolve_profile_path(channel.get('browser_profile_path'), channel.get('browser_name'))}",
-        f"entry_url={entry_url}",
-    ]
-    try:
-        def _run(_context, page):
-            page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(1200)
+            locator = page.locator(selector).first
+            locator.wait_for(timeout=4000)
+            href = ""
             try:
-                page.evaluate("() => { document.title = 'AutoNews-微信专用'; }")
+                href = str(locator.get_attribute("href", timeout=1200) or "").strip()
             except Exception:
-                pass
-            browser_state["last_opened_url"] = page.url
-            browser_state["current_page"] = page.url
-            browser_state["resident_page"] = "home"
-            WECHAT_BROWSER_MANAGER.set_resident_page("home")
-            browser_state["last_checked_at"] = now_iso()
-            browser_state["last_error"] = None
-            step_logs.append("已恢复微信专用浏览器并打开公众号后台首页。")
+                href = ""
+            if href:
+                target_url = href if href.startswith("http") else f"https://mp.weixin.qq.com{href}"
+                page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(1500)
+            else:
+                try:
+                    locator.click(timeout=2000)
+                except Exception:
+                    locator.click(timeout=2000, force=True)
+                page.wait_for_timeout(2500)
+            current_url = str(page.url or "")
+            if "appmsganalysis" not in current_url:
+                failed_selectors.append(selector)
+                step_logs.append(f"内容分析入口未跳转 selector={selector} url={current_url}")
+                continue
+            step_logs.append(f"已点击数据分析入口 selector={selector}")
+            step_logs.append(f"当前数据分析页面 url={current_url}")
+            return True
+        except Exception as exc:
+            failed_selectors.append(selector)
+            step_logs.append(f"数据分析入口点击失败 selector={selector} error={exc}")
+            continue
+    if failed_selectors:
+        step_logs.append(f"数据分析入口全部尝试失败：{', '.join(failed_selectors)}")
+    return False
 
-        WECHAT_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run)
-        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
-        return browser_state, [], step_logs
-    except Exception as exc:
-        browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
-        browser_state["last_error"] = f"浏览器启动失败：{exc}"
-        return browser_state, [], step_logs + [f"浏览器启动失败：{exc}"]
-
-
-def inspect_wechat_session(channel: dict[str, object], browser_state: dict[str, object]) -> tuple[dict[str, object], list[str], list[str]]:
+def inspect_wechat_analytics_dom(
+    channel: dict[str, object], browser_state: dict[str, object]
+) -> tuple[dict[str, object], dict[str, object], list[str], list[str]]:
     channel = ensure_channel_defaults(channel)
     browser_state = dict(browser_state)
-    entry_url = str(channel.get("publish_entry_url", "https://mp.weixin.qq.com/"))
-    profile_path = resolve_profile_path(channel.get("browser_profile_path"), channel.get("browser_name"))
     selector_version = str(channel.get("selectors_version", "wechat-mp-v1"))
     selector_profile = get_selector_profile(selector_version)
+    entry_url = str(channel.get("publish_entry_url", "https://mp.weixin.qq.com/"))
     artifact_dir = ARTIFACT_ROOT / "session"
-    screenshot_path = artifact_dir / f"check-browser-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.png"
-    debug_text_path = artifact_dir / f"check-browser-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.txt"
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    screenshot_path = artifact_dir / f"inspect-wechat-analytics-{timestamp}.png"
+    debug_text_path = artifact_dir / f"inspect-wechat-analytics-{timestamp}.txt"
+    html_path = artifact_dir / f"inspect-wechat-analytics-{timestamp}.html"
+    snapshot: dict[str, object] = {
+        "checked_at": now_iso(),
+        "url": "",
+        "page_title": "",
+        "body_excerpt": "",
+        "message": "",
+        "items": [],
+        "artifacts": [],
+    }
     step_logs = [
         f"selector_profile={selector_version}",
-        f"profile={resolve_profile_path(channel.get('browser_profile_path'), channel.get('browser_name'))}",
-        f"entry_url={entry_url}",
+        "action=inspect_wechat_analytics_dom",
     ]
     artifacts: list[str] = []
 
     try:
-        from playwright.sync_api import Error as PlaywrightError  # type: ignore
-
         def _run(_context, page):
-            page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(1500)
-            logged_in = False
-            matched_selector = None
-            for selector in selector_profile.get("logged_in", []):
-                try:
-                    page.wait_for_selector(str(selector), timeout=1200)
-                    logged_in = True
-                    matched_selector = str(selector)
-                    break
-                except PlaywrightError:
-                    continue
+            _safe_return_home(page, entry_url, selector_profile, step_logs, step_name="inspect_analytics_go_home")
+            if not _open_wechat_analytics(page, selector_profile, step_logs):
+                raise RuntimeError("未能进入微信数据分析页面。")
+
+            field_specs = [
+                ("menu_analysis", "数据分析菜单", selector_profile.get("analytics", [])),
+                ("publish_card", "发表记录卡片", [".weui-desktop-mass-media", ".publish_hover_content", ".weui-desktop-mass-media__data-list"]),
+                ("read_metric", "阅读人数", [".appmsg-view .weui-desktop-mass-media__data__inner", ".weui-desktop-mass-media__data.appmsg-view"]),
+                ("like_metric", "点赞人数", [".appmsg-like .weui-desktop-mass-media__data__inner", ".weui-desktop-mass-media__data.appmsg-like"]),
+                ("share_metric", "分享人数", [".appmsg-share .weui-desktop-mass-media__data__inner", ".weui-desktop-mass-media__data.appmsg-share"]),
+                ("recommend_metric", "推荐人数", [".appmsg-haokan .weui-desktop-mass-media__data__inner", ".weui-desktop-mass-media__data.appmsg-haokan"]),
+                ("comment_metric", "留言条数", [".appmsg-comment .weui-desktop-mass-media__data__inner", ".weui-desktop-mass-media__data.appmsg-comment"]),
+                ("underline_metric", "划线人数", [".appmsg-underline .weui-desktop-mass-media__data__inner", ".weui-desktop-mass-media__data.appmsg-underline"]),
+                ("reward_metric", "赞赏金额", [".appmsg-reward .weui-desktop-mass-media__data__inner", ".weui-desktop-mass-media__data.appmsg-reward"]),
+                ("forward_metric", "被转载次数", [".appmsg-forward .weui-desktop-mass-media__data__inner", ".weui-desktop-mass-media__data.appmsg-forward"]),
+            ]
+
+            fields: list[dict[str, object]] = []
+            for key, label, selectors in field_specs:
+                selector_list = selectors if isinstance(selectors, list) else [selectors]
+                matched_selector = None
+                matched_count = 0
+                visible = False
+                sample_text = ""
+                sample_html = ""
+                for selector in [str(item) for item in selector_list if str(item).strip()]:
+                    try:
+                        locator = page.locator(selector)
+                        count = locator.count()
+                        if count <= 0:
+                            continue
+                        matched_selector = selector
+                        matched_count = count
+                        try:
+                            locator.first.wait_for(state="visible", timeout=1500)
+                            visible = True
+                        except Exception:
+                            visible = False
+                        try:
+                            sample_text = str(locator.first.inner_text(timeout=1500) or "").strip()
+                        except Exception:
+                            sample_text = ""
+                        try:
+                            sample_html = str(locator.first.evaluate("(el) => el.outerHTML || ''") or "").strip()
+                        except Exception:
+                            sample_html = ""
+                        break
+                    except Exception:
+                        continue
+                fields.append(
+                    {
+                        "key": key,
+                        "label": label,
+                        "found": bool(matched_selector),
+                        "visible": visible,
+                        "selector": matched_selector,
+                        "count": matched_count,
+                        "sample_text": sample_text[:500],
+                        "sample_html": sample_html[:3000],
+                    }
+                )
+
+            page_title = ""
+            body_excerpt = ""
+            html_content = ""
+            try:
+                page_title = str(page.title() or "")
+            except Exception:
+                page_title = ""
+            try:
+                body_excerpt = str(page.locator("body").inner_text(timeout=2500) or "").strip()
+            except Exception:
+                body_excerpt = ""
+            try:
+                html_content = str(page.content() or "")
+                html_path.write_text(html_content, encoding="utf-8")
+                artifacts.append(str(html_path))
+            except Exception as exc:
+                step_logs.append(f"导出数据分析页 HTML 失败：{exc}")
+
             page.screenshot(path=str(screenshot_path), full_page=True)
             artifacts.append(str(screenshot_path))
-            browser_state["browser_name"] = normalize_browser_name(channel.get("browser_name"))
-            browser_state["user_data_dir"] = str(profile_path)
-            browser_state["logged_in"] = logged_in
-            browser_state["last_checked_at"] = now_iso()
-            browser_state["last_opened_url"] = page.url
-            browser_state["current_page"] = page.url
-            browser_state["resident_page"] = "home"
-            WECHAT_BROWSER_MANAGER.set_resident_page("home")
+            debug_lines = [
+                f"url={page.url}",
+                f"title={page_title}",
+                "",
+                "body_excerpt:",
+                body_excerpt[:3000],
+                "",
+            ]
+            for field in fields:
+                debug_lines.extend(
+                    [
+                        f"[{field['key']}] {field['label']}",
+                        f"found={field['found']} visible={field['visible']} count={field['count']} selector={field['selector']}",
+                        f"text={field['sample_text']}",
+                        "html:",
+                        str(field["sample_html"]),
+                        "",
+                    ]
+                )
+            artifacts.append(_write_debug_artifact(debug_text_path, debug_lines))
+
+            snapshot["checked_at"] = now_iso()
+            snapshot["url"] = str(page.url or "")
+            snapshot["page_title"] = page_title
+            snapshot["body_excerpt"] = body_excerpt[:3000]
+            snapshot["items"] = fields
+            snapshot["artifacts"] = list(artifacts)
+            snapshot["message"] = f"已导出微信数据分析页 DOM，命中 {sum(1 for field in fields if field.get('found'))}/{len(fields)} 个关键区块。"
+
+            browser_state["last_opened_url"] = str(page.url or "")
+            browser_state["current_page"] = str(page.url or "")
+            browser_state["resident_page"] = "analytics"
             browser_state["last_screenshot"] = str(screenshot_path)
-            browser_state["last_error"] = None if logged_in else "未检测到公众号后台登录态，当前可能仍停留在登录页。"
-            if matched_selector:
-                step_logs.append(f"检测到登录态选择器：{matched_selector}")
-            else:
-                step_logs.append("未命中登录态选择器。")
+            browser_state["last_error"] = None
+            WECHAT_BROWSER_MANAGER.set_resident_page("analytics")
+            step_logs.append(str(snapshot["message"]))
 
         WECHAT_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run)
         browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
-    except Exception as exc:  # pragma: no cover - host/browser dependent
-        artifact = _write_debug_artifact(
-            debug_text_path,
-            [
-                "浏览器会话检查失败。",
-                f"profile={profile_path}",
-                f"entry_url={entry_url}",
-                f"error={exc}",
-            ],
-        )
-        artifacts.append(artifact)
-        browser_state["logged_in"] = False
-        browser_state["last_checked_at"] = now_iso()
-        browser_state["last_screenshot"] = artifact
+        return browser_state, snapshot, artifacts, step_logs
+    except Exception as exc:
         browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
-        browser_state["last_error"] = f"浏览器会话检查失败：{exc}"
-        return browser_state, artifacts, step_logs + [f"会话检查失败：{exc}"]
-
-    return browser_state, artifacts, step_logs
+        browser_state["last_error"] = f"导出微信数据分析页 DOM 失败：{exc}"
+        step_logs.append(f"导出微信数据分析页 DOM 失败：{exc}")
+        ok, current_url = WECHAT_BROWSER_MANAGER.capture_screenshot(screenshot_path)
+        if ok:
+            artifacts.append(str(screenshot_path))
+            browser_state["last_screenshot"] = str(screenshot_path)
+            if current_url:
+                browser_state["last_opened_url"] = current_url
+                browser_state["current_page"] = current_url
+                snapshot["url"] = current_url
+        snapshot["checked_at"] = now_iso()
+        snapshot["message"] = str(browser_state["last_error"])
+        snapshot["artifacts"] = list(artifacts)
+        return browser_state, snapshot, artifacts, step_logs
 
 
 def inspect_wechat_editor_dom(
@@ -3381,573 +2692,6 @@ def test_wechat_publish_settings_only(
         step_logs.append(f"微信后半段流程调试失败：{exc}")
         return browser_state, artifacts, step_logs
 
-
-def launch_douyin_dashboard(channel: dict[str, object], browser_state: dict[str, object]) -> tuple[dict[str, object], list[str], list[str]]:
-    channel = ensure_douyin_channel_defaults(channel)
-    browser_state = dict(browser_state)
-    entry_url = str(channel.get("publish_entry_url", "https://creator.douyin.com/"))
-    profile_path = Path(str(channel.get("browser_profile_path") or "")).expanduser()
-    selector_version = str(channel.get("selectors_version", "douyin-creator-v1"))
-    step_logs = [
-        f"selector_profile={selector_version}",
-        f"browser={normalize_browser_name(channel.get('browser_name'))}",
-        f"profile={profile_path}",
-        f"entry_url={entry_url}",
-    ]
-    artifacts: list[str] = []
-    try:
-        def _run(_context, page):
-            page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(2200)
-            try:
-                page.evaluate("() => { document.title = 'AutoNews-抖音探测'; }")
-            except Exception:
-                pass
-            browser_state["platform"] = "douyin_creator"
-            browser_state["browser_name"] = normalize_browser_name(channel.get("browser_name"))
-            browser_state["user_data_dir"] = str(profile_path)
-            browser_state["last_opened_url"] = page.url
-            browser_state["current_page"] = page.url
-            browser_state["resident_page"] = "home"
-            DOUYIN_BROWSER_MANAGER.set_resident_page("home")
-            browser_state["last_checked_at"] = now_iso()
-            browser_state["last_error"] = None
-            step_logs.append(f"已打开抖音创作者中心首页 url={page.url}")
-
-        DOUYIN_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run)
-        browser_state.update(DOUYIN_BROWSER_MANAGER.manager_state())
-        return browser_state, artifacts, step_logs
-    except Exception as exc:
-        browser_state.update(DOUYIN_BROWSER_MANAGER.manager_state())
-        browser_state["last_error"] = f"抖音浏览器启动失败：{exc}"
-        return browser_state, artifacts, step_logs + [f"抖音浏览器启动失败：{exc}"]
-
-
-def inspect_douyin_session(channel: dict[str, object], browser_state: dict[str, object]) -> tuple[dict[str, object], list[str], list[str]]:
-    channel = ensure_douyin_channel_defaults(channel)
-    browser_state = dict(browser_state)
-    entry_url = str(channel.get("publish_entry_url", "https://creator.douyin.com/"))
-    profile_path = Path(str(channel.get("browser_profile_path") or "")).expanduser()
-    selector_version = str(channel.get("selectors_version", "douyin-creator-v1"))
-    selector_profile = get_selector_profile(selector_version)
-    artifact_dir = ARTIFACT_ROOT / "session"
-    screenshot_path = artifact_dir / f"check-douyin-browser-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.png"
-    debug_text_path = artifact_dir / f"check-douyin-browser-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.txt"
-    step_logs = [
-        f"selector_profile={selector_version}",
-        f"profile={profile_path}",
-        f"entry_url={entry_url}",
-    ]
-    artifacts: list[str] = []
-
-    try:
-        def _run(_context, page):
-            page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(2600)
-            logged_in = False
-            matched_selector = None
-            for selector in selector_profile.get("logged_in", []):
-                try:
-                    if page.locator(str(selector)).first.count() > 0:
-                        logged_in = True
-                        matched_selector = str(selector)
-                        break
-                except Exception:
-                    continue
-
-            publish_selector = None
-            if logged_in:
-                for selector in selector_profile.get("publish_entry", []):
-                    try:
-                        if page.locator(str(selector)).first.count() > 0:
-                            publish_selector = str(selector)
-                            break
-                    except Exception:
-                        continue
-
-            page.screenshot(path=str(screenshot_path), full_page=True)
-            artifacts.append(str(screenshot_path))
-            browser_state["platform"] = "douyin_creator"
-            browser_state["browser_name"] = normalize_browser_name(channel.get("browser_name"))
-            browser_state["user_data_dir"] = str(profile_path)
-            browser_state["logged_in"] = logged_in
-            browser_state["last_checked_at"] = now_iso()
-            browser_state["last_opened_url"] = page.url
-            browser_state["current_page"] = page.url
-            browser_state["resident_page"] = "home"
-            DOUYIN_BROWSER_MANAGER.set_resident_page("home")
-            browser_state["last_screenshot"] = str(screenshot_path)
-            browser_state["last_error"] = None if logged_in else "未检测到抖音创作者中心登录态，当前可能仍停留在登录页。"
-            if matched_selector:
-                step_logs.append(f"检测到抖音登录态选择器：{matched_selector}")
-            else:
-                step_logs.append("未命中抖音登录态选择器。")
-            if publish_selector:
-                step_logs.append(f"检测到抖音发布入口：{publish_selector}")
-            elif logged_in:
-                step_logs.append("已登录，但暂未识别到明确发布入口。")
-
-        DOUYIN_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run)
-        browser_state.update(DOUYIN_BROWSER_MANAGER.manager_state())
-    except Exception as exc:  # pragma: no cover - host/browser dependent
-        artifact = _write_debug_artifact(
-            debug_text_path,
-            [
-                "抖音浏览器会话检查失败。",
-                f"profile={profile_path}",
-                f"entry_url={entry_url}",
-                f"error={exc}",
-            ],
-        )
-        artifacts.append(artifact)
-        browser_state["platform"] = "douyin_creator"
-        browser_state["logged_in"] = False
-        browser_state["last_checked_at"] = now_iso()
-        browser_state["last_screenshot"] = artifact
-        browser_state.update(DOUYIN_BROWSER_MANAGER.manager_state())
-        browser_state["last_error"] = f"抖音浏览器会话检查失败：{exc}"
-        return browser_state, artifacts, step_logs + [f"抖音会话检查失败：{exc}"]
-
-    return browser_state, artifacts, step_logs
-
-
-def open_douyin_article_publish(channel: dict[str, object], browser_state: dict[str, object]) -> tuple[dict[str, object], list[str], list[str]]:
-    channel = ensure_douyin_channel_defaults(channel)
-    browser_state = dict(browser_state)
-    entry_url = str(channel.get("publish_entry_url", "https://creator.douyin.com/"))
-    selector_version = str(channel.get("selectors_version", "douyin-creator-v1"))
-    selector_profile = get_selector_profile(selector_version)
-    artifact_dir = ARTIFACT_ROOT / "session"
-    screenshot_path = artifact_dir / f"open-douyin-article-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.png"
-    step_logs = [
-        f"selector_profile={selector_version}",
-        f"entry_url={entry_url}",
-    ]
-    artifacts: list[str] = []
-
-    try:
-        def _run(_context, page):
-            page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(2600)
-            publish_selector = None
-            start_article_selector = None
-            for selector in selector_profile.get("publish_entry", []):
-                try:
-                    locator = page.locator(str(selector)).first
-                    if locator.count() > 0:
-                        publish_selector = str(selector)
-                        try:
-                            locator.click(timeout=2500)
-                        except Exception:
-                            locator.click(timeout=2500, force=True)
-                        break
-                except Exception:
-                    continue
-
-            if not publish_selector:
-                raise RuntimeError("未识别到“发布文章”入口。")
-
-            page.wait_for_timeout(3500)
-            for selector in selector_profile.get("start_article", []):
-                try:
-                    locator = page.locator(str(selector)).first
-                    if locator.count() > 0 and locator.is_visible():
-                        start_article_selector = str(selector)
-                        try:
-                            locator.click(timeout=2500)
-                        except Exception:
-                            locator.click(timeout=2500, force=True)
-                        page.wait_for_timeout(3200)
-                        break
-                except Exception:
-                    continue
-            page.screenshot(path=str(screenshot_path), full_page=True)
-            artifacts.append(str(screenshot_path))
-            browser_state["platform"] = "douyin_creator"
-            browser_state["logged_in"] = True
-            browser_state["last_checked_at"] = now_iso()
-            browser_state["last_opened_url"] = page.url
-            browser_state["current_page"] = page.url
-            browser_state["resident_page"] = "article_publish"
-            browser_state["last_screenshot"] = str(screenshot_path)
-            browser_state["last_error"] = None
-            DOUYIN_BROWSER_MANAGER.set_resident_page("article_publish")
-            step_logs.append(f"已点击抖音发布入口：{publish_selector}")
-            if start_article_selector:
-                step_logs.append(f"已点击抖音二级入口：{start_article_selector}")
-            else:
-                step_logs.append("当前流程未出现“我要发文”二级入口。")
-            step_logs.append(f"当前页面 url={page.url}")
-
-        DOUYIN_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run)
-        browser_state.update(DOUYIN_BROWSER_MANAGER.manager_state())
-        return browser_state, artifacts, step_logs
-    except Exception as exc:
-        browser_state.update(DOUYIN_BROWSER_MANAGER.manager_state())
-        browser_state["last_error"] = f"打开抖音发布文章页失败：{exc}"
-        step_logs.append(f"打开抖音发布文章页失败：{exc}")
-        ok, current_url = DOUYIN_BROWSER_MANAGER.capture_screenshot(screenshot_path)
-        if ok:
-            artifacts.append(str(screenshot_path))
-            browser_state["last_screenshot"] = str(screenshot_path)
-            if current_url:
-                browser_state["last_opened_url"] = current_url
-                browser_state["current_page"] = current_url
-        return browser_state, artifacts, step_logs
-
-
-def inspect_douyin_article_structure(
-    channel: dict[str, object], browser_state: dict[str, object]
-) -> tuple[dict[str, object], dict[str, object], list[str], list[str]]:
-    channel = ensure_douyin_channel_defaults(channel)
-    browser_state = dict(browser_state)
-    entry_url = str(channel.get("publish_entry_url", "https://creator.douyin.com/"))
-    selector_version = str(channel.get("selectors_version", "douyin-creator-v1"))
-    selector_profile = get_selector_profile(selector_version)
-    artifact_dir = ARTIFACT_ROOT / "session"
-    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    screenshot_path = artifact_dir / f"inspect-douyin-article-{timestamp}.png"
-    debug_text_path = artifact_dir / f"inspect-douyin-article-{timestamp}.txt"
-    step_logs = [
-        f"selector_profile={selector_version}",
-        f"entry_url={entry_url}",
-    ]
-    artifacts: list[str] = []
-    snapshot: dict[str, object] = {
-        "checked_at": now_iso(),
-        "url": "",
-        "page_title": "",
-        "body_excerpt": "",
-        "message": "",
-        "items": [],
-        "artifacts": [],
-    }
-
-    try:
-        def _run(_context, page):
-            current_url = str(page.url or "")
-            if "creator.douyin.com" not in current_url:
-                page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(2600)
-            current_url = str(page.url or "")
-            if "/content/post/article" not in current_url:
-                raise RuntimeError("当前不在抖音文章发布页，请先打开“发布文章”页面。")
-
-            fields: list[dict[str, object]] = []
-            inspect_specs = [
-                ("title_input", "标题区"),
-                ("content_editor", "正文编辑区"),
-                ("cover_upload", "上传入口"),
-                ("images_panel", "图片/封面区"),
-                ("submit_button", "底部操作按钮"),
-            ]
-
-            for key, label in inspect_specs:
-                matched_selector = None
-                matched_count = 0
-                visible = False
-                sample_text = ""
-                sample_html = ""
-                for selector in selector_profile.get(key, []):
-                    try:
-                        locator = page.locator(str(selector))
-                        count = locator.count()
-                        if count <= 0:
-                            continue
-                        first = locator.first
-                        matched_selector = str(selector)
-                        matched_count = int(count)
-                        try:
-                            visible = bool(first.is_visible())
-                        except Exception:
-                            visible = False
-                        try:
-                            sample_text = str(first.inner_text(timeout=1200) or "").strip()
-                        except Exception:
-                            sample_text = ""
-                        try:
-                            sample_html = str(first.evaluate("(el) => el.outerHTML")).strip()
-                        except Exception:
-                            sample_html = ""
-                        break
-                    except Exception:
-                        continue
-
-                fields.append(
-                    {
-                        "key": key,
-                        "label": label,
-                        "found": bool(matched_selector),
-                        "visible": visible,
-                        "selector": matched_selector,
-                        "count": matched_count,
-                        "sample_text": sample_text[:300],
-                        "sample_html": sample_html[:1200],
-                    }
-                )
-
-            page_title = ""
-            body_excerpt = ""
-            try:
-                page_title = str(page.title() or "")
-            except Exception:
-                page_title = ""
-            try:
-                body_excerpt = str(page.locator("body").inner_text(timeout=2500) or "").strip()
-            except Exception:
-                body_excerpt = ""
-
-            page.screenshot(path=str(screenshot_path), full_page=True)
-            artifacts.append(str(screenshot_path))
-            debug_lines = [
-                f"url={page.url}",
-                f"title={page_title}",
-                "",
-                "body_excerpt:",
-                body_excerpt[:2000],
-                "",
-            ]
-            for field in fields:
-                debug_lines.extend(
-                    [
-                        f"[{field['key']}] {field['label']}",
-                        f"found={field['found']} visible={field['visible']} count={field['count']} selector={field['selector']}",
-                        f"text={field['sample_text']}",
-                        "html:",
-                        str(field["sample_html"]),
-                        "",
-                    ]
-                )
-            artifacts.append(_write_debug_artifact(debug_text_path, debug_lines))
-
-            found_count = sum(1 for field in fields if field.get("found"))
-            snapshot["checked_at"] = now_iso()
-            snapshot["url"] = str(page.url or "")
-            snapshot["page_title"] = page_title
-            snapshot["body_excerpt"] = body_excerpt[:2000]
-            snapshot["items"] = fields
-            snapshot["artifacts"] = list(artifacts)
-            snapshot["message"] = f"已探测抖音文章发布页结构，命中 {found_count}/{len(fields)} 个关键区块。"
-
-            browser_state["platform"] = "douyin_creator"
-            browser_state["logged_in"] = True
-            browser_state["last_checked_at"] = now_iso()
-            browser_state["last_opened_url"] = str(page.url or "")
-            browser_state["current_page"] = str(page.url or "")
-            browser_state["resident_page"] = "article_publish"
-            browser_state["last_screenshot"] = str(screenshot_path)
-            browser_state["last_error"] = None
-            DOUYIN_BROWSER_MANAGER.set_resident_page("article_publish")
-            step_logs.append(snapshot["message"])
-            step_logs.append(f"当前页面 url={page.url}")
-
-        DOUYIN_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run)
-        browser_state.update(DOUYIN_BROWSER_MANAGER.manager_state())
-        return browser_state, snapshot, artifacts, step_logs
-    except Exception as exc:
-        browser_state.update(DOUYIN_BROWSER_MANAGER.manager_state())
-        browser_state["last_error"] = f"探测抖音文章发布页结构失败：{exc}"
-        step_logs.append(f"探测抖音文章发布页结构失败：{exc}")
-        ok, current_url = DOUYIN_BROWSER_MANAGER.capture_screenshot(screenshot_path)
-        if ok:
-            artifacts.append(str(screenshot_path))
-            browser_state["last_screenshot"] = str(screenshot_path)
-            if current_url:
-                browser_state["last_opened_url"] = current_url
-                browser_state["current_page"] = current_url
-                snapshot["url"] = current_url
-        snapshot["checked_at"] = now_iso()
-        snapshot["message"] = str(browser_state["last_error"])
-        snapshot["artifacts"] = list(artifacts)
-        return browser_state, snapshot, artifacts, step_logs
-
-
-def fill_douyin_article_from_brief(
-    channel: dict[str, object], browser_state: dict[str, object], draft: dict[str, object]
-) -> tuple[dict[str, object], list[str], list[str]]:
-    channel = ensure_douyin_channel_defaults(channel)
-    browser_state = dict(browser_state)
-    selector_version = str(channel.get("selectors_version", "douyin-creator-v1"))
-    selector_profile = get_selector_profile(selector_version)
-    artifact_dir = ARTIFACT_ROOT / "session"
-    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    screenshot_path = artifact_dir / f"fill-douyin-article-{timestamp}.png"
-    debug_text_path = artifact_dir / f"fill-douyin-article-{timestamp}.txt"
-    step_logs = [
-        f"selector_profile={selector_version}",
-        f"brief_id={draft.get('id')}",
-    ]
-    artifacts: list[str] = []
-
-    try:
-        def _run(_context, page):
-            current_url = str(page.url or "")
-            if "/content/post/article" not in current_url:
-                raise RuntimeError("当前不在抖音文章发布页，请先打开“发布文章”页面。")
-
-            title_selector = _pick_selector(page, selector_profile.get("title_input", []), timeout=3000)
-            summary_selector = _pick_selector(page, selector_profile.get("summary_input", []), timeout=3000)
-            editor_selector = _pick_selector(page, selector_profile.get("content_editor", []), timeout=4000)
-            ai_selector = _pick_selector(page, selector_profile.get("ai_illustration", []), timeout=2500)
-            if not title_selector or not summary_selector or not editor_selector:
-                raise RuntimeError("未定位到标题、摘要或正文输入区。")
-
-            raw_title = str(draft.get("title") or "").strip()
-            raw_summary = str(draft.get("summary") or "").strip()
-            markdown = str(draft.get("markdown") or "").strip()
-            body_markdown = _strip_markdown_title(markdown, raw_title)
-            body_text = _plain_text_from_markdown(body_markdown)[:8000]
-            title = _build_douyin_title(raw_title)
-            summary = _build_douyin_summary(raw_summary, raw_title)
-
-            if not title:
-                raise RuntimeError("待填充标题为空。")
-            if not body_text:
-                raise RuntimeError("待填充正文为空。")
-
-            _fill_locator_value(page, title_selector, title)
-            step_logs.append(f"已填充抖音标题 selector={title_selector}")
-            if raw_title != title:
-                step_logs.append(f"标题已截断至 {len(title)} 字。")
-
-            _fill_locator_value(page, summary_selector, summary)
-            step_logs.append(f"已填充抖音摘要 selector={summary_selector}")
-            if raw_summary != summary:
-                step_logs.append(f"摘要已截断至 {len(summary)} 字。")
-
-            _fill_locator_value(page, editor_selector, body_text, is_rich_text=True)
-            step_logs.append(f"已填充抖音正文 selector={editor_selector}")
-
-            if ai_selector:
-                ai_locator = page.locator(ai_selector).first
-                try:
-                    ai_locator.click(timeout=2500)
-                except Exception:
-                    ai_locator.click(timeout=2500, force=True)
-                page.wait_for_timeout(3500)
-                step_logs.append(f"已点击 AI 配图 selector={ai_selector}")
-            else:
-                step_logs.append("未定位到 AI 配图入口。")
-
-            page.screenshot(path=str(screenshot_path), full_page=True)
-            artifacts.append(str(screenshot_path))
-            artifacts.append(
-                _write_debug_artifact(
-                    debug_text_path,
-                    [
-                        f"url={page.url}",
-                        f"title_selector={title_selector}",
-                        f"summary_selector={summary_selector}",
-                        f"editor_selector={editor_selector}",
-                        f"ai_selector={ai_selector}",
-                        f"title={title}",
-                        f"summary={summary}",
-                        f"body_length={len(body_text)}",
-                    ],
-                )
-            )
-            browser_state["platform"] = "douyin_creator"
-            browser_state["logged_in"] = True
-            browser_state["last_checked_at"] = now_iso()
-            browser_state["last_opened_url"] = str(page.url or "")
-            browser_state["current_page"] = str(page.url or "")
-            browser_state["resident_page"] = "article_publish"
-            browser_state["last_screenshot"] = str(screenshot_path)
-            browser_state["last_error"] = None
-            DOUYIN_BROWSER_MANAGER.set_resident_page("article_publish")
-            step_logs.append(f"当前页面 url={page.url}")
-
-        DOUYIN_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run)
-        browser_state.update(DOUYIN_BROWSER_MANAGER.manager_state())
-        return browser_state, artifacts, step_logs
-    except Exception as exc:
-        browser_state.update(DOUYIN_BROWSER_MANAGER.manager_state())
-        browser_state["last_error"] = f"填充抖音文章页失败：{exc}"
-        step_logs.append(f"填充抖音文章页失败：{exc}")
-        ok, current_url = DOUYIN_BROWSER_MANAGER.capture_screenshot(screenshot_path)
-        if ok:
-            artifacts.append(str(screenshot_path))
-            browser_state["last_screenshot"] = str(screenshot_path)
-            if current_url:
-                browser_state["last_opened_url"] = current_url
-                browser_state["current_page"] = current_url
-        return browser_state, artifacts, step_logs
-
-
-def run_browser_action(
-    action: str,
-    draft: dict[str, object],
-    channel: dict[str, object],
-    browser_state: dict[str, object],
-) -> tuple[dict[str, object], list[str], list[str]]:
-    channel = ensure_channel_defaults(channel)
-    selector_version = str(channel.get("selectors_version", "wechat-mp-v1"))
-    entry_url = str(channel.get("publish_entry_url", "https://mp.weixin.qq.com/"))
-    selector_profile = get_selector_profile(selector_version)
-    step_logs = [
-        f"selector_profile={selector_version}",
-        f"action={action}",
-        f"entry_url={entry_url}",
-    ]
-    artifacts: list[str] = []
-    browser_state = dict(browser_state)
-    browser_state["is_session_level_error"] = False
-
-    if not browser_state.get("logged_in"):
-        browser_state["last_error"] = "浏览器用户目录不存在或尚未建立登录态。"
-        browser_state["is_session_level_error"] = True
-        return browser_state, artifacts, step_logs + ["未执行浏览器动作：登录态不可用。"]
-
-    artifact_dir = ARTIFACT_ROOT / draft["id"]
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    screenshot_path = artifact_dir / f"{action}-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.png"
-
-    try:
-        if action != "sync_wechat_draft":
-            def _run_generic(context, page):
-                _enforce_single_tab(context, page, step_logs, phase=f"{action}_start", allow_recover=True)
-                WECHAT_BROWSER_MANAGER.set_action_state(action, "go_home")
-                _return_to_wechat_home(page, entry_url, step_logs)
-                if action == "open_preview":
-                    editor_url = resolve_editor_url(draft, browser_state, entry_url)
-                    page.goto(editor_url, wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_timeout(2200)
-                    _enforce_single_tab(context, page, step_logs, phase="open_preview_editor", allow_recover=False)
-                    target = _wait_for_wechat_editor_in_current_page_with_retry(page, selector_profile, step_logs)
-                    target.wait_for_timeout(1800)
-                    preview_selector = _pick_selector(target, selector_profile.get("preview_button", []), timeout=6000)
-                    if not preview_selector:
-                        raise RuntimeError("未找到“预览”按钮。")
-                    target.locator(preview_selector).first.click()
-                    target.wait_for_timeout(2500)
-                    blockers = detect_editor_blockers(target)
-                    if blockers:
-                        raise RuntimeError("；".join(blockers))
-                    target.screenshot(path=str(screenshot_path), full_page=True)
-                    browser_state["last_opened_url"] = target.url
-                    browser_state["current_page"] = target.url
-                    browser_state["resident_page"] = "editor"
-                    WECHAT_BROWSER_MANAGER.set_resident_page("editor")
-                    WECHAT_BROWSER_MANAGER.set_action_state(action, "preview_opened")
-                    step_logs.append(f"已打开稿件编辑页 URL={target.url}")
-                    step_logs.append(f"已点击预览 selector={preview_selector}")
-                else:
-                    page.screenshot(path=str(screenshot_path), full_page=True)
-                    browser_state["last_opened_url"] = page.url
-                    browser_state["current_page"] = page.url
-                    browser_state["resident_page"] = "home"
-                    WECHAT_BROWSER_MANAGER.set_resident_page("home")
-                    WECHAT_BROWSER_MANAGER.set_action_state(action, "home")
-                    step_logs.append(f"已打开页面 {page.url}")
-                    if action == "publish" and draft.get("preview_url"):
-                        step_logs.append("当前版本不会在无页面校准证据时自动点击最终发布按钮。")
-                browser_state["last_error"] = None
-
-            WECHAT_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run_generic)
-            browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
-            browser_state["last_screenshot"] = str(screenshot_path)
-            artifacts.append(str(screenshot_path))
-            return browser_state, artifacts, step_logs
 
         def _run(context, page):
             session_delta, session_artifacts, _session_logs, recovered_page = _run_session_recovery(

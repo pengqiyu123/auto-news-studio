@@ -46,6 +46,7 @@ if "openai" not in sys.modules:
 
 from backend.app.store import StudioStore
 from backend.app.store_mixins import WeChatMixin
+from backend.app.services.wechat_reconcile import apply_publish_history_matches
 
 
 def _make_store() -> tuple[StudioStore, Path]:
@@ -106,3 +107,45 @@ def test_get_wechat_mapping_uses_same_projection_after_split() -> None:
         assert snapshot.mapping_rows[0].mapping_status == "matched"
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_apply_publish_history_matches_writes_metrics_back_to_brief() -> None:
+    brief = {
+        "id": "brief-1",
+        "title": "示例文章",
+        "stage": "synced",
+        "wechat_editor_url": "https://mp.weixin.qq.com/s/example",
+        "updated_at": "2026-05-20T20:00:00+08:00",
+    }
+    publish_items = [
+        {
+            "title": "示例文章",
+            "url": "https://mp.weixin.qq.com/s/example",
+            "appmsg_id": None,
+            "published_at": "今天 20:49",
+            "remote_key": "url:https://mp.weixin.qq.com/s/example",
+            "read_count": 12,
+            "like_count": 3,
+            "share_count": 2,
+            "recommend_count": 1,
+            "comment_count": 4,
+            "highlight_count": 5,
+            "tip_amount": "6.66",
+            "reprint_count": 7,
+        }
+    ]
+
+    matched_count, _logs = apply_publish_history_matches([brief], publish_items)
+
+    assert matched_count == 1
+    assert brief["delivery_status"] == "published"
+    assert brief["publish_record_published_at"] == "今天 20:49"
+    assert brief["read_count"] == 12
+    assert brief["like_count"] == 3
+    assert brief["share_count"] == 2
+    assert brief["recommend_count"] == 1
+    assert brief["comment_count"] == 4
+    assert brief["highlight_count"] == 5
+    assert brief["tip_amount"] == "6.66"
+    assert brief["reprint_count"] == 7
+    assert brief["metrics_fetched_at"]

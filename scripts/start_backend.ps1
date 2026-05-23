@@ -67,15 +67,19 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $appRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $venvPython = Join-Path $appRoot ".venv\Scripts\python.exe"
 $runtimeDir = Join-Path $appRoot "runtime"
-$pidFile = Join-Path $runtimeDir "backend.pid"
-$outLog = Join-Path $runtimeDir "backend.out.log"
-$errLog = Join-Path $runtimeDir "backend.err.log"
+$logDir = Join-Path $runtimeDir "logs"
+$pidFile = Join-Path $logDir "backend.pid"
+$outLog = Join-Path $logDir "backend.out.log"
+$errLog = Join-Path $logDir "backend.err.log"
 $frontendDist = Join-Path $appRoot "frontend\dist\index.html"
 $appUrl = "http://127.0.0.1:8000"
 $managedAppUrl = "$appUrl/?launcher=1&ts=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
 
 if (-not (Test-Path $runtimeDir)) {
     New-Item -ItemType Directory -Path $runtimeDir | Out-Null
+}
+if (-not (Test-Path $logDir)) {
+    New-Item -ItemType Directory -Path $logDir | Out-Null
 }
 
 if (-not (Test-Path $venvPython)) {
@@ -219,7 +223,7 @@ Write-Host "  Auto News Studio started successfully"
 Write-Host "========================================"
 Write-Host "  PID:  $listenerPid"
 Write-Host "  URL:  $appUrl"
-Write-Host "  Logs: $runtimeDir\"
+Write-Host "  Logs: $logDir\"
 Write-Host "========================================"
 Write-Host ""
 

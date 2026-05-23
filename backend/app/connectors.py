@@ -11,6 +11,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from .store_base import now_iso
+
 try:
     import feedparser  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -24,10 +26,6 @@ SOURCE_TIMEOUT_SECONDS = 12
 
 def now_utc() -> datetime:
     return datetime.now(UTC)
-
-
-def now_iso() -> str:
-    return now_utc().replace(microsecond=0).isoformat()
 
 
 def _clean_html(text: str) -> str:

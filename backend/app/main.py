@@ -31,9 +31,10 @@ set_store(store)
 VERSION_MANIFEST = load_version_manifest()
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 RUNTIME_DIR = Path(__file__).resolve().parents[2] / "runtime"
-BACKEND_PID_FILE = RUNTIME_DIR / "backend.pid"
+RUNTIME_LOG_DIR = RUNTIME_DIR / "logs"
+BACKEND_PID_FILE = RUNTIME_LOG_DIR / "backend.pid"
 scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
-SCHEDULER_TICK_SECONDS = 10
+SCHEDULER_TICK_SECONDS = int(os.environ.get("SCHEDULER_TICK_SECONDS", "10"))
 
 
 def _cors_origins() -> list[str]:
@@ -54,7 +55,7 @@ def _pid_is_alive(pid: int) -> bool:
 
 
 def _acquire_backend_pid_lock() -> None:
-    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    RUNTIME_LOG_DIR.mkdir(parents=True, exist_ok=True)
     if BACKEND_PID_FILE.exists():
         try:
             existing_pid = int(BACKEND_PID_FILE.read_text(encoding="utf-8").strip() or "0")

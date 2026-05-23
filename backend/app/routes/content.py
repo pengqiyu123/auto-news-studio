@@ -19,6 +19,21 @@ from ..models import (
     EventDeepDivesResponse,
     ImportBackupResponse,
 )
+from ..features.briefs.read import (
+    copy_brief_package_page as copy_brief_package_page_view,
+    get_agent_workflow_page as get_agent_workflow_page_view,
+    get_brief_page as get_brief_page_view,
+    get_deep_dive_page as get_deep_dive_page_view,
+    list_agent_workflows_page as list_agent_workflows_page_view,
+    list_briefs_page as list_briefs_page_view,
+    list_deep_dives_page as list_deep_dives_page_view,
+)
+from ..features.briefs.write import (
+    create_agent_article_page as create_agent_article_page_action,
+    create_brief_from_event_page as create_brief_from_event_page_action,
+    create_event_deep_dive_page as create_event_deep_dive_page_action,
+    sync_brief_wechat_draft_page as sync_brief_wechat_draft_page_action,
+)
 from .common import RUNTIME_DIR, get_store, http_from_value_error, parse_request_model
 
 
@@ -34,7 +49,7 @@ def build_content_router() -> APIRouter:
     def create_event_deep_dive(event_id: str, payload: EventDeepDivePayload | None = None, triggered_by: str = "dashboard"):
         try:
             return EventDeepDiveResponse(
-                item=get_store().create_event_deep_dive(
+                **create_event_deep_dive_page_action(
                     event_id,
                     force=bool(payload.force) if payload else False,
                     triggered_by=triggered_by,
@@ -45,19 +60,19 @@ def build_content_router() -> APIRouter:
 
     @router.get("/api/admin/intel/deep-dives", response_model=EventDeepDivesResponse)
     def list_event_deep_dives():
-        return EventDeepDivesResponse(items=get_store().list_event_deep_dives())
+        return EventDeepDivesResponse(**list_deep_dives_page_view())
 
     @router.get("/api/admin/intel/deep-dives/{event_id}", response_model=EventDeepDiveResponse)
     def get_event_deep_dive(event_id: str):
         try:
-            return EventDeepDiveResponse(item=get_store().get_event_deep_dive(event_id))
+            return EventDeepDiveResponse(**get_deep_dive_page_view(event_id))
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 
     @router.post("/api/admin/intel/events/{event_id}/brief", response_model=BriefResponse)
     def create_brief_from_event(event_id: str, triggered_by: str = "dashboard"):
         try:
-            return BriefResponse(item=get_store().create_brief_from_event(event_id, triggered_by=triggered_by))
+            return BriefResponse(**create_brief_from_event_page_action(event_id, triggered_by=triggered_by))
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 
@@ -65,13 +80,13 @@ def build_content_router() -> APIRouter:
     async def create_agent_article(request: Request):
         payload = await parse_request_model(request, AgentArticlePayload)
         try:
-            return BriefResponse(item=get_store().create_agent_article(payload))
+            return BriefResponse(**create_agent_article_page_action(payload))
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 
     @router.get("/api/admin/briefs", response_model=BriefsResponse)
     def list_briefs(page: int = 1, page_size: int = 50, stage: str = "all", q: str = "", workflow_mode: str = "all"):
-        items, total, safe_page, safe_page_size, has_more, stage_counts, record_counts = get_store().list_briefs(
+        payload = list_briefs_page_view(
             page=page,
             page_size=page_size,
             stage=stage,
@@ -79,44 +94,44 @@ def build_content_router() -> APIRouter:
             workflow_mode=workflow_mode,
         )
         return BriefsResponse(
-            items=items,
-            total=total,
-            page=safe_page,
-            page_size=safe_page_size,
-            has_more=has_more,
-            stage_counts=stage_counts,
-            record_counts=record_counts,
+            items=payload["items"],
+            total=payload["total"],
+            page=payload["page"],
+            page_size=payload["page_size"],
+            has_more=payload["has_more"],
+            stage_counts=payload["stage_counts"],
+            record_counts=payload["record_counts"],
         )
 
     @router.get("/api/admin/agent/workflows", response_model=AgentWorkflowsResponse)
     def list_agent_workflows():
-        return AgentWorkflowsResponse(items=get_store().list_agent_workflows())
+        return AgentWorkflowsResponse(**list_agent_workflows_page_view())
 
     @router.get("/api/admin/agent/workflows/{workflow_session_id}", response_model=AgentWorkflowResponse)
     def get_agent_workflow(workflow_session_id: str):
         try:
-            return AgentWorkflowResponse(item=get_store().get_agent_workflow(workflow_session_id))
+            return AgentWorkflowResponse(**get_agent_workflow_page_view(workflow_session_id))
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 
     @router.get("/api/admin/briefs/{brief_id}", response_model=BriefResponse)
     def get_brief(brief_id: str):
         try:
-            return BriefResponse(item=get_store().get_brief(brief_id))
+            return BriefResponse(**get_brief_page_view(brief_id))
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 
     @router.post("/api/admin/briefs/{brief_id}/wechat-draft", response_model=BriefResponse)
     def sync_brief_wechat_draft(brief_id: str, triggered_by: str = "dashboard"):
         try:
-            return BriefResponse(item=get_store().sync_brief_wechat_draft(brief_id, triggered_by=triggered_by))
+            return BriefResponse(**sync_brief_wechat_draft_page_action(brief_id, triggered_by=triggered_by))
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 
     @router.post("/api/admin/briefs/{brief_id}/copy-package", response_model=BriefCopyPackageResponse)
     def copy_brief_package(brief_id: str):
         try:
-            return BriefCopyPackageResponse(markdown=get_store().build_brief_copy_package(brief_id))
+            return BriefCopyPackageResponse(**copy_brief_package_page_view(brief_id))
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 

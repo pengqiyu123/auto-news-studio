@@ -5,69 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 
-MODE_DEFINITIONS: list[dict[str, Any]] = [
-    {
-        "key": "draft_only",
-        "label": "简报优先",
-        "description": "先完成事件筛选、正文深挖与简报整理，需要时再进入微信草稿箱。",
-        "auto_collect": True,
-        "auto_draft": True,
-        "sync_to_wechat_draft": True,
-        "auto_open_preview": False,
-        "requires_human_review": True,
-        "allow_auto_send": False,
-        "allow_auto_retry": True,
-    },
-    {
-        "key": "draft_and_preview",
-        "label": "简报加校验",
-        "description": "自动准备简报与交付入口，人工确认后再决定是否推进上传。",
-        "auto_collect": True,
-        "auto_draft": True,
-        "sync_to_wechat_draft": True,
-        "auto_open_preview": True,
-        "requires_human_review": True,
-        "allow_auto_send": False,
-        "allow_auto_retry": True,
-    },
-    {
-        "key": "draft_preview_browser",
-        "label": "交付联调",
-        "description": "自动打开公众号后台并保持交付链路可用，但不自动正式发布。",
-        "auto_collect": True,
-        "auto_draft": True,
-        "sync_to_wechat_draft": True,
-        "auto_open_preview": True,
-        "requires_human_review": True,
-        "allow_auto_send": False,
-        "allow_auto_retry": True,
-    },
-    {
-        "key": "auto_send_guarded",
-        "label": "自动上传(带守卫)",
-        "description": "通过审核、风控和浏览器健康检查后，允许自动推进到微信草稿箱。",
-        "auto_collect": True,
-        "auto_draft": True,
-        "sync_to_wechat_draft": True,
-        "auto_open_preview": True,
-        "requires_human_review": True,
-        "allow_auto_send": True,
-        "allow_auto_retry": True,
-    },
-    {
-        "key": "full_auto",
-        "label": "全自动交付",
-        "description": "保留完整自动闭环入口，适合后续扩展更强自动化策略。",
-        "auto_collect": True,
-        "auto_draft": True,
-        "sync_to_wechat_draft": True,
-        "auto_open_preview": True,
-        "requires_human_review": False,
-        "allow_auto_send": True,
-        "allow_auto_retry": True,
-    },
-]
-
 AUTOMATION_MODE_DEFINITIONS: list[dict[str, Any]] = [
     {
         "key": "radar_only",

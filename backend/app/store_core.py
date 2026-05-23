@@ -28,6 +28,8 @@ from .store_base import (
     CONFIG_FILE,
     CONFIG_DIR,
     DATA_FILE,
+    derive_config_file_for_data_file,
+    RUNTIME_CACHE_DIR,
     DEFAULT_RUNTIME_INTENT,
     DEFAULT_RELEASE_NOTES_URL,
     DEFAULT_RELEASE_REPO,
@@ -61,6 +63,7 @@ from .store_base import (
     parse_clock_time,
     parse_time,
     read_json_file,
+    resolve_existing_state_file,
     schedule_to_minutes,
 )
 
@@ -202,7 +205,7 @@ from .store_core_runtime import StoreCoreRuntimeMixin
 from .store_core_state import StoreCoreStateMixin
 
 
-AGENT_HTML_CACHE_DIR = Path(__file__).resolve().parents[2] / "runtime" / "agent_html_cache"
+AGENT_HTML_CACHE_DIR = RUNTIME_CACHE_DIR / "agent_html"
 AGENT_HTML_LIST_CACHE_DIR = AGENT_HTML_CACHE_DIR / "list_pages"
 AGENT_HTML_DETAIL_CACHE_DIR = AGENT_HTML_CACHE_DIR / "detail_pages"
 
@@ -335,8 +338,13 @@ def _wechat_html(markdown: str) -> str:
 class StoreCore(StoreCoreStateMixin, StoreCoreRuntimeMixin):
     def __init__(self, data_file: Path | None = None):
         store_module = __import__(__package__ + ".store", fromlist=["DATA_FILE", "CONFIG_FILE"])
-        self.data_file = data_file or getattr(store_module, "DATA_FILE", DATA_FILE)
-        self.config_file = getattr(store_module, "CONFIG_FILE", CONFIG_FILE)
+        requested_data_file = data_file or getattr(store_module, "DATA_FILE", DATA_FILE)
+        self.data_file = requested_data_file
+        self.state_read_file = resolve_existing_state_file(requested_data_file)
+        if data_file is not None:
+            self.config_file = derive_config_file_for_data_file(requested_data_file)
+        else:
+            self.config_file = getattr(store_module, "CONFIG_FILE", CONFIG_FILE)
         self._lock = RLock()
         self._progress_snapshot: dict[str, Any] = {
             "percent": 0, "done": 0, "total": 0,
@@ -347,7 +355,7 @@ class StoreCore(StoreCoreStateMixin, StoreCoreRuntimeMixin):
         self.version_manifest = load_version_manifest()
         self.data_file.parent.mkdir(parents=True, exist_ok=True)
         ensure_parent_dir(self.config_file)
-        if not self.data_file.exists():
+        if not self.state_read_file.exists():
             self._write_config(self._bootstrap_user_settings())
             self._write(self._bootstrap_state())
             return
@@ -394,6 +402,13 @@ class StoreCore(StoreCoreStateMixin, StoreCoreRuntimeMixin):
             },
         )
         state["logs"] = state["logs"][:180]
+
+    def _active_state_read_file(self) -> Path:
+        if self.data_file.exists():
+            self.state_read_file = self.data_file
+        elif not self.state_read_file.exists():
+            self.state_read_file = resolve_existing_state_file(self.data_file)
+        return self.state_read_file
 
     def _append_job(
         self,
@@ -1381,6 +1396,10 @@ class StoreCore(StoreCoreStateMixin, StoreCoreRuntimeMixin):
         if not markdown.startswith("# "):
             return None
         if len(summary) > 30 or len(title) > 30:
+            return None
+        body = markdown.split("\n", 1)[1].strip() if "\n" in markdown else ""
+        compact_body = body.replace("\n", "")
+        if len(compact_body) > 1000:
             return None
         return title, summary, markdown
 

@@ -36,7 +36,31 @@ const browserSession: BrowserSessionState = {
 const publishHistory: WeChatPublishHistorySnapshot = {
   checked_at: "2026-05-12T11:00:00+08:00",
   record_count: 1,
-  items: [],
+  overview: {
+    total_users: 26,
+    yesterday_reads: 6,
+    yesterday_shares: 6,
+    yesterday_new_follows: 0,
+    stats_window_label: "5月19日 00:00 - 24:00",
+    fetched_at: "2026-05-12T11:00:00+08:00",
+  },
+  items: [
+    {
+      title: "示例文章",
+      url: "https://mp.weixin.qq.com/s/example",
+      appmsg_id: null,
+      published_at: "今天 20:49",
+      remote_key: "url:https://mp.weixin.qq.com/s/example",
+      read_count: 12,
+      like_count: 3,
+      share_count: 2,
+      recommend_count: 1,
+      comment_count: 4,
+      highlight_count: 5,
+      tip_amount: "6.66",
+      reprint_count: 7,
+    },
+  ],
   message: "ok",
   check_ok: true,
 };
@@ -131,6 +155,7 @@ describe("useWechatState", () => {
     expect(mockedApi.getBrowserSession).toHaveBeenCalledTimes(1);
     expect(reloadBriefs).toHaveBeenCalledTimes(1);
     expect(result.current.wechatPublishHistory?.record_count).toBe(1);
+    expect(result.current.wechatPublishHistory?.overview?.total_users).toBe(26);
     expect(onToast).toHaveBeenCalledWith("ok", "success");
   });
 });

@@ -5,21 +5,35 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import json
+import os
 import re
 import shutil
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 
-DATA_FILE = Path(__file__).resolve().parent.parent.parent / "data" / "state.json"
-CONFIG_DIR = Path(__file__).resolve().parent.parent.parent / "config"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+LEGACY_DATA_DIR = PROJECT_ROOT / "backend" / "data"
+DATA_DIR = PROJECT_ROOT / "data"
+DATA_STATE_DIR = DATA_DIR / "state"
+DATA_FILE = DATA_STATE_DIR / "state.json"
+LEGACY_DATA_FILE = DATA_DIR / "state.json"
+LEGACY_BACKEND_DATA_FILE = LEGACY_DATA_DIR / "state.json"
+CONFIG_DIR = PROJECT_ROOT / "config"
 CONFIG_FILE = CONFIG_DIR / "user-settings.json"
-BACKUP_DIR = Path(__file__).resolve().parent.parent.parent / "runtime" / "backups"
-LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
-VERSION_FILE = Path(__file__).resolve().parent.parent.parent / "version.json"
+RUNTIME_DIR = PROJECT_ROOT / "runtime"
+RUNTIME_CACHE_DIR = RUNTIME_DIR / "cache"
+RUNTIME_LOG_DIR = RUNTIME_DIR / "logs"
+RUNTIME_TEMP_DIR = RUNTIME_DIR / "temp"
+BACKUP_DIR = RUNTIME_DIR / "backups"
+LOG_DIR = RUNTIME_LOG_DIR
+DIST_DIR = PROJECT_ROOT / "dist"
+VERSION_FILE = PROJECT_ROOT / "version.json"
 UTC = timezone.utc
 LOCAL_TZ = timezone(timedelta(hours=8))
-MAX_RAW_ITEMS = 480
+
+MAX_RAW_ITEMS = int(os.environ.get("MAX_RAW_ITEMS", "480"))
 SYNTHETIC_MARKERS = (
     "example.com/",
     "当前为回退样例",
@@ -33,10 +47,10 @@ UNSUPPORTED_SOURCE_DRIVERS = {
     "legacy_youtube",
     "newsnow_pool",
 }
-SOURCE_TIMEOUT_SECONDS = 12
-SLOW_SOURCE_WARNING_SECONDS = 8
-SOURCE_COLLECTION_STALL_SECONDS = max(SOURCE_TIMEOUT_SECONDS * 5, 60)
-RUN_STALE_SECONDS = 180
+SOURCE_TIMEOUT_SECONDS = int(os.environ.get("SOURCE_TIMEOUT_SECONDS", "12"))
+SLOW_SOURCE_WARNING_SECONDS = int(os.environ.get("SLOW_SOURCE_WARNING_SECONDS", "8"))
+SOURCE_COLLECTION_STALL_SECONDS = max(SOURCE_TIMEOUT_SECONDS * 5, int(os.environ.get("SOURCE_COLLECTION_STALL_SECONDS", "60")))
+RUN_STALE_SECONDS = int(os.environ.get("RUN_STALE_SECONDS", "180"))
 DEFAULT_RUNTIME_INTENT = "normal_monitoring"
 INTENT_TO_WORK_SCOPE: dict[str, str] = {
     "normal_monitoring": "collect_events_alerts",
@@ -111,6 +125,49 @@ DEFAULT_APP_VERSION = "0.2.10"
 DEFAULT_RELEASE_CHANNEL = "stable"
 DEFAULT_RELEASE_REPO = "pengqiyu123/auto-news-studio"
 DEFAULT_RELEASE_NOTES_URL = "https://github.com/pengqiyu123/auto-news-studio/releases"
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return str(Path(left).resolve()).lower() == str(Path(right).resolve()).lower()
+
+
+def _uses_project_default_state_paths(primary: Path) -> bool:
+    return any(
+        _same_path(primary, candidate)
+        for candidate in (DATA_FILE, LEGACY_DATA_FILE, LEGACY_BACKEND_DATA_FILE)
+    )
+
+
+def derive_config_file_for_data_file(data_file: Path) -> Path:
+    path = Path(data_file)
+    base_dir = path.parent.parent if path.parent.name.lower() == "data" else path.parent
+    return base_dir / "config" / CONFIG_FILE.name
+
+
+def candidate_state_files(primary: Path | None = None) -> list[Path]:
+    primary_file = Path(primary or DATA_FILE)
+    if not _uses_project_default_state_paths(primary_file):
+        return [primary_file]
+    candidates: list[Path] = []
+    for path in (primary_file, LEGACY_DATA_FILE, LEGACY_BACKEND_DATA_FILE):
+        if path not in candidates:
+            candidates.append(path)
+    return candidates
+
+
+def resolve_existing_state_file(primary: Path | None = None) -> Path:
+    primary_file = Path(primary or DATA_FILE)
+    existing = [candidate for candidate in candidate_state_files(primary_file) if candidate.exists()]
+    if existing:
+        existing.sort(
+            key=lambda path: (
+                path.stat().st_mtime,
+                1 if _same_path(path, primary_file) else 0,
+            ),
+            reverse=True,
+        )
+        return existing[0]
+    return primary_file
 
 
 def load_version_manifest() -> dict[str, Any]:
@@ -257,7 +314,7 @@ def read_json_file(path: Path, default: dict[str, Any] | None = None) -> dict[st
 
 
 def deepcopy_json(value: Any) -> Any:
-    return json.loads(json.dumps(value, ensure_ascii=False))
+    return deepcopy(value)
 
 
 def backup_file(path: Path, backup_root: Path, prefix: str) -> Path | None:
