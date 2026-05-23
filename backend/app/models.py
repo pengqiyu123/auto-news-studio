@@ -1,10 +1,22 @@
+"""Core Pydantic models for Auto News Studio.
+
+Domain-specific models have been extracted into separate modules:
+- models_publish.py: Publish/browser/WeChat/Douyin channel models
+- models_intel.py: Intel/event/agent-html/discovery models
+- models_llm.py: LLM provider and task configuration models
+
+This file re-exports everything so all consumers can continue to
+``from .models import ...`` unchanged.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models_llm import (
+# Re-export LLM models
+from .models_llm import (  # noqa: F401
     LLMConfig,
     LLMConfigResponse,
     LLMProfileConfig,
@@ -16,7 +28,110 @@ from .models_llm import (
     LLMUsageResponse,
 )
 
+# Re-export publish/browser models
+from .models_publish import (  # noqa: F401
+    BrowserSessionPayload,
+    BrowserSessionResponse,
+    BrowserSessionState,
+    ChannelConfigPayload,
+    DouyinArticleFillPayload,
+    DouyinArticleStructureField,
+    DouyinArticleStructureResponse,
+    DouyinArticleStructureSnapshot,
+    DouyinChannelConfig,
+    DouyinChannelResponse,
+    PublishBackendStatus,
+    PublishBackendStatusResponse,
+    PublishTask,
+    PublishTasksResponse,
+    WeChatAnalyticsDomResponse,
+    WeChatAnalyticsDomSnapshot,
+    WeChatAnalyticsOverview,
+    WeChatArticleMetrics,
+    WeChatChannelConfig,
+    WeChatChannelResponse,
+    WeChatDraftSyncCheckResponse,
+    WeChatDraftSyncCheckResult,
+    WeChatEditorDomField,
+    WeChatEditorDomResponse,
+    WeChatEditorDomSnapshot,
+    WeChatMappingResponse,
+    WeChatMappingRow,
+    WeChatMappingSnapshot,
+    WeChatMappingStatus,
+    WeChatPublishHistoryResponse,
+    WeChatPublishHistorySnapshot,
+    WeChatPublishRecordItem,
+    WeChatRemoteDraftItem,
+)
 
+# Re-export intel/agent-html models
+from .models_intel import (  # noqa: F401
+    AgentHtmlDiscoveryItem,
+    AgentHtmlDiscoveryResponse,
+    AgentHtmlDiscoveryRules,
+    AgentHtmlDocument,
+    AgentHtmlDocumentResponse,
+    AgentHtmlDocumentRevision,
+    AgentHtmlDocumentsResponse,
+    AgentHtmlEvent,
+    AgentHtmlEventHistoryItem,
+    AgentHtmlEventResponse,
+    AgentHtmlEventSnapshot,
+    AgentHtmlEventsResponse,
+    AgentHtmlItemState,
+    AgentHtmlMainlineBatchPayload,
+    AgentHtmlRun,
+    AgentHtmlRunBatchPayload,
+    AgentHtmlRunResponse,
+    AgentHtmlRunStatus,
+    AgentHtmlRunsResponse,
+    AgentHtmlTarget,
+    AgentHtmlTargetCreatePayload,
+    AgentHtmlTargetResponse,
+    AgentHtmlTargetsResponse,
+    AgentHtmlTargetUpdatePayload,
+    DashboardTopBar,
+    DeepDiveExtractStatus,
+    DeepDiveFetchStatus,
+    DeepDiveSourceItem,
+    DeepDiveStatus,
+    DiscoveryItem,
+    DiscoveryItemsResponse,
+    EntityWatchlistItem,
+    EntityWatchlistPayload,
+    EntityWatchlistResponse,
+    EntityWatchlistSummaryItem,
+    EventDeepDive,
+    EventDeepDiveResponse,
+    EventDeepDivesResponse,
+    EventSnapshot,
+    FreshnessSnapshot,
+    IntelAlert,
+    IntelAlertHistoryItem,
+    IntelAlertLevel,
+    IntelAlertsResponse,
+    IntelEvent,
+    IntelEventChangeState,
+    IntelEventHistoryItem,
+    IntelEventResponse,
+    IntelEventState,
+    IntelEventsResponse,
+    IntelItemChangeState,
+    IntelOverviewSummary,
+    IntelStreamItem,
+    IntelSummaryResponse,
+    AgentHtmlAlertState,
+    AgentHtmlDiscoverMode,
+    AgentHtmlEventChangeState,
+    AgentHtmlExtractMode,
+    AgentHtmlTargetType,
+    HistoryRecordStatus,
+)
+
+# ---------------------------------------------------------------------------
+# Literal type aliases — core system types
+# ---------------------------------------------------------------------------
 AutomationMode = Literal[
     "radar_only",
     "radar_and_draft",
@@ -49,7 +164,6 @@ SourceKind = Literal[
 ]
 SourceHealth = Literal["idle", "healthy", "warning", "error"]
 AutomationRunStatus = Literal["idle", "running", "completed", "failed", "abandoned"]
-PublishTaskStatus = Literal["pending", "running", "completed", "failed", "blocked"]
 RefreshStatus = Literal["ready", "updated", "pending_retry", "missing"]
 BorrowMode = Literal["direct_copy", "ported", "reference_only"]
 BackendHealth = Literal["healthy", "warning", "offline"]
@@ -60,21 +174,6 @@ RuntimeLaunchMode = Literal["once_now", "once_at", "interval_now", "interval_at"
 IntelWorkScope = Literal["collect_only", "collect_events", "collect_events_alerts"]
 RuntimeIntent = Literal["normal_monitoring", "collect_validation", "event_rebuild", "alert_rebuild"]
 RuntimeRunOutcome = Literal["completed", "failed", "abandoned", "stopped"]
-IntelEventState = Literal["new", "watch", "rising", "breakout", "cooling"]
-IntelAlertLevel = Literal["watch", "rising", "breakout", "cooling"]
-IntelItemChangeState = Literal["new_item", "seen_item", "updated_item"]
-IntelEventChangeState = Literal["new_event", "growing_event", "stable_event", "cooling_event"]
-HistoryRecordStatus = Literal["active", "cooled", "source_uncertain"]
-DeepDiveStatus = Literal["pending", "running", "partial", "ready", "failed"]
-DeepDiveFetchStatus = Literal["pending", "fetched", "fetch_failed", "fetch_blocked", "non_html"]
-DeepDiveExtractStatus = Literal["pending", "extracted", "extract_failed", "too_short"]
-AgentHtmlTargetType = Literal["newsroom", "blog", "updates", "press", "custom"]
-AgentHtmlRunStatus = Literal["pending", "running", "completed", "partial", "failed"]
-AgentHtmlItemState = Literal["new_item", "seen_item", "updated_item"]
-AgentHtmlDiscoverMode = Literal["rule_only", "rule_with_ai_fallback", "ai_only"]
-AgentHtmlExtractMode = Literal["best_effort_html"]
-AgentHtmlAlertState = Literal["watch", "rising", "breakout", "cooling"]
-AgentHtmlEventChangeState = Literal["new_event", "growing_event", "stable_event", "cooling_event"]
 BriefLevel = Literal["rule", "enhanced", "article"]
 BriefStage = Literal["prepared", "synced", "failed"]
 BriefRecordStatus = Literal["local_only", "draft_synced", "published"]
@@ -92,6 +191,9 @@ AgentWorkflowStep = Literal[
 ]
 DeliveryMode = Literal["immediate", "scheduled_batch"]
 AdmissionStrategy = Literal["conservative", "balanced", "aggressive"]
+
+# Literal types moved to domain files but also needed here for re-export
+PublishTaskStatus = Literal["pending", "running", "completed", "failed", "blocked"]
 
 
 class AutomationModeDefinition(BaseModel):
@@ -224,695 +326,6 @@ class NormalizedItem(BaseModel):
     score_breakdown: dict[str, float] = Field(default_factory=dict)
 
 
-class PublishTask(BaseModel):
-    id: str
-    target_id: str
-    action: str
-    status: PublishTaskStatus
-    stage: str
-    message: str
-    triggered_by: str
-    created_at: str
-    artifacts: list[str] = Field(default_factory=list)
-    step_logs: list[str] = Field(default_factory=list)
-    selector_profile: str = "wechat-mp-v1"
-
-
-class BrowserSessionState(BaseModel):
-    platform: Literal["wechat_mp", "douyin_creator"] = "wechat_mp"
-    browser_name: str = "edge"
-    user_data_dir: str = ""
-    logged_in: bool = False
-    last_checked_at: Optional[str] = None
-    last_opened_url: Optional[str] = None
-    last_error: Optional[str] = None
-    selectors_version: str = "wechat-mp-v1"
-    last_screenshot: Optional[str] = None
-    last_selector_check: Optional[str] = None
-    current_page: Optional[str] = None
-    sidecar_health: BackendHealth = "offline"
-    manager_alive: bool = False
-    window_state: Optional[Literal["restored", "minimized", "unknown"]] = "unknown"
-    resident_page: Optional[str] = None
-    busy: bool = False
-    last_reset_reason: Optional[str] = None
-    session_generation: int = 0
-    last_action: Optional[str] = None
-    last_action_phase: Optional[str] = None
-    is_session_level_error: bool = False
-    last_draft_check: Optional["WeChatDraftSyncCheckResult"] = None
-    last_analytics_overview: Optional["WeChatAnalyticsOverview"] = None
-    last_publish_history_check: Optional["WeChatPublishHistorySnapshot"] = None
-
-
-class BrowserSessionPayload(BaseModel):
-    browser_name: str
-    user_data_dir: str
-
-
-class WeChatRemoteDraftItem(BaseModel):
-    title: str = ""
-    url: str = ""
-    appmsg_id: Optional[str] = None
-    updated_at: Optional[str] = None
-    remote_key: Optional[str] = None
-
-
-class WeChatDraftSyncCheckResult(BaseModel):
-    checked_at: str
-    remote_count: int = 0
-    matched_count: int = 0
-    missing_count: int = 0
-    items: list[WeChatRemoteDraftItem] = Field(default_factory=list)
-    message: str = ""
-    check_ok: bool = True
-
-
-class WeChatDraftSyncCheckResponse(BaseModel):
-    item: WeChatDraftSyncCheckResult
-
-
-class WeChatPublishRecordItem(BaseModel):
-    title: str = ""
-    url: str = ""
-    appmsg_id: Optional[str] = None
-    published_at: Optional[str] = None
-    remote_key: Optional[str] = None
-    read_count: int = 0
-    like_count: int = 0
-    share_count: int = 0
-    recommend_count: int = 0
-    comment_count: int = 0
-    highlight_count: int = 0
-    tip_amount: str = "0.00"
-    reprint_count: int = 0
-    thumbnail: str = ""
-
-
-class WeChatArticleMetrics(BaseModel):
-    appmsg_id: Optional[str] = None
-    title: str = ""
-    read_count: int = 0
-    like_count: int = 0
-    share_count: int = 0
-    recommend_count: int = 0
-    comment_count: int = 0
-    highlight_count: int = 0
-    tip_amount: str = "0.00"
-    reprint_count: int = 0
-    fetched_at: str = ""
-
-
-class WeChatAnalyticsOverview(BaseModel):
-    total_users: int = 0
-    yesterday_reads: int = 0
-    yesterday_shares: int = 0
-    yesterday_new_follows: int = 0
-    stats_window_label: str = ""
-    fetched_at: str = ""
-    avatar_url: str = ""
-    account_name: str = ""
-    original_count: int = 0
-
-
-class WeChatPublishHistorySnapshot(BaseModel):
-    checked_at: str
-    record_count: int = 0
-    items: list[WeChatPublishRecordItem] = Field(default_factory=list)
-    overview: Optional[WeChatAnalyticsOverview] = None
-    message: str = ""
-    check_ok: bool = True
-
-
-class WeChatPublishHistoryResponse(BaseModel):
-    item: WeChatPublishHistorySnapshot
-
-
-class WeChatEditorDomField(BaseModel):
-    key: str
-    label: str
-    found: bool = False
-    visible: bool = False
-    selector: Optional[str] = None
-    count: int = 0
-    sample_text: str = ""
-    sample_html: str = ""
-
-
-class WeChatEditorDomSnapshot(BaseModel):
-    checked_at: str
-    url: str = ""
-    page_title: str = ""
-    body_excerpt: str = ""
-    message: str = ""
-    items: list[WeChatEditorDomField] = Field(default_factory=list)
-    artifacts: list[str] = Field(default_factory=list)
-
-
-class WeChatEditorDomResponse(BaseModel):
-    item: WeChatEditorDomSnapshot
-
-
-class WeChatAnalyticsDomSnapshot(BaseModel):
-    checked_at: str
-    url: str = ""
-    page_title: str = ""
-    body_excerpt: str = ""
-    message: str = ""
-    items: list[WeChatEditorDomField] = Field(default_factory=list)
-    artifacts: list[str] = Field(default_factory=list)
-
-
-class WeChatAnalyticsDomResponse(BaseModel):
-    item: WeChatAnalyticsDomSnapshot
-
-
-class DouyinArticleStructureField(BaseModel):
-    key: str
-    label: str
-    found: bool = False
-    visible: bool = False
-    selector: Optional[str] = None
-    count: int = 0
-    sample_text: str = ""
-    sample_html: str = ""
-
-
-class DouyinArticleStructureSnapshot(BaseModel):
-    checked_at: str
-    url: str = ""
-    page_title: str = ""
-    body_excerpt: str = ""
-    message: str = ""
-    items: list[DouyinArticleStructureField] = Field(default_factory=list)
-    artifacts: list[str] = Field(default_factory=list)
-
-
-class DouyinArticleStructureResponse(BaseModel):
-    item: DouyinArticleStructureSnapshot
-
-
-class DouyinArticleFillPayload(BaseModel):
-    brief_id: Optional[str] = None
-
-
-class WeChatMappingStatus(str):
-    pass
-
-
-class WeChatMappingRow(BaseModel):
-    remote_title: str = ""
-    remote_key: Optional[str] = None
-    remote_appmsg_id: Optional[str] = None
-    remote_url: str = ""
-    remote_updated_at: Optional[str] = None
-    local_brief_id: Optional[str] = None
-    local_brief_title: Optional[str] = None
-    local_stage: Optional[BriefStage] = None
-    mapping_status: str = "unresolved"
-
-
-class WeChatMappingSnapshot(BaseModel):
-    checked_at: Optional[str] = None
-    remote_count: int = 0
-    matched_count: int = 0
-    missing_count: int = 0
-    message: str = ""
-    items: list[WeChatRemoteDraftItem] = Field(default_factory=list)
-    mapping_rows: list[WeChatMappingRow] = Field(default_factory=list)
-
-
-class WeChatMappingResponse(BaseModel):
-    item: WeChatMappingSnapshot
-
-
-class PublishBackendStatus(BaseModel):
-    key: str
-    label: str
-    health: BackendHealth
-    detail: str
-    configured: bool
-
-
-class PublishBackendStatusResponse(BaseModel):
-    items: list[PublishBackendStatus]
-
-
-class ReferenceProject(BaseModel):
-    local_name: str
-    upstream_repo: str
-    branch: str
-    commit_sha: Optional[str] = None
-    refreshed_at: Optional[str] = None
-    layer: Literal["discovery", "aggregation", "writing", "wechat", "ops"]
-    tags: list[str] = Field(default_factory=list)
-    refresh_status: RefreshStatus = "missing"
-    notes: Optional[str] = None
-    local_exists: bool = False
-    license_name: str = "unknown"
-    borrow_mode: BorrowMode = "reference_only"
-    borrow_targets: list[str] = Field(default_factory=list)
-
-
-class WeChatChannelConfig(BaseModel):
-    app_id: str = ""
-    app_secret_masked: str = ""
-    author: str = "Auto News Studio"
-    default_cover_strategy: str = "auto"
-    default_digest_strategy: str = "balanced"
-    draft_mode: bool = True
-    preview_enabled: bool = True
-    auto_send_window: str = "09:00-10:00"
-    risk_keywords: list[str] = Field(default_factory=list)
-    browser_name: str = "edge"
-    browser_profile_path: str = ""
-    publish_entry_url: str = "https://mp.weixin.qq.com/"
-    selectors_version: str = "wechat-mp-v1"
-    sidecar_url: str = "http://127.0.0.1:8091"
-
-
-class DouyinChannelConfig(BaseModel):
-    browser_name: str = "edge"
-    browser_profile_path: str = ""
-    publish_entry_url: str = "https://creator.douyin.com/"
-    selectors_version: str = "douyin-creator-v1"
-    sidecar_url: str = "http://127.0.0.1:8091"
-
-
-class DashboardTopBar(BaseModel):
-    current_mode_label: str
-    healthy_sources: int
-    total_sources: int
-    latest_collected_at: Optional[str] = None
-    latest_published_at: Optional[str] = None
-    pending_briefs: int
-    blocked_publish_count: int
-
-
-class FreshnessSnapshot(BaseModel):
-    latest_published_at: Optional[str] = None
-    latest_collected_at: Optional[str] = None
-    items_1h: int = 0
-    items_6h: int = 0
-    items_24h: int = 0
-    avg_collection_lag_minutes: Optional[float] = None
-    stale_source_count: int = 0
-    has_staleness_alert: bool = False
-    last_successful_sync_at: Optional[str] = None
-
-
-class IntelStreamItem(BaseModel):
-    id: str
-    title: str
-    summary: str
-    link: str
-    score: float
-    source_names: list[str] = Field(default_factory=list)
-    source_count: int = 0
-    published_at: Optional[str] = None
-    collected_at: Optional[str] = None
-    time_lag_minutes: Optional[float] = None
-
-
-class DiscoveryItem(BaseModel):
-    id: str
-    raw_item_id: str
-    source_key: str
-    source_name: str
-    source_kind: str
-    platform: str
-    title: str
-    summary: str
-    content: str
-    link: str
-    canonical_link: str
-    dedupe_key: str
-    source_native_id: Optional[str] = None
-    title_tokens: list[str] = Field(default_factory=list)
-    anchor_tokens: list[str] = Field(default_factory=list)
-    published_at: Optional[str] = None
-    collected_at: str
-    tags: list[str] = Field(default_factory=list)
-    engagement_score: float = 0.0
-    item_state: IntelItemChangeState = "new_item"
-    entity_ids: list[str] = Field(default_factory=list)
-    entity_names: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class IntelEvent(BaseModel):
-    id: str
-    title: str
-    summary: str
-    representative_link: str
-    representative_source_name: str
-    representative_discovery_item_id: str
-    discovery_item_ids: list[str] = Field(default_factory=list)
-    source_keys: list[str] = Field(default_factory=list)
-    source_names: list[str] = Field(default_factory=list)
-    platforms: list[str] = Field(default_factory=list)
-    platform_count: int = 0
-    source_count: int = 0
-    member_count: int = 0
-    story_count: int = 0
-    member_delta: int = 0
-    platform_delta: int = 0
-    published_at: Optional[str] = None
-    latest_collected_at: Optional[str] = None
-    first_seen_at: Optional[str] = None
-    last_seen_at: Optional[str] = None
-    tags: list[str] = Field(default_factory=list)
-    anchor_tokens: list[str] = Field(default_factory=list)
-    velocity_score: float = 0.0
-    coverage_score: float = 0.0
-    freshness_score: float = 0.0
-    audience_fit_score: float = 0.0
-    composite_score: float = 0.0
-    velocity_details: dict[str, float] = Field(default_factory=dict)
-    alert_state: IntelEventState = "new"
-    change_state: IntelEventChangeState = "new_event"
-    alert_reason: str = ""
-    entity_ids: list[str] = Field(default_factory=list)
-    entity_names: list[str] = Field(default_factory=list)
-    watchlisted: bool = False
-    ignored: bool = False
-    deep_dive_id: Optional[str] = None
-    brief_id: Optional[str] = None
-    deep_dive_status: Optional[DeepDiveStatus] = None
-    deep_dive_started_at: Optional[str] = None
-    deep_dive_finished_at: Optional[str] = None
-    deep_dive_updated_at: Optional[str] = None
-    brief_status: Optional[BriefStage] = None
-    deep_dive_summary: str = ""
-    worth_to_brief: bool = False
-    worth_reason: str = ""
-
-
-class EventSnapshot(BaseModel):
-    id: str
-    event_id: str
-    captured_at: str
-    member_count: int = 0
-    platform_count: int = 0
-    source_count: int = 0
-    velocity_score: float = 0.0
-    coverage_score: float = 0.0
-    freshness_score: float = 0.0
-    audience_fit_score: float = 0.0
-    composite_score: float = 0.0
-    alert_state: IntelEventState = "new"
-
-
-class IntelAlert(BaseModel):
-    id: str
-    event_id: str
-    title: str
-    level: IntelAlertLevel
-    reason: str
-    velocity_score: float = 0.0
-    coverage_score: float = 0.0
-    freshness_score: float = 0.0
-    audience_fit_score: float = 0.0
-    composite_score: float = 0.0
-    platform_count: int = 0
-    source_count: int = 0
-    representative_link: str
-    triggered_at: str
-    entity_ids: list[str] = Field(default_factory=list)
-    entity_names: list[str] = Field(default_factory=list)
-    deep_dive_id: Optional[str] = None
-    brief_id: Optional[str] = None
-    deep_dive_status: Optional[DeepDiveStatus] = None
-    brief_status: Optional[BriefStage] = None
-    deep_dive_summary: str = ""
-    worth_to_brief: bool = False
-    worth_reason: str = ""
-
-
-class DeepDiveSourceItem(BaseModel):
-    source_key: str = ""
-    source_name: str = ""
-    original_link: str
-    canonical_link: str
-    title: str = ""
-    published_at: Optional[str] = None
-    fetch_status: DeepDiveFetchStatus = "pending"
-    extract_status: DeepDiveExtractStatus = "pending"
-    word_count: int = 0
-    cleaned_full_text: str = ""
-    excerpt: str = ""
-    quotes: list[str] = Field(default_factory=list)
-    error: Optional[str] = None
-
-
-class EventDeepDive(BaseModel):
-    id: str
-    event_id: str
-    status: DeepDiveStatus = "pending"
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
-    updated_at: str
-    attempted_count: int = 0
-    success_count: int = 0
-    failed_count: int = 0
-    resolved_evidence_pack: list[dict[str, Any]] = Field(default_factory=list)
-    full_text_sources: list[DeepDiveSourceItem] = Field(default_factory=list)
-    sources: list[DeepDiveSourceItem] = Field(default_factory=list)
-    facts: list[str] = Field(default_factory=list)
-    quotes: list[str] = Field(default_factory=list)
-    timeline: list[str] = Field(default_factory=list)
-    worthiness: dict[str, Any] = Field(default_factory=dict)
-    last_error: Optional[str] = None
-    article_writing_guide: str = ""
-
-
-class AgentHtmlDiscoveryRules(BaseModel):
-    link_selector: str = ""
-    title_selector: str = ""
-    time_selector: str = ""
-    summary_selector: str = ""
-    link_allow_patterns: list[str] = Field(default_factory=list)
-    link_deny_patterns: list[str] = Field(default_factory=list)
-
-
-class AgentHtmlTarget(BaseModel):
-    id: str
-    brand: str
-    name: str
-    entry_url: str
-    target_type: AgentHtmlTargetType = "newsroom"
-    enabled: bool = True
-    tags: list[str] = Field(default_factory=list)
-    discover_mode: AgentHtmlDiscoverMode = "rule_with_ai_fallback"
-    extract_mode: AgentHtmlExtractMode = "best_effort_html"
-    discovery_rules: AgentHtmlDiscoveryRules = Field(default_factory=AgentHtmlDiscoveryRules)
-    last_run_at: Optional[str] = None
-    last_success_at: Optional[str] = None
-    last_error: Optional[str] = None
-    created_at: str
-    updated_at: str
-
-
-class AgentHtmlTargetCreatePayload(BaseModel):
-    brand: str = Field(min_length=1, max_length=120)
-    name: str = Field(min_length=1, max_length=120)
-    entry_url: str = Field(min_length=1, max_length=1000)
-    target_type: AgentHtmlTargetType = "newsroom"
-    enabled: bool = True
-    tags: list[str] = Field(default_factory=list)
-    discover_mode: AgentHtmlDiscoverMode = "rule_with_ai_fallback"
-    extract_mode: AgentHtmlExtractMode = "best_effort_html"
-    discovery_rules: AgentHtmlDiscoveryRules = Field(default_factory=AgentHtmlDiscoveryRules)
-
-
-class AgentHtmlTargetUpdatePayload(BaseModel):
-    brand: Optional[str] = Field(default=None, min_length=1, max_length=120)
-    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
-    entry_url: Optional[str] = Field(default=None, min_length=1, max_length=1000)
-    target_type: Optional[AgentHtmlTargetType] = None
-    enabled: Optional[bool] = None
-    tags: Optional[list[str]] = None
-    discover_mode: Optional[AgentHtmlDiscoverMode] = None
-    extract_mode: Optional[AgentHtmlExtractMode] = None
-    discovery_rules: Optional[AgentHtmlDiscoveryRules] = None
-
-
-class AgentHtmlRun(BaseModel):
-    id: str
-    target_id: str
-    status: AgentHtmlRunStatus = "pending"
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
-    discovered_count: int = 0
-    new_discovery_count: int = 0
-    updated_discovery_count: int = 0
-    fetched_count: int = 0
-    extracted_count: int = 0
-    failed_count: int = 0
-    list_fetch_status: str = "pending"
-    ai_fallback_used: bool = False
-    error_summary: Optional[str] = None
-    triggered_by: str = "dashboard"
-    created_at: str
-    updated_at: str
-
-
-class AgentHtmlRunBatchPayload(BaseModel):
-    target_ids: list[str] = Field(default_factory=list)
-    triggered_by: str = "dashboard"
-
-
-class AgentHtmlMainlineBatchPayload(BaseModel):
-    target_ids: list[str] = Field(default_factory=list)
-    triggered_by: str = "dashboard"
-
-
-class AgentHtmlRunResponse(BaseModel):
-    item: AgentHtmlRun
-
-
-class AgentHtmlRunsResponse(BaseModel):
-    items: list[AgentHtmlRun] = Field(default_factory=list)
-
-
-class AgentHtmlDiscoveryItem(BaseModel):
-    id: str
-    target_id: str
-    run_id: str
-    source_name: str
-    title: str
-    summary: str
-    link: str
-    canonical_link: str
-    published_at: Optional[str] = None
-    collected_at: str
-    dedupe_key: str
-    content_hash: str = ""
-    item_state: AgentHtmlItemState = "new_item"
-    document_id: Optional[str] = None
-    event_id: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class AgentHtmlDocumentRevision(BaseModel):
-    id: str
-    document_id: str
-    run_id: str
-    source_url: str
-    title: str = ""
-    content_text: str = ""
-    excerpt: str = ""
-    content_hash: str = ""
-    word_count: int = 0
-    extractor: str = ""
-    published_at: Optional[str] = None
-    fetched_at: str
-    revision_index: int = 1
-    change_summary: str = ""
-
-
-class AgentHtmlDocument(BaseModel):
-    id: str
-    target_id: str
-    canonical_url: str
-    current_revision_id: str
-    title: str = ""
-    published_at: Optional[str] = None
-    latest_seen_at: Optional[str] = None
-    current_content_hash: str = ""
-    word_count: int = 0
-    extractor: str = ""
-    first_seen_at: str
-    updated_at: str
-    revisions: list[AgentHtmlDocumentRevision] = Field(default_factory=list)
-
-
-class AgentHtmlEvent(BaseModel):
-    id: str
-    title: str
-    summary: str
-    representative_document_id: Optional[str] = None
-    representative_link: str = ""
-    discovery_item_ids: list[str] = Field(default_factory=list)
-    document_ids: list[str] = Field(default_factory=list)
-    member_count: int = 0
-    source_count: int = 0
-    first_seen_at: Optional[str] = None
-    last_seen_at: Optional[str] = None
-    change_state: AgentHtmlEventChangeState = "new_event"
-    alert_state: AgentHtmlAlertState = "watch"
-    entity_names: list[str] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
-
-
-class AgentHtmlEventSnapshot(BaseModel):
-    id: str
-    event_id: str
-    captured_at: str
-    member_count: int = 0
-    document_count: int = 0
-    source_count: int = 0
-    freshness_score: float = 0.0
-    coverage_score: float = 0.0
-    composite_score: float = 0.0
-    change_state: AgentHtmlEventChangeState = "new_event"
-
-
-class AgentHtmlEventHistoryItem(BaseModel):
-    history_id: str
-    event_id: str
-    title: str
-    first_seen_at: str
-    last_seen_at: str
-    expires_at: str
-    status: HistoryRecordStatus = "active"
-    latest_alert_state: AgentHtmlAlertState = "watch"
-    member_count: int = 0
-    source_count: int = 0
-    composite_score: float = 0.0
-
-
-class AgentHtmlTargetResponse(BaseModel):
-    item: AgentHtmlTarget
-
-
-class AgentHtmlTargetsResponse(BaseModel):
-    items: list[AgentHtmlTarget] = Field(default_factory=list)
-
-
-class AgentHtmlDiscoveryResponse(BaseModel):
-    items: list[AgentHtmlDiscoveryItem] = Field(default_factory=list)
-    total: int = 0
-    page: int = 1
-    page_size: int = 50
-    has_more: bool = False
-
-
-class AgentHtmlEventResponse(BaseModel):
-    item: AgentHtmlEvent
-
-
-class AgentHtmlEventsResponse(BaseModel):
-    items: list[AgentHtmlEvent] = Field(default_factory=list)
-    history_items: list[AgentHtmlEventHistoryItem] = Field(default_factory=list)
-    total: int = 0
-    page: int = 1
-    page_size: int = 50
-    has_more: bool = False
-
-
-class AgentHtmlDocumentResponse(BaseModel):
-    item: AgentHtmlDocument
-
-
-class AgentHtmlDocumentsResponse(BaseModel):
-    items: list[AgentHtmlDocument] = Field(default_factory=list)
-    total: int = 0
-    page: int = 1
-    page_size: int = 50
-    has_more: bool = False
-
-
 class BriefItem(BaseModel):
     id: str
     event_id: str
@@ -1001,65 +414,6 @@ class AgentArticlePayload(BaseModel):
     driver_label: str = "external-ai"
 
 
-class IntelEventHistoryItem(BaseModel):
-    history_id: str
-    event_id: str
-    title: str
-    summary: str
-    representative_link: str
-    entity_ids: list[str] = Field(default_factory=list)
-    entity_names: list[str] = Field(default_factory=list)
-    discovered_at: str
-    last_seen_at: str
-    expires_at: str
-    status: HistoryRecordStatus = "active"
-    latest_alert_state: IntelEventState = "new"
-    platform_count: int = 0
-    source_count: int = 0
-    member_count: int = 0
-    member_delta: int = 0
-    platform_delta: int = 0
-    composite_score: float = 0.0
-
-
-class IntelAlertHistoryItem(BaseModel):
-    history_id: str
-    event_id: str
-    title: str
-    representative_link: str
-    entity_ids: list[str] = Field(default_factory=list)
-    entity_names: list[str] = Field(default_factory=list)
-    first_triggered_at: str
-    last_triggered_at: str
-    expires_at: str
-    highest_level: IntelAlertLevel = "watch"
-    latest_level: IntelAlertLevel = "watch"
-    status: HistoryRecordStatus = "active"
-    reason: str
-    platform_count: int = 0
-    source_count: int = 0
-    velocity_score: float = 0.0
-    coverage_score: float = 0.0
-    freshness_score: float = 0.0
-    composite_score: float = 0.0
-
-
-class EntityWatchlistItem(BaseModel):
-    entity_id: str
-    entity_name: str
-    entity_type: str
-    watchlisted: bool = True
-    added_at: Optional[str] = None
-
-
-class EntityWatchlistSummaryItem(EntityWatchlistItem):
-    event_count: int = 0
-    alert_count: int = 0
-    rising_count: int = 0
-    breakout_count: int = 0
-    last_seen_at: Optional[str] = None
-
-
 class RuntimeSlowSource(BaseModel):
     source_key: str
     source_name: str
@@ -1097,114 +451,6 @@ class RuntimeCycleSummary(BaseModel):
     recent_selected_titles: list[str] = Field(default_factory=list)
     recent_brief_titles: list[str] = Field(default_factory=list)
     recent_synced_titles: list[str] = Field(default_factory=list)
-
-
-class IntelOverviewSummary(BaseModel):
-    alert_count: int = 0
-    breakout_count: int = 0
-    rising_count: int = 0
-    watch_count: int = 0
-    event_count: int = 0
-    discovery_count: int = 0
-    new_items_count: int = 0
-    seen_items_count: int = 0
-    updated_items_count: int = 0
-    new_events_count: int = 0
-    growing_events_count: int = 0
-    stable_events_count: int = 0
-    cooling_events_count: int = 0
-    warning_sources: int = 0
-    error_sources: int = 0
-    healthy_sources: int = 0
-    total_sources: int = 0
-    recent_alert_count_24h: int = 0
-    recent_event_count_24h: int = 0
-    recent_breakout_count_24h: int = 0
-    recent_rising_count_24h: int = 0
-    last_sync_at: Optional[str] = None
-    next_run_at: Optional[str] = None
-    running: bool = False
-    work_scope: IntelWorkScope = "collect_events_alerts"
-    top_alerts: list[IntelAlert] = Field(default_factory=list)
-    top_events: list[IntelEvent] = Field(default_factory=list)
-    recent_alerts_24h: list[IntelAlertHistoryItem] = Field(default_factory=list)
-    recent_events_24h: list[IntelEventHistoryItem] = Field(default_factory=list)
-    source_alerts: list[str] = Field(default_factory=list)
-
-
-class IntelSummaryResponse(BaseModel):
-    item: IntelOverviewSummary
-
-
-class DiscoveryItemsResponse(BaseModel):
-    items: list[DiscoveryItem]
-    total: int = 0
-    page: int = 1
-    page_size: int = 50
-    has_more: bool = False
-
-
-class IntelEventsResponse(BaseModel):
-    items: list[IntelEvent]
-    history_items: list[IntelEventHistoryItem] = Field(default_factory=list)
-    total: int = 0
-    page: int = 1
-    page_size: int = 50
-    has_more: bool = False
-
-
-class IntelAlertsResponse(BaseModel):
-    items: list[IntelAlert]
-    history_items: list[IntelAlertHistoryItem] = Field(default_factory=list)
-
-
-class IntelEventResponse(BaseModel):
-    item: IntelEvent
-
-
-class EventDeepDiveResponse(BaseModel):
-    item: EventDeepDive
-
-
-class EventDeepDivesResponse(BaseModel):
-    items: list[EventDeepDive] = Field(default_factory=list)
-
-
-class BriefResponse(BaseModel):
-    item: BriefItem
-
-
-class BriefStageCounts(BaseModel):
-    all: int = 0
-    prepared: int = 0
-    synced: int = 0
-    failed: int = 0
-
-
-class BriefRecordCounts(BaseModel):
-    all: int = 0
-    local_only: int = 0
-    draft_synced: int = 0
-    published: int = 0
-    exceptions: int = 0
-
-
-class BriefsResponse(BaseModel):
-    items: list[BriefItem] = Field(default_factory=list)
-    total: int = 0
-    page: int = 1
-    page_size: int = 50
-    has_more: bool = False
-    stage_counts: BriefStageCounts = Field(default_factory=BriefStageCounts)
-    record_counts: BriefRecordCounts = Field(default_factory=BriefRecordCounts)
-
-
-class AgentWorkflowResponse(BaseModel):
-    item: AgentWorkflowItem
-
-
-class AgentWorkflowsResponse(BaseModel):
-    items: list[AgentWorkflowItem] = Field(default_factory=list)
 
 
 class DictOkResponse(BaseModel):
@@ -1400,32 +646,45 @@ class SettingsUpdatePayload(BaseModel):
     tavily_api_key: Optional[str] = None
 
 
-class EntityWatchlistPayload(BaseModel):
-    items: list[EntityWatchlistItem] = Field(default_factory=list)
+class BriefResponse(BaseModel):
+    item: BriefItem
 
 
-class EntityWatchlistResponse(BaseModel):
-    items: list[EntityWatchlistItem] = Field(default_factory=list)
+class BriefStageCounts(BaseModel):
+    all: int = 0
+    prepared: int = 0
+    synced: int = 0
+    failed: int = 0
+
+
+class BriefRecordCounts(BaseModel):
+    all: int = 0
+    local_only: int = 0
+    draft_synced: int = 0
+    published: int = 0
+    exceptions: int = 0
+
+
+class BriefsResponse(BaseModel):
+    items: list[BriefItem] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    has_more: bool = False
+    stage_counts: BriefStageCounts = Field(default_factory=BriefStageCounts)
+    record_counts: BriefRecordCounts = Field(default_factory=BriefRecordCounts)
+
+
+class AgentWorkflowResponse(BaseModel):
+    item: AgentWorkflowItem
+
+
+class AgentWorkflowsResponse(BaseModel):
+    items: list[AgentWorkflowItem] = Field(default_factory=list)
 
 
 class BriefCopyPackageResponse(BaseModel):
     markdown: str = ""
-
-class ChannelConfigPayload(BaseModel):
-    app_id: str
-    app_secret_masked: str
-    author: str
-    default_cover_strategy: str
-    default_digest_strategy: str
-    draft_mode: bool
-    preview_enabled: bool
-    auto_send_window: str
-    risk_keywords: list[str]
-    browser_name: str
-    browser_profile_path: str
-    publish_entry_url: str
-    selectors_version: str
-    sidecar_url: str
 
 
 class SourceSyncResponse(BaseModel):
@@ -1434,6 +693,22 @@ class SourceSyncResponse(BaseModel):
     event_count: int
     synced_at: str
     warnings: list[str] = Field(default_factory=list)
+
+
+class ReferenceProject(BaseModel):
+    local_name: str
+    upstream_repo: str
+    branch: str
+    commit_sha: Optional[str] = None
+    refreshed_at: Optional[str] = None
+    layer: Literal["discovery", "aggregation", "writing", "wechat", "ops"]
+    tags: list[str] = Field(default_factory=list)
+    refresh_status: RefreshStatus = "missing"
+    notes: Optional[str] = None
+    local_exists: bool = False
+    license_name: str = "unknown"
+    borrow_mode: BorrowMode = "reference_only"
+    borrow_targets: list[str] = Field(default_factory=list)
 
 
 class ReferenceProjectsResponse(BaseModel):
@@ -1448,32 +723,12 @@ class EventDeepDivePayload(BaseModel):
     force: bool = False
 
 
-class PublishTasksResponse(BaseModel):
-    items: list[PublishTask]
-    total: int = 0
-    page: int = 1
-    page_size: int = 50
-    has_more: bool = False
-
-
 class LogsResponse(BaseModel):
     items: list[LogItem]
     total: int = 0
     page: int = 1
     page_size: int = 50
     has_more: bool = False
-
-
-class BrowserSessionResponse(BaseModel):
-    item: BrowserSessionState
-
-
-class WeChatChannelResponse(BaseModel):
-    item: WeChatChannelConfig
-
-
-class DouyinChannelResponse(BaseModel):
-    item: DouyinChannelConfig
 
 
 class SystemCheckItem(BaseModel):
@@ -1546,9 +801,6 @@ class SchedulerStatusResponse(BaseModel):
 
 class RuntimePlanResponse(BaseModel):
     item: RuntimePlan
-
-
-# LLM models have been moved to models_llm.py
 
 
 class DictEnvelope(BaseModel):

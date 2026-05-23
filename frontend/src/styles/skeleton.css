@@ -1,0 +1,497 @@
+/* ===== CC Switch Style Profile Cards ===== */
+.ccswitch-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.ccswitch-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ccswitch-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+  transform: translateY(-1px);
+}
+
+.ccswitch-card-selected {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+.ccswitch-card-current {
+  background: linear-gradient(135deg, #f8fafc 0%, #f0fdfa 100%);
+  border-color: #14b8a6;
+}
+
+.ccswitch-card-current.ccswitch-card-selected {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15), 0 4px 16px rgba(20, 184, 166, 0.1);
+}
+
+.ccswitch-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.ccswitch-card-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ccswitch-card-title strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.ccswitch-provider-label {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.ccswitch-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.ccswitch-model-id {
+  margin: 0;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: #475569;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.ccswitch-card p {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.ccswitch-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+.ghost-button.icon-only {
+  padding: 8px;
+  min-height: 34px;
+  width: 34px;
+}
+
+.llm-editor-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: #64748b;
+  font-size: 13px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px dashed #d1d5db;
+}
+
+/* CC Dialog */
+.cc-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: editorFadeIn 0.15s ease;
+}
+
+.cc-dialog-panel {
+  width: 100%;
+  max-width: 560px;
+  max-height: 90vh;
+  overflow-y: auto;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.2);
+  animation: dialogSlideIn 0.2s ease;
+}
+
+@keyframes dialogSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.cc-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.cc-dialog-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.cc-dialog-panel .source-form-grid {
+  padding: 20px;
+}
+
+.cc-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 20px;
+  border-top: 1px solid #e5e7eb;
+  background: #f8fafc;
+  border-radius: 0 0 12px 12px;
+}
+
+.ccswitch-description {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.ccswitch-action-icons {
+  display: flex;
+  gap: 4px;
+}
+
+.primary-button.compact,
+.secondary-button.compact {
+  padding: 8px 12px;
+  min-height: 34px;
+  font-size: 13px;
+}
+
+/* LLM CC-Switch Import Badges */
+.llm-model-badge-cc {
+  font-size: 11px;
+  font-weight: 600;
+  color: #ffffff;
+  background: #6366f1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.llm-model-badge-relay {
+  font-size: 11px;
+  font-weight: 500;
+  color: #6366f1;
+  background: #eef2ff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+/* LLM Relay Mode Checkbox */
+.llm-relay-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #475569;
+  margin-top: 6px;
+  cursor: pointer;
+}
+
+.llm-relay-checkbox input[type="checkbox"] {
+  accent-color: #6366f1;
+}
+
+/* LLM CC-Switch Import Dialog */
+.llm-cc-loading,
+.llm-cc-error,
+.llm-cc-empty {
+  padding: 24px;
+  text-align: center;
+  font-size: 14px;
+  color: #64748b;
+}
+
+.llm-cc-error {
+  color: #dc2626;
+}
+
+.llm-cc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 8px;
+}
+
+.llm-cc-count {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.llm-cc-list {
+  max-height: 340px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-cc-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.llm-cc-item:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.llm-cc-item-selected {
+  border-color: #6366f1;
+  background: #eef2ff;
+}
+
+.llm-cc-item-selected:hover {
+  background: #e0e7ff;
+}
+
+.llm-cc-item input[type="checkbox"] {
+  margin-top: 3px;
+  accent-color: #6366f1;
+}
+
+.llm-cc-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.llm-cc-item-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: #1e293b;
+}
+
+.llm-cc-item-detail {
+  font-size: 12px;
+  color: #64748b;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.llm-cc-item-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11px;
+  color: #94a3b8;
+  background: #f1f5f9;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.llm-cc-badge-current {
+  font-size: 10px;
+  font-weight: 600;
+  color: #166534;
+  background: #dcfce7;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.llm-cc-badge-unhealthy {
+  font-size: 10px;
+  font-weight: 600;
+  color: #991b1b;
+  background: #fee2e2;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.llm-cc-badge-relay {
+  font-size: 10px;
+  font-weight: 500;
+  color: #6366f1;
+  background: #eef2ff;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skeleton-card {
+  padding: 12px 16px;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skeleton-line {
+  height: 14px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #e5e7eb 25%, #f3f4f6 50%, #e5e7eb 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}
+
+.skeleton-short { width: 40%; }
+.skeleton-medium { width: 70%; }
+.skeleton-long { width: 90%; }
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* WeChat publish history cards — mirrors WeChat MP backend layout */
+.wechat-publish-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.wechat-publish-card {
+  border-bottom: 1px solid var(--border-color, #e8e8e8);
+  padding: 16px 0;
+}
+.wechat-publish-card:last-child { border-bottom: none; }
+
+.wechat-publish-card__body {
+  display: flex;
+  gap: 14px;
+}
+
+.wechat-publish-card__thumb {
+  flex-shrink: 0;
+  width: 64px;
+  height: 64px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #f0f0f0;
+}
+.wechat-publish-card__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wechat-publish-card__content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wechat-publish-card__title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.wechat-publish-card__title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-primary, #333);
+  text-decoration: none;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.wechat-publish-card__title[href]:hover {
+  color: var(--link-color, #576b95);
+}
+
+.wechat-publish-card__metrics {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.metric-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-secondary, #999);
+}
+.metric-item svg {
+  color: var(--text-muted, #bbb);
+}
+
+.wechat-publish-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-left: 0;
+}
+
+.wechat-publish-card__time {
+  font-size: 12px;
+  color: var(--text-muted, #bbb);
+}
+
+.wechat-publish-card__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--link-color, #576b95);
+  text-decoration: none;
+}
+.wechat-publish-card__link:hover {
+  text-decoration: underline;
+}

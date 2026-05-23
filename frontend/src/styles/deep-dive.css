@@ -1,0 +1,166 @@
+.list-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.list-pagination-summary {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.list-pagination-summary strong {
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.list-pagination-summary span,
+.list-pagination-summary p {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pagination-page-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.pagination-page-size select {
+  min-width: 72px;
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #111827;
+}
+
+.pagination-icon-button {
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+}
+
+/* Cycle progress indicator */
+.intel-cycle-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 13px;
+  color: #475569;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 6px;
+}
+
+.intel-cycle-stage {
+  font-weight: 500;
+  color: #6366f1;
+}
+
+.intel-cycle-stage-success {
+  color: #0f766e;
+}
+
+.intel-cycle-stage-warning {
+  color: #b45309;
+}
+
+.intel-cycle-stage-danger {
+  color: #dc2626;
+}
+
+.intel-cycle-stage-neutral {
+  color: #475569;
+}
+
+.intel-cycle-stage-done {
+  color: #16a34a;
+}
+
+.intel-cycle-percent {
+  font-weight: 700;
+  color: #0f172a;
+  min-width: 36px;
+  text-align: right;
+}
+
+.intel-cycle-meter {
+  width: 100%;
+  height: 8px;
+  margin-bottom: 6px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+}
+
+.intel-cycle-meter-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #6366f1 0%, #14b8a6 100%);
+  transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+}
+
+.intel-cycle-meter-fill-success {
+  background: linear-gradient(90deg, #0f766e 0%, #14b8a6 100%);
+}
+
+.intel-cycle-meter-fill-warning {
+  background: linear-gradient(90deg, #d97706 0%, #f59e0b 100%);
+}
+
+.intel-cycle-meter-fill-danger {
+  background: linear-gradient(90deg, #dc2626 0%, #ef4444 100%);
+}
+
+.intel-cycle-meter-fill-neutral {
+  background: linear-gradient(90deg, #64748b 0%, #94a3b8 100%);
+}
+
+.intel-cycle-meter-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 50%, transparent 100%);
+  animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.intel-cycle-label {
+  margin: 0 0 4px;
+  color: #475569;
+  font-size: 13px;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+

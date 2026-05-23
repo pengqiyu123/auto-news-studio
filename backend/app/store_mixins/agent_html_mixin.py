@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
+from html.parser import HTMLParser
+import httpx
 import json
 import re
 from pathlib import Path
@@ -24,7 +26,21 @@ from ..models import (
     AgentHtmlTargetUpdatePayload,
     SourceSyncResponse,
 )
-from ..store_base import MAX_RAW_ITEMS, RUNTIME_CACHE_DIR, UTC, atomic_write_json, now_iso, parse_time
+from ..store_base import MAX_RAW_ITEMS, RUNTIME_CACHE_DIR, UTC, _extract_json_payload, atomic_write_json, now_iso, parse_time
+
+
+class _AgentHtmlTextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        text = str(data or "").strip()
+        if text:
+            self._parts.append(text)
+
+    def text(self) -> str:
+        return " ".join(self._parts)
 
 
 class AgentHtmlMixin:
@@ -635,3 +651,410 @@ class AgentHtmlMixin:
             self._append_log(state, "success", "agent_html", f"已重新提取 Agent HTML 文档：{document.get('title')}", actor=triggered_by)
             self._write(state)
             return self.get_agent_html_document(document_id)
+
+    # ------------------------------------------------------------------
+    # Internal helper methods (migrated from store_core)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _agent_html_history_expires_at(now: datetime | None = None) -> str:
+        baseline = now or datetime.now(UTC)
+        return (baseline + timedelta(days=7)).replace(microsecond=0).isoformat()
+
+    def _prune_agent_html_event_history(
+        self,
+        items: list[dict[str, Any]] | None,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        now = now or datetime.now(UTC)
+        kept: list[dict[str, Any]] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            expires_at = parse_time(item.get("expires_at"))
+            if not expires_at or expires_at <= now:
+                continue
+            kept.append(item)
+        kept.sort(key=lambda item: parse_time(item.get("last_seen_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
+        return kept
+
+    @staticmethod
+    def _agent_html_extract_attr(tag_html: str, attr: str) -> str:
+        match = re.search(rf'{re.escape(attr)}=["\']([^"\']+)["\']', tag_html, flags=re.I)
+        return str(match.group(1)).strip() if match else ""
+
+    @staticmethod
+    def _agent_html_strip_tags(html: str) -> str:
+        parser = _AgentHtmlTextExtractor()
+        parser.feed(str(html or ""))
+        return re.sub(r"\s+", " ", parser.text()).strip()
+
+    def _agent_html_build_ai_discovery_messages(self, target: dict[str, Any], html: str) -> list[dict[str, str]]:
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "你是网页列表抽取器。请从品牌新闻/博客列表页中抽取文章候选项，并严格返回 JSON 数组。"
+                    "每项字段仅允许：title, link, published_at, summary。不要输出解释。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "brand": target.get("brand"),
+                        "name": target.get("name"),
+                        "entry_url": target.get("entry_url"),
+                        "html": str(html or "")[:18000],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+
+    def _agent_html_parse_candidates_with_ai(
+        self,
+        state: dict[str, Any],
+        target: dict[str, Any],
+        html: str,
+    ) -> list[dict[str, Any]]:
+        llm_service = self._make_llm_service(state)
+        if not llm_service:
+            return []
+        try:
+            result = llm_service.generate("article", self._agent_html_build_ai_discovery_messages(target, html), temperature=0.1, max_tokens=1200, timeout=60.0)
+            payload = self._extract_json_payload(str(result.get("content") or ""))
+        except Exception:
+            return []
+        if not isinstance(payload, list):
+            return []
+        discovered: list[dict[str, Any]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            link = urljoin(str(target.get("entry_url") or ""), str(item.get("link") or "").strip())
+            if not link:
+                continue
+            title = self._agent_html_clean_text(item.get("title") or "")
+            if not title:
+                continue
+            discovered.append(
+                {
+                    "title": title,
+                    "link": link,
+                    "published_at": str(item.get("published_at") or "").strip() or None,
+                    "summary": self._agent_html_clean_text(item.get("summary") or ""),
+                }
+            )
+        return discovered
+
+    def _agent_html_parse_candidates_with_rules(
+        self,
+        entry_url: str,
+        html: str,
+        rules: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        html_text = str(html or "")
+        link_selector = str(rules.get("link_selector") or "").strip()
+        allow_patterns = [str(item).strip() for item in rules.get("link_allow_patterns", []) if str(item).strip()]
+        deny_patterns = [str(item).strip() for item in rules.get("link_deny_patterns", []) if str(item).strip()]
+        tags = re.findall(r"<a\b[^>]*href=[\"'][^\"']+[\"'][^>]*>[\s\S]*?</a>", html_text, flags=re.I)
+        discovered: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for tag in tags:
+            classes = self._agent_html_extract_attr(tag, "class")
+            if link_selector and link_selector.startswith("."):
+                required_class = link_selector[1:]
+                if required_class not in classes.split():
+                    continue
+            href = urljoin(entry_url, self._agent_html_extract_attr(tag, "href"))
+            canonical = canonicalize_url(href)
+            identity = canonical or href
+            if not href or identity in seen:
+                continue
+            if allow_patterns and not any(re.search(pattern, href, flags=re.I) for pattern in allow_patterns):
+                continue
+            if deny_patterns and any(re.search(pattern, href, flags=re.I) for pattern in deny_patterns):
+                continue
+            title = self._agent_html_strip_tags(tag)
+            if len(title) < 8:
+                continue
+            seen.add(identity)
+            discovered.append(
+                {
+                    "title": title,
+                    "link": href,
+                    "published_at": None,
+                    "summary": "",
+                }
+            )
+        return discovered[:30]
+
+    def _agent_html_fetch_page(self, url: str, *, timeout_seconds: float = 15.0) -> tuple[dict[str, Any], str]:
+        result = fetch_and_extract_link({"link": url, "title": "", "source_key": "agent_html", "source_name": "Agent HTML"}, timeout_seconds=timeout_seconds)
+        html_result = {
+            "url": url,
+            "canonical_url": str(result.get("canonical_link") or url),
+            "fetch_status": str(result.get("fetch_status") or "fetch_failed"),
+            "error": result.get("error"),
+            "title": str(result.get("title") or ""),
+            "published_at": result.get("published_at"),
+        }
+        return html_result, str(result.get("cleaned_full_text") or "")
+
+    def _agent_html_raw_html_fetch(self, url: str, *, timeout_seconds: float = 15.0) -> tuple[dict[str, Any], str]:
+        meta = {"url": url, "fetch_status": "fetch_failed", "status_code": None, "content_type": None, "error": None, "final_url": url}
+        try:
+            with httpx.Client(
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
+                },
+                follow_redirects=True,
+                timeout=timeout_seconds,
+            ) as client:
+                response = client.get(url)
+            meta["status_code"] = response.status_code
+            meta["content_type"] = str(response.headers.get("content-type") or "")
+            meta["final_url"] = str(response.url)
+            if response.status_code >= 400:
+                meta["error"] = f"HTTP {response.status_code}"
+                return meta, ""
+            meta["fetch_status"] = "fetched"
+            return meta, response.text
+        except Exception as exc:  # noqa: BLE001
+            meta["error"] = str(exc)
+            return meta, ""
+
+    def _agent_html_collect_candidates(
+        self,
+        state: dict[str, Any],
+        target: dict[str, Any],
+        html: str,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        rules = target.get("discovery_rules", {}) if isinstance(target.get("discovery_rules"), dict) else {}
+        discovered = self._agent_html_parse_candidates_with_rules(str(target.get("entry_url") or ""), html, rules)
+        ai_used = False
+        mode = str(target.get("discover_mode") or "rule_with_ai_fallback")
+        if mode == "ai_only":
+            discovered = []
+        if mode in {"rule_with_ai_fallback", "ai_only"} and len(discovered) < 2:
+            ai_candidates = self._agent_html_parse_candidates_with_ai(state, target, html)
+            if ai_candidates:
+                ai_used = True
+                discovered = ai_candidates
+        return discovered, ai_used
+
+    @staticmethod
+    def _agent_html_is_article_candidate(candidate: dict[str, Any], target: dict[str, Any]) -> bool:
+        link = str(candidate.get("link") or "").strip().lower()
+        title = str(candidate.get("title") or "").strip().lower()
+        if not link:
+            return False
+        deny_patterns = [
+            r"/category/",
+            r"/categories/",
+            r"/tag/",
+            r"/tags/",
+            r"/author/",
+            r"/authors/",
+            r"/search",
+            r"/sp\?",
+            r"/video",
+            r"/videos",
+            r"/podcast",
+            r"/fast-facts",
+            r"/select-newsroom",
+            r"/media-library",
+            r"/medialibrary/",
+            r"/shop",
+            r"/store",
+        ]
+        if any(re.search(pattern, link, flags=re.I) for pattern in deny_patterns):
+            return False
+        if title and re.search(r"search|category|tag|video|podcast|fast-facts|select newsroom|media library|shop|store", title, flags=re.I):
+            return False
+        target_type = str(target.get("target_type") or "")
+        if target_type in {"newsroom", "blog", "press"}:
+            positive = [
+                r"/news/",
+                r"/blog/",
+                r"/post/",
+                r"/posts/",
+                r"/article",
+                r"/articles/",
+                r"/story/",
+                r"/stories/",
+                r"\.html?$",
+                r"/\d{4}/",
+            ]
+            return any(re.search(pattern, link, flags=re.I) for pattern in positive)
+        return True
+
+    def _agent_html_map_document_to_raw_item(
+        self,
+        target: dict[str, Any],
+        document: dict[str, Any],
+        revision: dict[str, Any],
+    ) -> dict[str, Any]:
+        source_key = f"html-{str(target.get('id') or '').strip()}"
+        title = str(document.get("title") or revision.get("title") or "").strip()
+        canonical_link = str(document.get("canonical_url") or revision.get("source_url") or "").strip()
+        content = str(revision.get("content_text") or "").strip()
+        summary = str(revision.get("excerpt") or "").strip()[:320]
+        published_at = str(revision.get("published_at") or document.get("published_at") or revision.get("fetched_at") or now_iso())
+        collected_at = str(revision.get("fetched_at") or now_iso())
+        return {
+            "id": f"raw-html-{document.get('id')}-{revision.get('id')}",
+            "source_key": source_key,
+            "source_name": str(target.get("name") or target.get("brand") or "Agent HTML"),
+            "source_kind": "page",
+            "title": title,
+            "link": canonical_link,
+            "published_at": published_at,
+            "collected_at": collected_at,
+            "summary": summary,
+            "content": content[:8000],
+            "author": "",
+            "tags": [item for item in [str(target.get("brand") or "").strip(), "agent-html"] if item],
+            "engagement": {"score": 180},
+            "metadata": {
+                "collector": "agent_html",
+                "original_link": str(revision.get("source_url") or canonical_link),
+                "canonical_link": canonical_link,
+                "extract_status": str(document.get("extractor") or revision.get("extractor") or ""),
+                "fetch_status": "fetched",
+                "word_count": int(revision.get("word_count", 0) or 0),
+                "content_hash": str(revision.get("content_hash") or ""),
+                "document_revision_id": str(revision.get("id") or ""),
+                "html_target_id": str(target.get("id") or ""),
+                "html_document_id": str(document.get("id") or ""),
+            },
+        }
+
+    def _agent_html_build_discovery_item(
+        self,
+        target: dict[str, Any],
+        run_id: str,
+        candidate: dict[str, Any],
+        *,
+        content_hash: str = "",
+        item_state: str = "new_item",
+        document_id: str | None = None,
+        event_id: str | None = None,
+    ) -> dict[str, Any]:
+        link = str(candidate.get("link") or "").strip()
+        canonical = canonicalize_url(link) or link
+        dedupe_key = canonical or link
+        return {
+            "id": f"ahd-{uuid4().hex[:12]}",
+            "target_id": str(target.get("id") or ""),
+            "run_id": run_id,
+            "source_name": str(target.get("name") or target.get("brand") or "Agent HTML"),
+            "title": self._agent_html_clean_text(candidate.get("title") or ""),
+            "summary": self._agent_html_clean_text(candidate.get("summary") or ""),
+            "link": link,
+            "canonical_link": canonical,
+            "published_at": candidate.get("published_at"),
+            "collected_at": now_iso(),
+            "dedupe_key": dedupe_key,
+            "content_hash": content_hash,
+            "item_state": item_state,
+            "document_id": document_id,
+            "event_id": event_id,
+            "metadata": {
+                "target_brand": str(target.get("brand") or ""),
+                "target_type": str(target.get("target_type") or ""),
+            },
+        }
+
+    def _agent_html_similarity_tokens(self, text: str) -> set[str]:
+        tokens = re.findall(r"[A-Za-z0-9一-鿿]{2,}", str(text or "").lower())
+        return {token for token in tokens if len(token) >= 2}
+
+    def _agent_html_group_event(self, state: dict[str, Any], target: dict[str, Any], discovery_item: dict[str, Any]) -> dict[str, Any]:
+        brand = str(target.get("brand") or "").strip().lower()
+        target_domain = self._agent_html_domain(str(target.get("entry_url") or ""))
+        published_at = parse_time(discovery_item.get("published_at")) or parse_time(discovery_item.get("collected_at")) or datetime.now(UTC)
+        title_tokens = self._agent_html_similarity_tokens(discovery_item.get("title") or "")
+        event_candidates: list[dict[str, Any]] = []
+        for event in state.get("agent_html_events", []):
+            if not isinstance(event, dict):
+                continue
+            event_brand = str(event.get("tags", [""])[0] if event.get("tags") else "").lower()
+            if brand and event_brand and event_brand != brand:
+                continue
+            if target_domain and self._agent_html_domain(str(event.get("representative_link") or "")) not in {"", target_domain}:
+                continue
+            event_last_seen = parse_time(event.get("last_seen_at")) or datetime.min.replace(tzinfo=UTC)
+            if abs((published_at - event_last_seen).total_seconds()) > 7 * 24 * 3600:
+                continue
+            event_tokens = self._agent_html_similarity_tokens(event.get("title") or "")
+            overlap = len(title_tokens & event_tokens)
+            if overlap >= 2:
+                event_candidates.append(event)
+        if event_candidates:
+            event_candidates.sort(key=lambda item: parse_time(item.get("last_seen_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
+            return event_candidates[0]
+        return {
+            "id": f"ahe-{uuid4().hex[:12]}",
+            "title": str(discovery_item.get("title") or "未命名事件"),
+            "summary": str(discovery_item.get("summary") or ""),
+            "representative_document_id": discovery_item.get("document_id"),
+            "representative_link": str(discovery_item.get("canonical_link") or discovery_item.get("link") or ""),
+            "discovery_item_ids": [],
+            "document_ids": [],
+            "member_count": 0,
+            "source_count": 0,
+            "first_seen_at": discovery_item.get("collected_at"),
+            "last_seen_at": discovery_item.get("collected_at"),
+            "change_state": "new_event",
+            "alert_state": "watch",
+            "entity_names": [str(target.get("brand") or "")] if str(target.get("brand") or "").strip() else [],
+            "tags": [str(target.get("brand") or "").strip()] if str(target.get("brand") or "").strip() else [],
+        }
+
+    def _refresh_agent_html_event_history(self, state: dict[str, Any], now: datetime | None = None) -> None:
+        now = now or datetime.now(UTC)
+        now_stamp = now.replace(microsecond=0).isoformat()
+        expires_at = self._agent_html_history_expires_at(now)
+        history = self._prune_agent_html_event_history(state.get("agent_html_event_history", []), now=now)
+        by_event = {str(item.get("event_id") or ""): item for item in history if isinstance(item, dict) and item.get("event_id")}
+        current_events = {str(item.get("id") or ""): item for item in state.get("agent_html_events", []) if isinstance(item, dict) and item.get("id")}
+        for event_id, event in current_events.items():
+            existing = by_event.get(event_id)
+            if existing:
+                existing.update(
+                    {
+                        "title": str(event.get("title") or existing.get("title") or ""),
+                        "last_seen_at": str(event.get("last_seen_at") or now_stamp),
+                        "expires_at": expires_at,
+                        "status": "active" if str(event.get("alert_state") or "watch") != "cooling" else "cooled",
+                        "latest_alert_state": str(event.get("alert_state") or "watch"),
+                        "member_count": int(event.get("member_count", 0) or 0),
+                        "source_count": int(event.get("source_count", 0) or 0),
+                        "composite_score": float(event.get("member_count", 0) or 0),
+                    }
+                )
+                continue
+            history.append(
+                {
+                    "history_id": f"aheh-{uuid4().hex[:12]}",
+                    "event_id": event_id,
+                    "title": str(event.get("title") or ""),
+                    "first_seen_at": str(event.get("first_seen_at") or now_stamp),
+                    "last_seen_at": str(event.get("last_seen_at") or now_stamp),
+                    "expires_at": expires_at,
+                    "status": "active",
+                    "latest_alert_state": str(event.get("alert_state") or "watch"),
+                    "member_count": int(event.get("member_count", 0) or 0),
+                    "source_count": int(event.get("source_count", 0) or 0),
+                    "composite_score": float(event.get("member_count", 0) or 0),
+                }
+            )
+        for item in history:
+            event_id = str(item.get("event_id") or "")
+            if event_id not in current_events:
+                item["status"] = "cooled"
+        state["agent_html_event_history"] = self._prune_agent_html_event_history(history, now=now)

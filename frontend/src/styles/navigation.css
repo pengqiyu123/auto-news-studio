@@ -1,0 +1,266 @@
+.global-control-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.global-control-main,
+.global-control-stats,
+.global-control-actions,
+.global-control-title,
+.candidate-toolbar-left,
+.source-action-row {
+  display: flex;
+  gap: 12px;
+}
+
+.global-control-main,
+.global-control-title {
+  align-items: center;
+}
+
+.global-control-main {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.global-control-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  align-items: stretch;
+}
+
+.global-control-title strong {
+  display: block;
+}
+
+.global-control-title p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.global-mode-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mode-chip {
+  border: 1px solid #dbe3ef;
+  background: #ffffff;
+  color: #0f172a;
+  border-radius: 999px;
+  padding: 8px 12px;
+}
+
+.mode-chip-active {
+  background: #0f766e;
+  color: #ffffff;
+  border-color: #0f766e;
+}
+
+.global-stat {
+  min-width: 140px;
+}
+
+.global-stat span {
+  display: block;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.global-stat strong {
+  display: block;
+  margin-top: 6px;
+}
+
+.global-control-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-column: 1 / -1;
+}
+
+.mapping-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.mode-compact-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.mode-compact-card {
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+
+.mode-compact-card-active {
+  border-color: #14b8a6;
+  box-shadow: inset 0 0 0 1px #14b8a6;
+}
+
+.mode-compact-card-disabled {
+  background: #f8fafc;
+}
+
+.mode-visibility-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.mode-visibility-head p,
+.mode-checkpoint p,
+.mode-visibility-foot p {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.mode-visibility-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.mode-compact-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.mode-compact-meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 12px;
+}
+
+.mode-config-details {
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.mode-config-summary-row {
+  list-style: none;
+  padding: 14px 16px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.mode-config-summary-row::-webkit-details-marker {
+  display: none;
+}
+
+.mode-config-summary-row p {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.mode-config-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #475569;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.mode-config-details[open] .mode-config-toggle svg {
+  transform: rotate(180deg);
+}
+
+.mode-config-toggle svg {
+  transition: transform 0.15s ease;
+}
+
+.mode-config-panel {
+  border-top: 1px solid #e5e7eb;
+  padding: 16px;
+}
+
+.mode-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.mode-config-grid label {
+  display: block;
+}
+
+.mode-config-grid span {
+  display: block;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.mode-config-grid input,
+.mode-config-grid select,
+.mode-config-grid textarea {
+  width: 100%;
+  margin-top: 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #ffffff;
+}
+
+.mode-config-explainer {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: minmax(280px, 1.15fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.mode-config-summary {
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 14px;
+}
+
+.mode-config-summary span {
+  display: block;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.mode-config-summary strong {
+  display: block;
+  margin-top: 8px;
+  line-height: 1.6;
+}
+
+.mode-config-actions {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+

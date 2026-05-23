@@ -1,0 +1,479 @@
+.mode-config-divider {
+  height: 1px;
+  margin: 18px 0;
+  background: #e5e7eb;
+}
+
+.mode-config-subhead {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.mode-config-subhead p {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.dirty-chip,
+.subtle-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dirty-chip {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.subtle-chip {
+  background: #eef2ff;
+  color: #4338ca;
+}
+
+.llm-key-field {
+  grid-column: 1 / -1;
+}
+
+.llm-key-input-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.llm-key-input-row input {
+  flex: 1;
+}
+
+.llm-test-result {
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.llm-test-ok {
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.llm-test-error {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+/* LLM Model Grid - Compact Cards */
+.llm-model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.llm-model-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.llm-model-card:hover {
+  border-color: #cbd5e1;
+}
+
+.llm-model-card-configured {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.llm-model-card-configured:hover {
+  border-color: #22c55e;
+}
+
+.llm-model-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.llm-model-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.llm-model-badge-free {
+  font-size: 11px;
+  font-weight: 500;
+  color: #ffffff;
+  background: #22c55e;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.llm-model-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.llm-model-provider {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.llm-model-id {
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.llm-model-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.llm-model-card-actions .ghost-button.icon-only {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
+/* LLM Add Form */
+.llm-add-form {
+  margin-top: 16px;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.llm-add-form .source-form-grid {
+  margin-bottom: 12px;
+}
+
+.llm-add-form .form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.llm-model-id-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.llm-model-id-row select,
+.llm-model-id-row input {
+  flex: 1;
+}
+
+.llm-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.llm-profile-grid-stacked {
+  grid-template-columns: 1fr;
+}
+
+.llm-profile-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.llm-profile-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.llm-profile-card-selected {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.15);
+}
+
+.llm-profile-card-current {
+  background: #f8fbff;
+}
+
+.llm-profile-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.llm-profile-head strong {
+  display: block;
+  font-size: 14px;
+}
+
+.llm-profile-head p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.llm-profile-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.llm-profile-model {
+  margin: 0;
+  color: #0f172a;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  word-break: break-all;
+}
+
+.llm-profile-actions {
+  margin-top: auto;
+}
+
+.llm-profile-actions-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.status-chip-ok {
+  background: #ecfdf5;
+  color: #166534;
+}
+
+.status-chip-warn {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.status-chip-muted {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.llm-profile-description-field {
+  grid-column: 1 / -1;
+}
+
+.llm-profile-description-field textarea {
+  width: 100%;
+  margin-top: 6px;
+  resize: vertical;
+}
+
+.llm-workbench {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.llm-library,
+.llm-editor {
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #fcfdff;
+  padding: 14px;
+}
+
+.llm-runtime-card {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.llm-runtime-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.llm-runtime-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.llm-runtime-badge-ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.llm-runtime-badge-warn {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.llm-runtime-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  font-size: 13px;
+  color: #475569;
+}
+
+.llm-runtime-endpoint {
+  margin-top: 6px;
+  word-break: break-all;
+}
+
+.llm-library-head,
+.llm-editor-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.llm-library-head strong {
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.llm-editor-note {
+  margin-top: 12px;
+}
+
+.llm-tasks-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.llm-tasks-header {
+  margin-bottom: 16px;
+}
+
+.llm-tasks-header .eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.llm-tasks-header h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #0f172a;
+  margin: 0 0 4px 0;
+}
+
+.llm-tasks-header .subtle {
+  font-size: 13px;
+  color: #64748b;
+  margin: 0;
+}
+
+.llm-task-routing-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #64748b;
+  margin: 0 0 16px 0;
+}
+
+.llm-tasks-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.llm-task-row {
+  display: grid;
+  grid-template-columns: 100px 1fr auto 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.llm-task-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #334155;
+}
+
+.llm-task-selects {
+  display: flex;
+  gap: 6px;
+}
+
+.llm-task-selects select {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: white;
+  color: #374151;
+  min-width: 0;
+}
+
+.llm-task-separator {
+  font-size: 14px;
+  color: #94a3b8;
+  text-align: center;
+}
+

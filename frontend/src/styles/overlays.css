@@ -1,0 +1,182 @@
+/* Toast */
+.toast-banner {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: #065f46;
+  color: #fff;
+  border-radius: 8px;
+  font-size: 13px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  z-index: 1000;
+  animation: toast-in 0.2s ease-out;
+}
+
+.toast-success {
+  background: #065f46;
+}
+
+.toast-info {
+  background: #1d4ed8;
+}
+
+.toast-warning {
+  background: #b45309;
+}
+
+.toast-dismiss {
+  opacity: 0.6;
+  margin-left: 4px;
+}
+
+.toast-dismiss:hover {
+  opacity: 1;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 1200px) {
+  .overview-grid,
+  .cockpit-summary-grid,
+  .cockpit-summary-grid-tight,
+  .cockpit-focus-grid,
+  .cockpit-main-grid,
+  .logs-split-layout,
+  .intel-overview-grid,
+  .intel-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .global-control-main {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .source-table-head,
+  .source-row-summary {
+    grid-template-columns: minmax(160px, 2fr) 80px 100px 100px 90px 60px 60px 24px;
+  }
+
+  .draft-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .draft-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .mode-compact-grid,
+  .mode-visibility-checkpoints,
+  .mode-config-explainer,
+  .runtime-plan-brief,
+  .channel-wizard-steps,
+  .llm-workbench {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 960px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid #111827;
+  }
+
+  .main-shell {
+    padding: 18px;
+  }
+
+  .page-header,
+  .browser-session-card,
+  .channel-wizard-head,
+  .mode-summary,
+  .intel-hero-actions,
+  .intel-plan-footer,
+  .intel-runtime-list {
+    flex-direction: column;
+  }
+
+  .mode-grid,
+  .mode-compact-grid,
+  .mode-config-grid,
+  .stat-grid,
+  .stat-grid-wide,
+  .cockpit-summary-grid,
+  .cockpit-summary-grid-tight,
+  .cockpit-focus-grid,
+  .topbar-grid,
+  .topbar-grid.compact,
+  .freshness-grid,
+  .freshness-grid.compact,
+  .candidate-status-strip,
+  .runtime-card-grid,
+  .hero-times,
+  .execution-meta,
+  .chain-grid,
+  .form-grid,
+  .source-form-grid,
+  .meta-grid,
+  .intel-meta-grid,
+  .candidate-timeline,
+  .channel-session-summary,
+  .logs-split-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-mode-card {
+    grid-column: auto;
+  }
+
+  .candidate-toolbar,
+  .source-detail-top {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .global-control-actions,
+  .panel-header-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .draft-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .intel-filter-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .draft-time-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mode-visibility-checkpoints {
+    grid-template-columns: 1fr;
+  }
+
+  .source-table-head {
+    display: none;
+  }
+
+  .source-row-summary {
+    grid-template-columns: 1fr;
+  }
+}
