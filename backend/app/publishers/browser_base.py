@@ -7,7 +7,8 @@ import webbrowser
 from uuid import uuid4
 
 from ..store_base import PROJECT_ROOT, RUNTIME_TEMP_DIR, now_iso
-from ._legacy import legacy_publishers
+# WechatBrowserManager is imported lazily to avoid circular imports
+# (browser_manager.py imports from browser_base.py at module level)
 
 
 ARTIFACT_ROOT = RUNTIME_TEMP_DIR / "publish_artifacts"
@@ -32,7 +33,185 @@ try:
 except Exception:  # pragma: no cover - non-Windows safety
     USER32 = None
 
-SELECTOR_PROFILES = legacy_publishers.SELECTOR_PROFILES
+SELECTOR_PROFILES: dict[str, dict[str, list[str] | str]] = {
+    "wechat-mp-v1": {
+        "logged_in": [
+            ".weui-desktop-account__thumb",
+            ".weui-desktop-layout__main",
+            ".weui-desktop-side-menu",
+        ],
+        "new_article": [
+            ".new-creation__menu-item:has(.new-creation__menu-title:text-is('文章'))",
+            ".new-creation__menu-content:has(.new-creation__menu-title:text-is('文章'))",
+            ".new-creation__menu-title:text-is('文章')",
+        ],
+        "draft_box": [
+            "a#menu_10125[href*='action=list_card']",
+            "a.weui-desktop-menu__link.menu_report[href*='action=list_card']",
+            "a:has-text('草稿箱')",
+            "div:has-text('草稿箱')",
+            "a[href*='action=list_card']",
+            "text=草稿箱",
+            "a[href*='draft']",
+            "text=草稿箱",
+        ],
+        "publish_history": [
+            "a#menu_10126[href*='appmsgpublish']",
+            "a.weui-desktop-menu__link.menu_report[href*='appmsgpublish']",
+            "a:has-text('发表记录')",
+            "div:has-text('发表记录')",
+            "a[href*='appmsgpublish']",
+            "text=发表记录",
+        ],
+        "analytics": [
+            "a[href*='/misc/appmsganalysis'][title='内容分析']",
+            "a[href*='appmsganalysis?action=report']",
+            "a:has-text('内容分析')",
+            "text=内容分析",
+        ],
+        "content_manage": [
+            "span.weui-desktop-menu__link[title='内容管理']",
+            "span.weui-desktop-menu__name:has-text('内容管理')",
+            "a:has-text('内容管理')",
+            "div:has-text('内容管理')",
+            "text=内容管理",
+        ],
+        "title_input": [
+            "div.ProseMirror[data-placeholder*='请在这里输入标题']",
+            "div.ProseMirror[data-placeholder*='标题']",
+            "textarea.js_article_title",
+            "input[placeholder*='标题']",
+            "textarea[placeholder*='标题']",
+        ],
+        "author_input": [
+            "input.js_author",
+            "input[placeholder*='作者']",
+        ],
+        "digest_input": [
+            "textarea.js_desc",
+            "textarea[placeholder*='摘要']",
+        ],
+        "editor": [
+            "#edui1_iframeholder .mock-iframe-body .rich_media_content > div.ProseMirror[contenteditable='true']",
+            "#edui1_iframeholder .mock-iframe-body .rich_media_content div.ProseMirror[contenteditable='true']",
+            ".editor-v-root .mock-iframe-body .rich_media_content > div.ProseMirror[contenteditable='true']",
+            "div.ProseMirror:not([data-placeholder*='请在这里输入标题']):not([data-placeholder*='标题'])",
+            "div.ProseMirror:not([data-placeholder*='请在这里输入标题']):not([data-placeholder*='标题'])[style*='min-height']",
+            ".rich_media_content .ProseMirror:not([data-placeholder*='请在这里输入标题']):not([data-placeholder*='标题'])",
+            "div.ProseMirror:has(.editor_content_placeholder)",
+            ".rich_media_content [contenteditable='true']",
+            ".rich_media_content",
+        ],
+        "preview_button": [
+            "button:has-text('预览')",
+            "span:has-text('预览')",
+            "text=预览",
+        ],
+        "save_draft_button": [
+            "button:has-text('保存为草稿')",
+            "span:has-text('保存为草稿')",
+            "text=保存为草稿",
+        ],
+        "original_setting": [
+            "#js_original",
+            ".js_original_apply_cell",
+            ".appmsg-editor__setting-group.origined__setting-group",
+        ],
+        "reward_setting": [
+            "#js_reward_setting_area",
+            ".reward__setting-group.js_reward_open_cell",
+            ".reward__setting-group",
+        ],
+        "primary_confirm_button": [
+            "button.weui-desktop-btn.weui-desktop-btn_primary:has-text('确定')",
+            "button.weui-desktop-btn_primary:has-text('确定')",
+            "button:has-text('确定')",
+        ],
+        "publish_button": [
+            "button:has-text('发表')",
+            "span:has-text('发表')",
+            "text=发表",
+        ],
+        "confirm_publish": [
+            "button:has-text('确定')",
+            ".weui-dialog__btn_primary",
+            "text=确认",
+        ],
+    },
+    "douyin-creator-v1": {
+        "logged_in": [
+            "text=发布文章",
+            "text=发布作品",
+            "text=内容管理",
+            "text=创作者中心",
+            "[href*='content/manage']",
+            "[href*='creator-micro']",
+        ],
+        "publish_entry": [
+            "text=发布文章",
+            "div:has-text('发布文章')",
+            ".title-HvY9Az:has-text('发布文章')",
+            "text=发布作品",
+            "text=去发布",
+            "a[href*='upload']",
+            "a[href*='publish']",
+            "button:has-text('发布文章')",
+            "button:has-text('发布作品')",
+        ],
+        "start_article": [
+            "text=我要发文",
+            "button:has-text('我要发文')",
+            ".semi-button-content:has-text('我要发文')",
+        ],
+        "title_input": [
+            "input[placeholder*='标题']",
+            "div:has-text('文章标题') input",
+            "textarea[placeholder*='标题']",
+            "[contenteditable='true'][data-placeholder*='标题']",
+            "div[contenteditable='true'][placeholder*='标题']",
+        ],
+        "summary_input": [
+            "textarea[placeholder*='摘要']",
+            "input[placeholder*='摘要']",
+            "div:has-text('文章摘要') textarea",
+            "div:has-text('文章摘要') input",
+        ],
+        "content_editor": [
+            "div:has-text('文章正文') .ProseMirror[contenteditable='true']",
+            "[contenteditable='true'][data-placeholder*='正文']",
+            "[contenteditable='true'][placeholder*='正文']",
+            ".ProseMirror[contenteditable='true']",
+            "div[role='textbox'][contenteditable='true']",
+            "[contenteditable='true']",
+        ],
+        "cover_upload": [
+            "input[type='file']",
+            "text=上传封面",
+            "text=添加封面",
+            "text=上传图片",
+            "button:has-text('上传图片')",
+        ],
+        "images_panel": [
+            "text=图片",
+            "text=封面",
+            "text=配图",
+            "[class*='upload']",
+            "[class*='image']",
+        ],
+        "submit_button": [
+            "button:has-text('发布')",
+            "button:has-text('提交')",
+            "button:has-text('保存')",
+            "button:has-text('预览')",
+        ],
+        "ai_illustration": [
+            "text=AI 配图",
+            "span:has-text('AI 配图')",
+            "[class*='iconContainer']:has-text('AI 配图')",
+            "[class*='mycard-info-text-icon']:has-text('AI 配图')",
+        ],
+    },
+}
 
 
 def normalize_browser_name(value: object | None) -> str:
@@ -190,7 +369,8 @@ def refresh_browser_session(channel: dict[str, object], current: dict[str, objec
     )
     if not profile_path.parent.exists():
         profile_path.parent.mkdir(parents=True, exist_ok=True)
-    next_state.update(legacy_publishers.WECHAT_BROWSER_MANAGER.manager_state())
+    from .browser_manager import WECHAT_BROWSER_MANAGER
+    next_state.update(WECHAT_BROWSER_MANAGER.manager_state())
     return next_state
 
 
@@ -293,17 +473,127 @@ def _write_debug_artifact(target: Path, lines: list[str]) -> str:
     return str(target)
 
 
-_pick_selector = legacy_publishers._pick_selector
-_pick_visible_locator = legacy_publishers._pick_visible_locator
-_page_url = legacy_publishers._page_url
-_is_page_closed = legacy_publishers._is_page_closed
-_list_live_context_pages = legacy_publishers._list_live_context_pages
-_can_interact_with_page = legacy_publishers._can_interact_with_page
-_count_context_pages = legacy_publishers._count_context_pages
-_enforce_single_tab = legacy_publishers._enforce_single_tab
-WechatBrowserManager = legacy_publishers.WechatBrowserManager
-WECHAT_BROWSER_MANAGER = legacy_publishers.WECHAT_BROWSER_MANAGER
-DOUYIN_BROWSER_MANAGER = legacy_publishers.DOUYIN_BROWSER_MANAGER
+def _pick_selector(page, selectors: list[str] | str, timeout: int = 2200) -> str | None:
+    selector_list = selectors if isinstance(selectors, list) else [selectors]
+    for selector in selector_list:
+        try:
+            locator = page.locator(str(selector))
+            count = locator.count()
+            if count <= 0:
+                continue
+            matched_visible = False
+            for index in range(count):
+                candidate = locator.nth(index)
+                try:
+                    candidate.wait_for(state="visible", timeout=timeout)
+                    matched_visible = True
+                    break
+                except Exception:
+                    continue
+            if matched_visible:
+                return str(selector)
+            locator.first.wait_for(timeout=timeout)
+            return str(selector)
+        except Exception:
+            continue
+    return None
+
+
+def _pick_visible_locator(page, selector: str, timeout: int = 2200):
+    locator = page.locator(selector)
+    count = locator.count()
+    if count <= 0:
+        return locator.first
+    for index in range(count):
+        candidate = locator.nth(index)
+        try:
+            candidate.wait_for(state="visible", timeout=timeout)
+            return candidate
+        except Exception:
+            continue
+    return locator.first
+
+
+def _page_url(page) -> str:
+    try:
+        return str(getattr(page, "url", "") or "")
+    except Exception:
+        return ""
+
+
+def _is_page_closed(page) -> bool:
+    try:
+        checker = getattr(page, "is_closed", None)
+        if callable(checker):
+            return bool(checker())
+    except Exception:
+        return False
+    return bool(getattr(page, "closed", False))
+
+
+def _count_context_pages(context) -> int:
+    try:
+        pages = list(getattr(context, "pages", []) or [])
+    except Exception:
+        return 0
+    return sum(0 if _is_page_closed(page) else 1 for page in pages)
+
+
+def _list_live_context_pages(context) -> list[object]:
+    try:
+        pages = list(getattr(context, "pages", []) or [])
+    except Exception:
+        return []
+    return [page for page in pages if not _is_page_closed(page)]
+
+
+def _can_interact_with_page(page) -> bool:
+    if page is None or _is_page_closed(page):
+        return False
+    try:
+        evaluator = getattr(page, "evaluate", None)
+        if callable(evaluator):
+            evaluator("() => document.readyState")
+        else:
+            _ = getattr(page, "url", "")
+        return True
+    except Exception:
+        return False
+
+
+def _enforce_single_tab(context, page, step_logs: list[str], *, phase: str, allow_recover: bool = False) -> None:
+    pages = _list_live_context_pages(context)
+    page_count = len(pages)
+    step_logs.append(f"单标签页检查 phase={phase} page_count={page_count}")
+    if page_count <= 1:
+        return
+
+    home_page = None
+    for candidate in pages:
+        candidate_url = _page_url(candidate)
+        if "mp.weixin.qq.com" in candidate_url and "appmsg" not in candidate_url and "action=list_card" not in candidate_url:
+            home_page = candidate
+            break
+
+    if allow_recover:
+        keep_page = home_page or page
+        closed_count = 0
+        for candidate in pages:
+            if candidate is keep_page:
+                continue
+            try:
+                candidate.close()
+                closed_count += 1
+            except Exception:
+                pass
+        step_logs.append(f"单标签页恢复 phase={phase} closed_tabs={closed_count}")
+        remaining = _count_context_pages(context)
+        step_logs.append(f"单标签页恢复后 page_count={remaining}")
+        if remaining <= 1:
+            return
+
+    raise RuntimeError(f"违反单标签页约束：检测到 {page_count} 个标签页。")
+
 
 __all__ = [
     "ARTIFACT_ROOT",

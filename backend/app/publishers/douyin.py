@@ -5,16 +5,15 @@ from pathlib import Path
 import re
 
 from ..store_base import UTC, now_iso
-from ._legacy import legacy_publishers
 from .browser_base import (
     ARTIFACT_ROOT,
-    DOUYIN_BROWSER_MANAGER,
     _pick_selector,
     _write_debug_artifact,
     ensure_douyin_channel_defaults,
     get_selector_profile,
     normalize_browser_name,
 )
+from .browser_manager import DOUYIN_BROWSER_MANAGER
 from .wechat import _fill_locator_value, _plain_text_from_markdown, _strip_markdown_title
 
 

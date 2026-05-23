@@ -9,10 +9,8 @@ from uuid import uuid4
 
 from ..wechat_format import markdown_to_plain_text, markdown_to_wechat_html, strip_markdown_title
 from ..store_base import UTC
-from ._legacy import legacy_publishers
 from .browser_base import (
     ARTIFACT_ROOT,
-    WECHAT_BROWSER_MANAGER,
     _can_interact_with_page,
     _count_context_pages,
     _is_page_closed,
@@ -24,6 +22,7 @@ from .browser_base import (
     ensure_channel_defaults,
     get_selector_profile,
 )
+from .browser_manager import WECHAT_BROWSER_MANAGER
 
 
 def _plain_text_from_markdown(markdown: str) -> str:
@@ -573,6 +572,85 @@ def _apply_wechat_publish_settings(
         )
 
     _retry_once("apply_wechat_publish_settings", step_logs, _apply_once)
+
+
+def _ensure_wechat_author_before_publish_settings(
+    page,
+    channel: dict[str, object],
+    selector_profile: dict[str, list[str] | str],
+    step_logs: list[str],
+) -> str:
+    raw_author = str(channel.get("author") or "").strip()
+    author = _clamp_author(raw_author)
+    if not author:
+        raise RuntimeError("原创声明前需要先填写作者，且作者长度不能超过 8 个字。")
+    author_selector = _pick_required_selector(
+        page,
+        selector_profile.get("author_input", []),
+        step_logs,
+        step_name="pick_author_before_publish_settings",
+        timeout=5000,
+    )
+    current_author = _read_locator_value(page, author_selector, rich_text=False)
+    if current_author != author:
+        author_length = _write_plain_field(page, author_selector, author, step_logs, field_label="作者")
+        step_logs.append(f"声明前已补齐作者 selector={author_selector}")
+        step_logs.append(f"声明前作者最终长度={author_length}")
+        if raw_author and raw_author != author:
+            step_logs.append(f"声明前作者已截断为 {author}")
+    else:
+        step_logs.append(f"声明前作者已就绪 selector={author_selector}")
+    page.wait_for_timeout(600)
+    return author
+
+
+def _wait_for_wechat_editor_in_current_page_with_retry(page, selector_profile: dict[str, list[str] | str], step_logs: list[str]):
+    def _locate_once():
+        return _wait_for_wechat_editor_in_current_page(page, selector_profile)
+
+    return _retry_once("wait_current_editor_page", step_logs, _locate_once)
+
+
+def _open_wechat_analytics(page, selector_profile: dict[str, list[str] | str], step_logs: list[str]) -> bool:
+    selector_candidates = selector_profile.get("analytics", [])
+    selector_list = selector_candidates if isinstance(selector_candidates, list) else [selector_candidates]
+    if not selector_list:
+        return False
+    failed_selectors: list[str] = []
+    for selector in [str(item) for item in selector_list if str(item).strip()]:
+        try:
+            locator = page.locator(selector).first
+            locator.wait_for(timeout=4000)
+            href = ""
+            try:
+                href = str(locator.get_attribute("href", timeout=1200) or "").strip()
+            except Exception:
+                href = ""
+            if href:
+                target_url = href if href.startswith("http") else f"https://mp.weixin.qq.com{href}"
+                page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(1500)
+            else:
+                try:
+                    locator.click(timeout=2000)
+                except Exception:
+                    locator.click(timeout=2000, force=True)
+                page.wait_for_timeout(2500)
+            current_url = str(page.url or "")
+            if "appmsganalysis" not in current_url:
+                failed_selectors.append(selector)
+                step_logs.append(f"内容分析入口未跳转 selector={selector} url={current_url}")
+                continue
+            step_logs.append(f"已点击数据分析入口 selector={selector}")
+            step_logs.append(f"当前数据分析页面 url={current_url}")
+            return True
+        except Exception as exc:
+            failed_selectors.append(selector)
+            step_logs.append(f"数据分析入口点击失败 selector={selector} error={exc}")
+            continue
+    if failed_selectors:
+        step_logs.append(f"数据分析入口全部尝试失败：{', '.join(failed_selectors)}")
+    return False
 
 
 def _scrape_wechat_draft_items_strict(page) -> list[dict[str, str | None]]:
@@ -1685,8 +1763,6 @@ def delete_wechat_remote_draft(
         return browser_state, artifacts, step_logs
 
 
-inspect_wechat_editor_dom = legacy_publishers.inspect_wechat_editor_dom
-inspect_wechat_analytics_dom = legacy_publishers.inspect_wechat_analytics_dom
 
 
 def _inspect_wechat_publish_history_document(target) -> dict[str, object]:
@@ -2276,9 +2352,7 @@ def inspect_wechat_session(channel: dict[str, object], browser_state: dict[str, 
     return browser_state, artifacts, step_logs
 
 
-open_wechat_editor_debug = legacy_publishers.open_wechat_editor_debug
-fill_wechat_author_only = legacy_publishers.fill_wechat_author_only
-test_wechat_publish_settings_only = legacy_publishers.test_wechat_publish_settings_only
+
 
 
 def run_browser_action(
@@ -2411,15 +2485,10 @@ __all__ = [
     "extract_wechat_appmsg_id",
     "delete_wechat_remote_draft",
     "inspect_wechat_draft_box",
-    "inspect_wechat_editor_dom",
-    "inspect_wechat_analytics_dom",
     "inspect_wechat_publish_history",
     "inspect_wechat_publish_history_with_overview",
     "launch_wechat_dashboard",
     "inspect_wechat_session",
-    "open_wechat_editor_debug",
-    "fill_wechat_author_only",
-    "test_wechat_publish_settings_only",
     "run_browser_action",
     "_wait_for_wechat_editor_in_current_page",
     "_enforce_single_tab",

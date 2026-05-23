@@ -4,12 +4,9 @@ from .browser_base import (
     DEFAULT_BACKGROUND_POLL_INTERVAL_SECONDS,
     DEFAULT_BROWSER_LOCK_TIMEOUT_SECONDS,
     DEFAULT_EMPTY_CHECK_CONFIRMATIONS,
-    DOUYIN_BROWSER_MANAGER,
     PROJECT_ROOT,
     SELECTOR_PROFILES,
-    WECHAT_BROWSER_MANAGER,
     WINDOWS_BROWSER_PATHS,
-    WechatBrowserManager,
     _count_context_pages,
     _can_interact_with_page,
     _enforce_single_tab,
@@ -38,6 +35,11 @@ from .browser_base import (
     resolve_browser_executable,
     resolve_profile_path,
 )
+from .browser_manager import (
+    DOUYIN_BROWSER_MANAGER,
+    WECHAT_BROWSER_MANAGER,
+    WechatBrowserManager,
+)
 from .douyin import (
     _build_douyin_summary,
     _build_douyin_title,
@@ -58,16 +60,18 @@ from .wechat import (
     delete_wechat_remote_draft,
     extract_wechat_appmsg_id,
     inspect_wechat_draft_box,
-    inspect_wechat_editor_dom,
-    inspect_wechat_analytics_dom,
     inspect_wechat_publish_history,
     inspect_wechat_publish_history_with_overview,
     inspect_wechat_session,
     launch_wechat_dashboard,
+    run_browser_action,
+)
+from .wechat_debug import (
+    inspect_wechat_editor_dom,
+    inspect_wechat_analytics_dom,
     open_wechat_editor_debug,
     fill_wechat_author_only,
     test_wechat_publish_settings_only,
-    run_browser_action,
 )
 
 __all__ = [
