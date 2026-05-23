@@ -1,4 +1,4 @@
-from backend.app.intel_pipeline import _audience_fit_score, _should_merge, canonical_link, jaccard, title_dedupe_key
+from backend.app.intel.pipeline import _audience_fit_score, _should_merge, canonical_link, jaccard, title_dedupe_key
 
 
 def test_canonical_link_removes_tracking_query_keys() -> None:

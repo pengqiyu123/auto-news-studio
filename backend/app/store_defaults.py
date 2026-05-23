@@ -1,9 +1,0 @@
-"""Compatibility shim for the Stage 4 store package migration."""
-
-from __future__ import annotations
-
-from .store import defaults as _impl
-
-globals().update({name: getattr(_impl, name) for name in dir(_impl) if not name.startswith("__")})
-
-__all__ = [name for name in dir(_impl) if not name.startswith("__")]

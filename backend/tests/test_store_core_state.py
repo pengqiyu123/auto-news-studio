@@ -45,8 +45,8 @@ if "openai" not in sys.modules:
     sys.modules["openai"] = openai_stub
 
 from backend.app.store import StudioStore
-from backend.app.store_core import StoreCore
-from backend.app.store_core_state import StoreCoreStateMixin
+from backend.app.store.core import StoreCore
+from backend.app.store.state import StoreCoreStateMixin
 
 
 def _make_store() -> tuple[StudioStore, Path]:

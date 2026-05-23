@@ -1,11 +1,11 @@
-from backend.app.briefing import (
+from backend.app.content.briefing import (
     build_agent_article_writing_guide,
     build_brief_summary,
     build_prompt_package_markdown,
     optimize_wechat_article_title,
     rewrite_markdown_title,
 )
-from backend.app.wechat_format import markdown_to_plain_text, markdown_to_wechat_html, strip_markdown_title
+from backend.app.content.wechat_format import markdown_to_plain_text, markdown_to_wechat_html, strip_markdown_title
 
 
 def test_strip_markdown_title_removes_leading_heading() -> None:

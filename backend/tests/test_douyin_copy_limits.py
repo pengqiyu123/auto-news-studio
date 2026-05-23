@@ -1,4 +1,4 @@
-from backend.app.briefing import build_douyin_article_markdown, build_douyin_summary, build_douyin_title
+from backend.app.content.briefing import build_douyin_article_markdown, build_douyin_summary, build_douyin_title
 
 
 def test_build_douyin_title_prefers_readable_prefix_before_cutting() -> None:
