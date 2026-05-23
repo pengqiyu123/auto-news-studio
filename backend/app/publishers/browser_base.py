@@ -6,7 +6,7 @@ import re
 import webbrowser
 from uuid import uuid4
 
-from ..store_base import PROJECT_ROOT, RUNTIME_TEMP_DIR, now_iso
+from ..store.base import PROJECT_ROOT, RUNTIME_TEMP_DIR, now_iso
 # WechatBrowserManager is imported lazily to avoid circular imports
 # (browser_manager.py imports from browser_base.py at module level)
 

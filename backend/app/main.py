@@ -22,7 +22,7 @@ from .routes import (
 )
 from .routes.common import set_store
 from .store import StudioStore
-from .store_base import load_version_manifest
+from .store.base import load_version_manifest
 
 
 store = StudioStore()
