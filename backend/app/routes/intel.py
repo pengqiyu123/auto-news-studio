@@ -43,7 +43,7 @@ from ..features.stream.read import list_stream as list_stream_view, list_stream_
 from ..features.watchlist.read import list_entity_watchlist as list_entity_watchlist_view, list_entity_watchlist_page as list_entity_watchlist_page_view
 from ..features.watchlist.write import update_entity_watchlist as update_entity_watchlist_action
 from .common import get_store
-from ..text_quality import score_text_quality
+from ..content.text_quality import score_text_quality
 
 
 class TextQualityRequest(BaseModel):

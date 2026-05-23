@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.app.connectors import USER_AGENT, collect_from_source  # noqa: E402
+from backend.app.intel.connectors import USER_AGENT, collect_from_source  # noqa: E402
 
 
 REQUEST_TIMEOUT_SECONDS = 8

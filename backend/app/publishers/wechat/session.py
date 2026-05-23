@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 import time
 
-from ...store_base import UTC
+from ...store.base import UTC
 from ..browser_base import (
     ARTIFACT_ROOT,
     _can_interact_with_page,

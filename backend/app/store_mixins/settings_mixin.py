@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 import zipfile
 
-from ..legacy_sources import build_legacy_rss_sources
+from ..intel.legacy_sources import build_legacy_rss_sources
 from ..llm import LLMService
 from ..models import (
     AppUpdateInfo,
@@ -18,9 +18,9 @@ from ..models import (
     SystemCheckItem,
     SystemDoctorResult,
 )
-from ..reference_projects import write_reference_baseline
+from ..store.reference_projects import write_reference_baseline
 from ..sources import discover_sources
-from ..store_base import (
+from ..store.base import (
     BACKUP_DIR,
     DEFAULT_RELEASE_NOTES_URL,
     DEFAULT_RELEASE_REPO,
@@ -33,7 +33,7 @@ from ..store_base import (
     parse_time,
     schedule_to_minutes,
 )
-from ..store_llm import build_provider_from_profile, build_runtime_tasks, default_llm_state, merge_llm_profiles
+from ..llm.store_llm import build_provider_from_profile, build_runtime_tasks, default_llm_state, merge_llm_profiles
 
 
 class SettingsMixin:

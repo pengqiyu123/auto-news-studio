@@ -45,8 +45,10 @@ if "openai" not in sys.modules:
     sys.modules["openai"] = openai_stub
 
 from backend.app.models import RuntimePlanPayload
-from backend.app.store import StudioStore
+from backend.app.store import get_studio_store_class
 from backend.app.store_mixins import RuntimeMixin
+
+StudioStore = get_studio_store_class()
 
 
 def _make_store() -> tuple[StudioStore, Path]:

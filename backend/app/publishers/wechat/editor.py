@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from ...store_base import UTC
-from ...wechat_format import markdown_to_wechat_html
+from ...store.base import UTC
+from ...content.wechat_format import markdown_to_wechat_html
 from ..browser_base import (
     ARTIFACT_ROOT,
     _page_url,

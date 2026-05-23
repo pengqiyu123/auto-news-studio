@@ -43,7 +43,7 @@ from ..services.wechat_reconcile import (
     normalize_wechat_title as _normalize_wechat_title,
     wechat_title_matches as _wechat_title_matches,
 )
-from ..store_base import deepcopy_json, now_iso
+from ..store.base import deepcopy_json, now_iso
 
 
 class WeChatMixin:

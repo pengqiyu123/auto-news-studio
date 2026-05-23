@@ -11,7 +11,7 @@ from ..models import (
     DouyinArticleStructureSnapshot,
     DouyinChannelConfig,
 )
-from ..briefing import (
+from ..content.briefing import (
     build_douyin_article_markdown,
     build_douyin_summary,
     build_douyin_title,
@@ -26,7 +26,7 @@ from ..publishers import (
     launch_douyin_dashboard,
     open_douyin_article_publish as open_douyin_article_publish_page,
 )
-from ..store_base import UTC, parse_time
+from ..store.base import UTC, parse_time
 
 
 class BrowserMixin:

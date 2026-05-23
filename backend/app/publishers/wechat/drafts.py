@@ -4,7 +4,7 @@ from datetime import datetime
 import re
 from uuid import uuid4
 
-from ...store_base import UTC
+from ...store.base import UTC
 from ..browser_base import ARTIFACT_ROOT, _pick_selector, ensure_channel_defaults, get_selector_profile
 from ..browser_manager import WECHAT_BROWSER_MANAGER
 from .dom import extract_wechat_appmsg_id, _validate_wechat_page_identity

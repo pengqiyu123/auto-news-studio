@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 import xml.etree.ElementTree as ET
 
-from ..pipeline import normalize_raw_items
+from ..intel.normalize import normalize_raw_items
 from ..publishers import default_browser_profile_path, ensure_channel_defaults, ensure_douyin_channel_defaults
 from .reference_projects import write_reference_baseline
 from .base import (
@@ -33,7 +33,7 @@ from .base import (
     atomic_write_json,
 )
 from .defaults import AUTOMATION_MODE_DEFINITIONS, DEFAULT_AUTOMATION_PROFILES
-from ..store_llm import (
+from ..llm.store_llm import (
     DEFAULT_LLM_TASK_TEMPLATE,
     build_provider_from_profile,
     default_llm_state,

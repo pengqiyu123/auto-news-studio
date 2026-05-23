@@ -16,7 +16,7 @@ from ..models import (
     RuntimePlanPayload,
     SchedulerStatus,
 )
-from ..store_base import DEFAULT_RUNTIME_INTENT, INTENT_TO_WORK_SCOPE, UTC, parse_time
+from ..store.base import DEFAULT_RUNTIME_INTENT, INTENT_TO_WORK_SCOPE, UTC, parse_time
 
 
 class RuntimeMixin:

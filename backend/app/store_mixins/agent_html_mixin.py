@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
-from ..deep_dive import canonicalize_url, fetch_and_extract_link
+from ..intel.deep_dive import canonicalize_url, fetch_and_extract_link
 from ..models import (
     AgentHtmlDiscoveryItem,
     AgentHtmlDiscoveryRules,
@@ -26,7 +26,7 @@ from ..models import (
     AgentHtmlTargetUpdatePayload,
     SourceSyncResponse,
 )
-from ..store_base import MAX_RAW_ITEMS, RUNTIME_CACHE_DIR, UTC, _extract_json_payload, atomic_write_json, now_iso, parse_time
+from ..store.base import MAX_RAW_ITEMS, RUNTIME_CACHE_DIR, UTC, _extract_json_payload, atomic_write_json, now_iso, parse_time
 
 
 class _AgentHtmlTextExtractor(HTMLParser):

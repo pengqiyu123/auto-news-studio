@@ -6,11 +6,11 @@ import time
 import traceback
 from typing import Any
 
-from ..connectors import _collect_with_retry
-from ..intel_pipeline import build_intel_state
+from ..intel.connectors import _collect_with_retry
+from ..intel.pipeline import build_intel_state
 from ..models import SourceSyncResponse
-from ..pipeline import normalize_raw_items
-from ..store_base import (
+from ..intel.normalize import normalize_raw_items
+from ..store.base import (
     MAX_RAW_ITEMS,
     SOURCE_COLLECTION_STALL_SECONDS,
     SLOW_SOURCE_WARNING_SECONDS,
@@ -522,7 +522,7 @@ class SourceSyncMixin:
         triggered_by: str,
         work_scope_override: str | None = None,
     ) -> SourceSyncResponse:
-        from ..connectors import collect_enabled_sources
+        from ..intel.connectors import collect_enabled_sources
 
         max_workers = state.get("settings", {}).get("max_workers", 8)
         raw_items, warnings = collect_enabled_sources(state["sources"], max_workers=max_workers)

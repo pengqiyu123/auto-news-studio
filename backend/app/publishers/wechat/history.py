@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from ...store_base import UTC
+from ...store.base import UTC
 from ..browser_base import ARTIFACT_ROOT, _pick_selector, ensure_channel_defaults, get_selector_profile
 from ..browser_manager import WECHAT_BROWSER_MANAGER
 from .dom import _extract_wechat_analytics_overview

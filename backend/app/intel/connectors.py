@@ -11,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from ..store_base import now_iso
+from ..store.base import now_iso
 
 try:
     import feedparser  # type: ignore

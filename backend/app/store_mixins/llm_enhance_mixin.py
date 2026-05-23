@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from ..llm import LLMService
-from ..store_base import _extract_json_payload
+from ..store.base import _extract_json_payload
 
 
 class LLMEnhanceMixin:
@@ -175,7 +175,7 @@ class LLMEnhanceMixin:
         ]
 
     def _validate_douyin_rewrite_payload(self, payload: dict[str, Any]) -> tuple[str, str, str] | None:
-        from ..briefing import build_douyin_summary, build_douyin_title, ensure_markdown_title
+        from ..content.briefing import build_douyin_summary, build_douyin_title, ensure_markdown_title
 
         title = build_douyin_title(str(payload.get("title") or "").strip())
         summary = build_douyin_summary(str(payload.get("summary") or "").strip(), title)

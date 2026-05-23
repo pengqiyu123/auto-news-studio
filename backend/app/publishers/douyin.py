@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 import re
 
-from ..store_base import UTC, now_iso
+from ..store.base import UTC, now_iso
 from .browser_base import (
     ARTIFACT_ROOT,
     _pick_selector,
@@ -91,7 +91,7 @@ def _build_douyin_title(raw_title: str, limit: int = 30) -> str:
 
 
 def _build_douyin_summary(raw_summary: str, raw_title: str, limit: int = 30) -> str:
-    from ..briefing import build_douyin_summary
+    from ..content.briefing import build_douyin_summary
 
     return build_douyin_summary(raw_summary, raw_title, limit)
 

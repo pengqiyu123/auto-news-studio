@@ -13,7 +13,7 @@ from ..models import (
     HotClusterCard,
     IntelStreamItem,
 )
-from ..store_base import UTC, minutes_between, parse_time
+from ..store.base import UTC, minutes_between, parse_time
 
 
 class DashboardMixin:
@@ -162,7 +162,7 @@ class DashboardMixin:
 
     def _execution_chain(self, state: dict[str, Any], browser: dict[str, Any]) -> ExecutionChainSnapshot:
         # Lazy import to avoid circular dependency
-        from ..store_core import JOB_LABELS
+        from ..store.core import JOB_LABELS
 
         source_errors = [item for item in state["sources"] if item.get("enabled") and item["health_status"] == "error"]
         source_warnings = [item for item in state["sources"] if item.get("enabled") and item["health_status"] == "warning"]

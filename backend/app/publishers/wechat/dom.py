@@ -5,8 +5,8 @@ from pathlib import Path
 import re
 from urllib.parse import parse_qs, urlparse
 
-from ...store_base import UTC
-from ...wechat_format import markdown_to_plain_text, markdown_to_wechat_html, strip_markdown_title
+from ...store.base import UTC
+from ...content.wechat_format import markdown_to_plain_text, markdown_to_wechat_html, strip_markdown_title
 from ..browser_base import _page_url, _pick_visible_locator, _write_debug_artifact
 
 def _plain_text_from_markdown(markdown: str) -> str:

@@ -44,9 +44,11 @@ if "openai" not in sys.modules:
     openai_stub.RateLimitError = _OpenAIError
     sys.modules["openai"] = openai_stub
 
-from backend.app.store import StudioStore
+from backend.app.store import get_studio_store_class
 from backend.app.store_mixins import WeChatMixin
 from backend.app.services.wechat_reconcile import apply_publish_history_matches
+
+StudioStore = get_studio_store_class()
 
 
 def _make_store() -> tuple[StudioStore, Path]:

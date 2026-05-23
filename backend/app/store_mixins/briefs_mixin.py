@@ -7,8 +7,8 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from ..deep_dive import fetch_and_extract_link
-from ..briefing import (
+from ..intel.deep_dive import fetch_and_extract_link
+from ..content.briefing import (
     build_agent_article_writing_guide,
     build_brief_summary,
     build_douyin_article_markdown,
@@ -29,8 +29,8 @@ from ..publishers import (
     run_browser_action,
 )
 from ..services.wechat_reconcile import project_briefs
-from ..store_base import UTC, now_iso, parse_time
-from ..wechat_format import markdown_to_wechat_html
+from ..store.base import UTC, now_iso, parse_time
+from ..content.wechat_format import markdown_to_wechat_html
 
 
 class BriefsMixin:
@@ -1127,6 +1127,6 @@ class BriefsMixin:
             state.setdefault("briefs", []).insert(0, brief)
 
     def _utc_tz(self):
-        from ..store_base import UTC
+        from ..store.base import UTC
 
         return UTC

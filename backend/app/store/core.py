@@ -64,13 +64,13 @@ from .base import (
     schedule_to_minutes,
 )
 
-from ..connectors import _collect_with_retry, collect_enabled_sources, collect_from_source
-from ..briefing import build_prompt_package_markdown, build_rule_brief_payload, build_agent_article_writing_guide
-from ..deep_dive import canonicalize_url, fetch_and_extract_link, search_tavily
-from ..entity_extractor import entity_id_for_name, entity_type_for_name
-from ..intel_pipeline import build_intel_state
+from ..intel.connectors import _collect_with_retry, collect_enabled_sources, collect_from_source
+from ..content.briefing import build_prompt_package_markdown, build_rule_brief_payload, build_agent_article_writing_guide
+from ..intel.deep_dive import canonicalize_url, fetch_and_extract_link, search_tavily
+from ..intel.entity_extractor import entity_id_for_name, entity_type_for_name
+from ..intel.pipeline import build_intel_state
 from ..llm import LLMService
-from ..legacy_sources import build_legacy_rss_sources
+from ..intel.legacy_sources import build_legacy_rss_sources
 from ..models import (
     AgentHtmlDiscoveryItem,
     AgentHtmlDiscoverMode,
@@ -147,7 +147,7 @@ from ..models import (
     WeChatChannelConfig,
     DictOkResponse,
 )
-from ..store_llm import (
+from ..llm.store_llm import (
     build_provider_from_profile,
     build_runtime_tasks,
     default_llm_state,
@@ -169,7 +169,7 @@ from ..services.wechat_reconcile import (
     wechat_title_matches as _wechat_title_matches,
 )
 from ..store_mixins import AgentHtmlMixin, BriefsMixin, DashboardMixin, DeliveryMixin, IntelMixin, LLMEnhanceMixin, RuntimeMixin, SettingsMixin, SourceSyncMixin, WeChatMixin
-from ..pipeline import normalize_raw_items
+from ..intel.normalize import normalize_raw_items
 from ..publishers import (
     WECHAT_BROWSER_MANAGER,
     build_remote_draft_key,
