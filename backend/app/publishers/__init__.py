@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
 from .browser_base import (
     ARTIFACT_ROOT,
     BROWSER_PROFILE_ROOT,
@@ -7,8 +12,8 @@ from .browser_base import (
     PROJECT_ROOT,
     SELECTOR_PROFILES,
     WINDOWS_BROWSER_PATHS,
-    _count_context_pages,
     _can_interact_with_page,
+    _count_context_pages,
     _enforce_single_tab,
     _is_page_closed,
     _page_url,
@@ -35,44 +40,7 @@ from .browser_base import (
     resolve_browser_executable,
     resolve_profile_path,
 )
-from .browser_manager import (
-    DOUYIN_BROWSER_MANAGER,
-    WECHAT_BROWSER_MANAGER,
-    WechatBrowserManager,
-)
-from .douyin import (
-    _build_douyin_summary,
-    _build_douyin_title,
-    fill_douyin_article_from_brief,
-    inspect_douyin_article_structure,
-    inspect_douyin_session,
-    launch_douyin_dashboard,
-    open_douyin_article_publish,
-)
-from .wechat import (
-    _apply_wechat_publish_settings,
-    _clamp_author,
-    _fill_wechat_editor,
-    _converge_context_to_target,
-    _locate_editor_page_with_retry,
-    _plain_text_from_markdown,
-    _wait_for_wechat_editor_in_current_page,
-    delete_wechat_remote_draft,
-    extract_wechat_appmsg_id,
-    inspect_wechat_draft_box,
-    inspect_wechat_publish_history,
-    inspect_wechat_publish_history_with_overview,
-    inspect_wechat_session,
-    launch_wechat_dashboard,
-    run_browser_action,
-)
-from .wechat_debug import (
-    inspect_wechat_editor_dom,
-    inspect_wechat_analytics_dom,
-    open_wechat_editor_debug,
-    fill_wechat_author_only,
-    test_wechat_publish_settings_only,
-)
+from .browser_manager import DOUYIN_BROWSER_MANAGER, WECHAT_BROWSER_MANAGER, WechatBrowserManager
 
 __all__ = [
     "ARTIFACT_ROOT",
@@ -141,3 +109,45 @@ __all__ = [
     "inspect_douyin_article_structure",
     "fill_douyin_article_from_brief",
 ]
+
+_LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "_apply_wechat_publish_settings": (".wechat", "_apply_wechat_publish_settings"),
+    "_clamp_author": (".wechat", "_clamp_author"),
+    "_fill_wechat_editor": (".wechat", "_fill_wechat_editor"),
+    "_converge_context_to_target": (".wechat", "_converge_context_to_target"),
+    "_locate_editor_page_with_retry": (".wechat", "_locate_editor_page_with_retry"),
+    "_plain_text_from_markdown": (".wechat", "_plain_text_from_markdown"),
+    "_wait_for_wechat_editor_in_current_page": (".wechat", "_wait_for_wechat_editor_in_current_page"),
+    "extract_wechat_appmsg_id": (".wechat", "extract_wechat_appmsg_id"),
+    "delete_wechat_remote_draft": (".wechat", "delete_wechat_remote_draft"),
+    "inspect_wechat_draft_box": (".wechat", "inspect_wechat_draft_box"),
+    "inspect_wechat_publish_history": (".wechat", "inspect_wechat_publish_history"),
+    "inspect_wechat_publish_history_with_overview": (".wechat", "inspect_wechat_publish_history_with_overview"),
+    "launch_wechat_dashboard": (".wechat", "launch_wechat_dashboard"),
+    "inspect_wechat_session": (".wechat", "inspect_wechat_session"),
+    "run_browser_action": (".wechat", "run_browser_action"),
+    "inspect_wechat_editor_dom": (".wechat_debug", "inspect_wechat_editor_dom"),
+    "inspect_wechat_analytics_dom": (".wechat_debug", "inspect_wechat_analytics_dom"),
+    "open_wechat_editor_debug": (".wechat_debug", "open_wechat_editor_debug"),
+    "fill_wechat_author_only": (".wechat_debug", "fill_wechat_author_only"),
+    "test_wechat_publish_settings_only": (".wechat_debug", "test_wechat_publish_settings_only"),
+    "_build_douyin_title": (".douyin", "_build_douyin_title"),
+    "_build_douyin_summary": (".douyin", "_build_douyin_summary"),
+    "launch_douyin_dashboard": (".douyin", "launch_douyin_dashboard"),
+    "inspect_douyin_session": (".douyin", "inspect_douyin_session"),
+    "open_douyin_article_publish": (".douyin", "open_douyin_article_publish"),
+    "inspect_douyin_article_structure": (".douyin", "inspect_douyin_article_structure"),
+    "fill_douyin_article_from_brief": (".douyin", "fill_douyin_article_from_brief"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attr_name = target
+    module = import_module(module_name, __name__)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+

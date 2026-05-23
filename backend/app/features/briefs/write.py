@@ -35,3 +35,7 @@ def create_agent_article_page(payload):
 
 def sync_brief_wechat_draft_page(brief_id: str, triggered_by: str):
     return {"item": sync_brief_wechat_draft(brief_id, triggered_by=triggered_by)}
+
+
+def delete_brief_page(brief_id: str, remote: str):
+    return delete_brief(brief_id, remote=remote)

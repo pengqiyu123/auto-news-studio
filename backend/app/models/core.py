@@ -16,7 +16,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 # Re-export LLM models
-from .models_llm import (  # noqa: F401
+from .llm import (  # noqa: F401
     LLMConfig,
     LLMConfigResponse,
     LLMProfileConfig,
@@ -29,7 +29,7 @@ from .models_llm import (  # noqa: F401
 )
 
 # Re-export publish/browser models
-from .models_publish import (  # noqa: F401
+from .publish import (  # noqa: F401
     BrowserSessionPayload,
     BrowserSessionResponse,
     BrowserSessionState,
@@ -66,7 +66,7 @@ from .models_publish import (  # noqa: F401
 )
 
 # Re-export intel/agent-html models
-from .models_intel import (  # noqa: F401
+from .intel import (  # noqa: F401
     AgentHtmlDiscoveryItem,
     AgentHtmlDiscoveryResponse,
     AgentHtmlDiscoveryRules,

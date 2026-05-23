@@ -18,22 +18,18 @@ from .browser_base import (
     now_iso,
 )
 from .browser_manager import WECHAT_BROWSER_MANAGER
-from .wechat import (
-    _apply_wechat_publish_settings,
+from .wechat.dom import _clamp_author, _open_wechat_analytics, _read_locator_value, _write_plain_field
+from .wechat.editor import _apply_wechat_publish_settings, _ensure_wechat_author_before_publish_settings
+from .wechat.session import (
     _browser_session_error_kind,
-    _clamp_author,
     _converge_context_to_target,
     _enforce_single_tab,
-    _ensure_wechat_author_before_publish_settings,
     _locate_editor_page_with_retry,
-    _open_wechat_analytics,
     _pick_required_selector,
-    _read_locator_value,
     _retry_once,
     _safe_return_home,
     _wait_for_wechat_editor_in_current_page,
     _wait_for_wechat_editor_in_current_page_with_retry,
-    _write_plain_field,
 )
 
 

@@ -19,3 +19,16 @@ def sync_sources(triggered_by: str):
 
 def sync_source(source_key: str, triggered_by: str):
     return get_store().sync_source(source_key, triggered_by=triggered_by)
+
+
+def update_source_page(source_key: str, payload):
+    return {"item": update_source(source_key, payload)}
+
+
+def create_source_page(payload):
+    return {"item": create_source(payload)}
+
+
+def delete_source_page(source_key: str):
+    delete_source(source_key)
+    return {"ok": True}

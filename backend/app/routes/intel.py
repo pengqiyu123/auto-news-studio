@@ -31,13 +31,13 @@ from ..features.overview.read import (
     get_intel_summary as get_intel_summary_view,
     get_intel_summary_page as get_intel_summary_page_view,
 )
-from ..features.source_health.read import list_intel_sources as list_intel_sources_view, list_sources as list_sources_view
+from ..features.source_health.read import list_intel_sources_page as list_intel_sources_page_view, list_sources_page as list_sources_page_view
 from ..features.source_health.write import (
-    create_source as create_source_action,
-    delete_source as delete_source_action,
+    create_source_page as create_source_page_action,
+    delete_source_page as delete_source_page_action,
     sync_source as sync_source_action,
     sync_sources as sync_sources_action,
-    update_source as update_source_action,
+    update_source_page as update_source_page_action,
 )
 from ..features.stream.read import list_stream as list_stream_view, list_stream_page as list_stream_page_view
 from ..features.watchlist.read import list_entity_watchlist as list_entity_watchlist_view, list_entity_watchlist_page as list_entity_watchlist_page_view
@@ -119,7 +119,7 @@ def build_intel_router() -> APIRouter:
 
     @router.get("/api/admin/intel/sources", response_model=SourcesResponse)
     def get_intel_sources():
-        return SourcesResponse(items=list_intel_sources_view())
+        return SourcesResponse(**list_intel_sources_page_view())
 
     @router.post("/api/admin/intel/watchlist/{event_id}", response_model=IntelEventResponse)
     def add_watchlist_event(event_id: str):
@@ -137,27 +137,26 @@ def build_intel_router() -> APIRouter:
 
     @router.get("/api/admin/sources", response_model=SourcesResponse)
     def list_sources():
-        return SourcesResponse(items=list_sources_view())
+        return SourcesResponse(**list_sources_page_view())
 
     @router.put("/api/admin/sources/{source_key}")
     def update_source(source_key: str, payload: SourceConnectorPayload):
         try:
-            return {"item": update_source_action(source_key, payload)}
+            return update_source_page_action(source_key, payload)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.post("/api/admin/sources")
     def create_source(payload: CreateSourcePayload):
         try:
-            return {"item": create_source_action(payload)}
+            return create_source_page_action(payload)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.delete("/api/admin/sources/{source_key}")
     def delete_source(source_key: str):
         try:
-            delete_source_action(source_key)
-            return {"ok": True}
+            return delete_source_page_action(source_key)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

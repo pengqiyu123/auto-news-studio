@@ -1,0 +1,179 @@
+"""Default configuration constants for StudioStore."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+AUTOMATION_MODE_DEFINITIONS: list[dict[str, Any]] = [
+    {
+        "key": "radar_only",
+        "label": "雷达捕获",
+        "description": "只做信息发现、标准化和事件聚合，不自动生成简报，也不触发微信链路。",
+        "auto_collect": True,
+        "auto_build_events": True,
+        "auto_build_briefs": False,
+        "auto_publish_enabled": False,
+        "available": True,
+    },
+    {
+        "key": "radar_and_draft",
+        "label": "简报交付",
+        "description": "持续抓取、自动深挖并生成简报，再按设置决定是否同步进微信公众号草稿箱。",
+        "auto_collect": True,
+        "auto_build_events": True,
+        "auto_build_briefs": True,
+        "auto_publish_enabled": False,
+        "available": True,
+    },
+    {
+        "key": "full_pipeline",
+        "label": "自动全流程",
+        "description": "从抓取、深挖、简报到微信草稿箱回查的完整链路，适合做定时运营策略。",
+        "auto_collect": True,
+        "auto_build_events": True,
+        "auto_build_briefs": True,
+        "auto_publish_enabled": True,
+        "available": True,
+    },
+]
+
+DEFAULT_AUTOMATION_PROFILES: list[dict[str, Any]] = [
+    {
+        "mode": "radar_only",
+        "collect_interval_minutes": 30,
+        "brief_trigger": "manual",
+        "brief_schedule_time": None,
+        "delivery_target": "local_only",
+        "selection_mode": "top_scored",
+        "brief_limit": 8,
+        "publish_strategy": "disabled",
+        "publish_schedule_time": None,
+        "require_approval": True,
+        "notes": "适合先把消息抓全、看全，不自动生成简报。",
+    },
+    {
+        "mode": "radar_and_draft",
+        "collect_interval_minutes": 20,
+        "brief_trigger": "after_sync",
+        "brief_schedule_time": None,
+        "delivery_target": "local_only",
+        "selection_mode": "top_scored",
+        "brief_limit": 6,
+        "publish_strategy": "wechat_draft_only",
+        "publish_schedule_time": "10:30",
+        "require_approval": True,
+        "notes": "适合自动搜集后快速整理简报，默认先留在项目本地，可切到微信草稿箱。",
+    },
+    {
+        "mode": "full_pipeline",
+        "collect_interval_minutes": 15,
+        "brief_trigger": "scheduled",
+        "brief_schedule_time": "09:30",
+        "delivery_target": "wechat_draft",
+        "selection_mode": "top_scored",
+        "brief_limit": 4,
+        "publish_strategy": "guarded_send",
+        "publish_schedule_time": "18:00",
+        "require_approval": True,
+        "notes": "适合固定时间批量交付，首版仍建议保留人工审核守卫。",
+    },
+]
+
+
+def _rss(
+    key: str,
+    name: str,
+    url: str,
+    *,
+    priority: int = 7,
+    schedule: str = "*/30 * * * *",
+    enabled: bool = True,
+    tags: list[str] | None = None,
+    language: str = "en",
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "name": name,
+        "kind": "rss",
+        "driver": "feedparser",
+        "enabled": enabled,
+        "schedule": schedule,
+        "priority": priority,
+        "auth": {},
+        "url": url,
+        "tags": tags or [language],
+        "capabilities": ["rss"],
+        "origin_repo": "curated",
+        "origin_license": "rss",
+        "health_status": "idle",
+        "health_detail": "等待首次同步",
+        "item_count": 0,
+        "last_synced_at": None,
+        "last_error": None,
+        "updated_at": None,
+    }
+
+
+def _api_source(
+    key: str,
+    name: str,
+    driver: str,
+    *,
+    url: str | None = None,
+    priority: int = 7,
+    schedule: str = "*/30 * * * *",
+    enabled: bool = True,
+    tags: list[str] | None = None,
+    auth: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "name": name,
+        "kind": driver.split("_")[0],
+        "driver": driver,
+        "enabled": enabled,
+        "schedule": schedule,
+        "priority": priority,
+        "auth": auth or {},
+        "url": url,
+        "tags": tags or ["api"],
+        "capabilities": ["api"],
+        "origin_repo": "curated",
+        "origin_license": "api",
+        "health_status": "idle",
+        "health_detail": "等待首次同步",
+        "item_count": 0,
+        "last_synced_at": None,
+        "last_error": None,
+        "updated_at": None,
+    }
+
+
+DEFAULT_SOURCES: list[dict[str, Any]] = [
+    # AI / LLM 厂商官方博客（英文，优先级最高）
+    _rss("rss-openai", "OpenAI Blog", "https://openai.com/blog/rss.xml", priority=9, tags=["ai", "models"]),
+    _rss("rss-anthropic", "Anthropic News", "https://www.anthropic.com/news/rss.xml", priority=9, tags=["ai", "safety"]),
+    _rss("rss-google-ai", "Google AI Blog", "https://blog.google/technology/ai/rss/", priority=9, tags=["ai", "google"]),
+    _rss("rss-deepmind", "DeepMind Blog", "https://deepmind.google/blog/rss.xml", priority=9, tags=["ai", "research"]),
+    _rss("rss-huggingface", "Hugging Face Blog", "https://huggingface.co/blog/feed.xml", priority=8, tags=["ai", "oss"]),
+    _rss("rss-openai-cookbook", "OpenAI Cookbook", "https://cookbook.openai.com/rss.xml", priority=8, tags=["ai", "dev"]),
+    _rss("rss-meta-ai", "Meta AI Blog", "https://ai.meta.com/blog/rss/", priority=8, tags=["ai", "meta"]),
+    _rss("rss-nvidia-ai", "NVIDIA AI Blog", "https://blogs.nvidia.com/feed/", priority=8, tags=["ai", "chip"]),
+    _rss("rss-mistral", "Mistral AI Blog", "https://mistral.ai/news/feed.xml", priority=8, tags=["ai", "europe"]),
+    # 英文科技媒体
+    _rss("rss-techcrunch", "TechCrunch", "https://techcrunch.com/feed/", priority=8, schedule="*/20 * * * *"),
+    _rss("rss-theverge", "The Verge", "https://www.theverge.com/rss/index.xml", priority=8),
+    _rss("rss-arstechnica", "Ars Technica", "https://feeds.arstechnica.com/arstechnica/features", priority=8),
+    _rss("rss-wired", "Wired", "https://www.wired.com/feed/rss", priority=7),
+    _rss("rss-mit-tech", "MIT Technology Review", "https://www.technologyreview.com/feed/", priority=8, tags=["ai", "research"]),
+    _rss("rss-github-blog", "GitHub Blog", "https://github.blog/feed/", priority=7, tags=["oss", "github"]),
+    _rss("rss-hn-front", "Hacker News (RSS)", "https://hnrss.org/frontpage", priority=8, tags=["community", "hn"]),
+    # 中文科技媒体
+    _rss("rss-36kr", "36氪", "https://36kr.com/feed", priority=8, tags=["cn", "startup"], language="zh"),
+    _rss("rss-sspai", "少数派", "https://sspai.com/feed", priority=7, tags=["cn", "digital"], language="zh"),
+    _rss("rss-jiqizhixin", "机器之心", "https://www.jiqizhixin.com/rss", priority=8, tags=["cn", "ai"], language="zh"),
+    _rss("rss-ithome", "IT之家", "https://www.ithome.com/rss/", priority=7, tags=["cn", "tech"], language="zh"),
+    _rss("rss-ifanr", "爱范儿", "https://www.ifanr.com/feed", priority=7, tags=["cn", "digital"], language="zh"),
+    _rss("rss-ruanyifeng", "阮一峰的网络日志", "https://www.ruanyifeng.com/blog/atom.xml", priority=6, tags=["cn", "dev"], language="zh"),
+]

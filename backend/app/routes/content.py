@@ -32,6 +32,7 @@ from ..features.briefs.write import (
     create_agent_article_page as create_agent_article_page_action,
     create_brief_from_event_page as create_brief_from_event_page_action,
     create_event_deep_dive_page as create_event_deep_dive_page_action,
+    delete_brief_page as delete_brief_page_action,
     sync_brief_wechat_draft_page as sync_brief_wechat_draft_page_action,
 )
 from .common import RUNTIME_DIR, get_store, http_from_value_error, parse_request_model
@@ -138,7 +139,7 @@ def build_content_router() -> APIRouter:
     @router.delete("/api/admin/briefs/{brief_id}", response_model=DictOkResponse)
     def delete_brief(brief_id: str, remote: str = "auto"):
         try:
-            return get_store().delete_brief(brief_id, remote=remote)
+            return delete_brief_page_action(brief_id, remote=remote)
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 
