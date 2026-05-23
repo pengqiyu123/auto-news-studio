@@ -168,34 +168,9 @@ from ..services.wechat_reconcile import (
     project_briefs,
     wechat_title_matches as _wechat_title_matches,
 )
-from ..store_mixins import AgentHtmlMixin, BriefsMixin, DashboardMixin, DeliveryMixin, IntelMixin, LLMEnhanceMixin, RuntimeMixin, SettingsMixin, SourceSyncMixin, WeChatMixin
+# store_mixins imported lazily to avoid circular import
 from ..intel.normalize import normalize_raw_items
-from ..publishers import (
-    WECHAT_BROWSER_MANAGER,
-    build_remote_draft_key,
-    build_preview_url,
-    build_wechat_target_id,
-    collect_douyin_backend_status,
-    collect_backend_status,
-    create_publish_task,
-    delete_wechat_remote_draft,
-    default_browser_profile_path,
-    ensure_channel_defaults,
-    ensure_douyin_channel_defaults,
-    extract_wechat_appmsg_id,
-    fill_douyin_article_from_brief,
-    inspect_wechat_draft_box,
-    inspect_douyin_session,
-    inspect_douyin_article_structure,
-    open_douyin_article_publish,
-    inspect_wechat_publish_history,
-    inspect_wechat_session,
-    launch_douyin_dashboard,
-    launch_wechat_dashboard,
-    refresh_browser_session,
-    refresh_douyin_browser_session,
-    run_browser_action,
-)
+# publishers imported lazily in functions that need them
 from .reference_projects import write_reference_baseline
 from ..sources import discover_sources
 from .runtime import StoreCoreRuntimeMixin
@@ -807,6 +782,7 @@ class StoreCore(DashboardMixin, DeliveryMixin, LLMEnhanceMixin, SourceSyncMixin,
         return timeline[:6]
 
     def _refresh_browser_session(self, state: dict[str, Any]) -> dict[str, Any]:
+        from ..publishers import refresh_browser_session
         current = state["browser"]["wechat"]
         channel = state["channels"]["wechat"]
         next_state = refresh_browser_session(channel, current)
@@ -814,6 +790,7 @@ class StoreCore(DashboardMixin, DeliveryMixin, LLMEnhanceMixin, SourceSyncMixin,
         return next_state
 
     def _refresh_douyin_browser_session(self, state: dict[str, Any]) -> dict[str, Any]:
+        from ..publishers import refresh_douyin_browser_session
         current = state["browser"]["douyin"]
         channel = state["channels"]["douyin"]
         next_state = refresh_douyin_browser_session(channel, current)
@@ -1076,6 +1053,7 @@ class StoreCore(DashboardMixin, DeliveryMixin, LLMEnhanceMixin, SourceSyncMixin,
         return engagement_threshold > 0 and engagement_score >= engagement_threshold
 
     def _publish_backends(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        from ..publishers import collect_backend_status, collect_douyin_backend_status
         return [
             *collect_backend_status(state["channels"]["wechat"], state["browser"]["wechat"]),
             *collect_douyin_backend_status(state["channels"]["douyin"], state["browser"]["douyin"]),
