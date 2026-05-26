@@ -71,14 +71,14 @@ const runtimeStatus: DashboardResponse["runtime_status"] = {
 
 const dashboard: DashboardResponse = {
   app_version: {
-    version: "0.2.11",
+    version: "0.2.12",
     release_channel: "stable",
     release_repo: "example/repo",
     release_notes_url: "https://example.com/release-notes",
   },
   update_info: {
-    current_version: "0.2.11",
-    latest_version: "0.2.11",
+    current_version: "0.2.12",
+    latest_version: "0.2.12",
     update_available: false,
     checked_at: "2026-05-13T10:00:00+08:00",
     source: "github",

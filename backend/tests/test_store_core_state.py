@@ -79,6 +79,7 @@ def test_store_core_state_mixin_preserves_bootstrap_and_read_write_flow() -> Non
         assert "channels" in state
         assert "browser" in state
         assert "reference_projects" in state
+        assert any(item.get("id") == "aht-maomu-news" for item in state.get("agent_html_targets", []))
 
         state["logs"].append({
             "id": "log-test-1",
@@ -99,5 +100,22 @@ def test_store_core_state_mixin_preserves_bootstrap_and_read_write_flow() -> Non
         store._write_config(config)
         updated_config = store._read_config()
         assert updated_config["settings"]["tavily_api_key"] == "test-key"
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_state_upgrade_backfills_default_maomu_agent_html_target() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["agent_html_targets"] = []
+        store._write(state)
+
+        upgraded = store._read_live()
+
+        maomu_target = next((item for item in upgraded.get("agent_html_targets", []) if item.get("id") == "aht-maomu-news"), None)
+        assert maomu_target is not None
+        assert maomu_target["entry_url"] == "https://maomu.com/news"
+        assert "36kr.com/" in maomu_target["discovery_rules"]["link_allow_patterns"]
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)

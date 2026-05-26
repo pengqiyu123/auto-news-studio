@@ -41,6 +41,48 @@ from ..llm.store_llm import (
     merge_llm_profiles,
 )
 
+
+def _default_agent_html_targets() -> list[dict[str, Any]]:
+    now = now_iso()
+    return [
+        {
+            "id": "aht-maomu-news",
+            "brand": "猫目",
+            "name": "猫目新闻聚合",
+            "entry_url": "https://maomu.com/news",
+            "target_type": "newsroom",
+            "enabled": True,
+            "tags": ["cn", "ai", "aggregation", "media"],
+            "discover_mode": "rule_with_ai_fallback",
+            "extract_mode": "best_effort_html",
+            "discovery_rules": {
+                "link_selector": "a[href*='tmtpost.com'], a[href*='qbitai.com'], a[href*='zhidx.com'], a[href*='ithome.com'], a[href*='36kr.com'], a[href*='techweb.com.cn']",
+                "title_selector": "h3, .title",
+                "time_selector": "",
+                "summary_selector": ".desc",
+                "link_allow_patterns": [
+                    "tmtpost.com/",
+                    "qbitai.com/",
+                    "zhidx.com/",
+                    "ithome.com/",
+                    "36kr.com/",
+                    "techweb.com.cn/",
+                ],
+                "link_deny_patterns": [
+                    "maomu.com/news",
+                    "/tag/",
+                    "/category/",
+                    "javascript:",
+                ],
+            },
+            "last_run_at": None,
+            "last_success_at": None,
+            "last_error": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+    ]
+
 def _migrate_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """将旧任务配置折叠为 article。"""
     if not tasks:
@@ -156,7 +198,7 @@ class StoreCoreStateMixin:
             "event_deep_dives": [],
             "briefs": [],
             "agent_workflows": [],
-            "agent_html_targets": [],
+            "agent_html_targets": _default_agent_html_targets(),
             "agent_html_runs": [],
             "agent_html_discovery_items": [],
             "agent_html_events": [],
@@ -641,7 +683,7 @@ class StoreCoreStateMixin:
         state.setdefault("event_deep_dives", [])
         state.setdefault("briefs", [])
         state.setdefault("agent_workflows", [])
-        state.setdefault("agent_html_targets", [])
+        state.setdefault("agent_html_targets", _default_agent_html_targets())
         state.setdefault("agent_html_runs", [])
         state.setdefault("agent_html_discovery_items", [])
         state.setdefault("agent_html_events", [])
@@ -843,6 +885,16 @@ class StoreCoreStateMixin:
             target.setdefault("last_error", None)
             target.setdefault("created_at", now_iso())
             target.setdefault("updated_at", now_iso())
+
+        existing_agent_html_target_ids = {
+            str(target.get("id") or "").strip()
+            for target in state.get("agent_html_targets", [])
+            if isinstance(target, dict)
+        }
+        for default_target in _default_agent_html_targets():
+            target_id = str(default_target.get("id") or "").strip()
+            if target_id and target_id not in existing_agent_html_target_ids:
+                state["agent_html_targets"].append(deepcopy(default_target))
 
         for run in state.get("agent_html_runs", []):
             if not isinstance(run, dict):

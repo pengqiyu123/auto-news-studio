@@ -105,7 +105,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Auto News Studio API",
-    version=str(VERSION_MANIFEST.get("version") or "0.2.11"),
+    version=str(VERSION_MANIFEST.get("version") or "0.2.12"),
     description="自动化新闻助手运营后台 API，覆盖信息采集、候选选题、公众号草稿和浏览器会话。",
     lifespan=lifespan,
 )

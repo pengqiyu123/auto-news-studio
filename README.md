@@ -4,7 +4,7 @@ Auto News Studio 是一个面向公众号内容运营的 AI 新闻选题与草�
 
 它的核心目标不是单纯“抓新闻”，而是把每天的信息流整理成一条真正可落地的内容链路：发现信息、筛出热点、补齐背景、整理素材、写成文章、送入公众号草稿箱，再回看后续结果。
 
-当前版本：`0.2.11`
+当前版本：`0.2.12`
 
 ## 它适合谁
 
@@ -185,14 +185,14 @@ Auto News Studio 现在更像一个“内容工作台”，不是一个只会抓
 
 - [AGENT.md](./AGENT.md)
   说明外部 AI 如何协助项目工作
-- [docs/release/RELEASE_NOTES_0.2.11.md](./docs/release/RELEASE_NOTES_0.2.11.md)
+- [docs/release/RELEASE_NOTES_0.2.12.md](./docs/release/RELEASE_NOTES_0.2.12.md)
   当前版本更新说明
 - [还需优化点.md](./还需优化点.md)
   后续方向与待优化项记录
 
 ## 版本说明
 
-`0.2.11` 这一版的重点主要是：
+`0.2.12` 这一版的重点主要是：
 
 - PostgreSQL 成为采集主链与内容资产链的稳定总账
 - 修复深挖池在 PostgreSQL 读链下的内容域字段回显
