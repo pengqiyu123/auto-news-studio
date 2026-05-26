@@ -52,9 +52,11 @@ interface DraftBoxPageProps {
   publishTasksTotal: number;
   refreshing: boolean;
   deletingRemoteId?: string | null;
+  loadingBriefDetailId?: string | null;
   onRefresh: () => Promise<void>;
   onDeleteRemote: (remoteId: string) => Promise<void>;
   onSyncBrief: (briefId: string) => Promise<void>;
+  onLoadBriefDetail: (briefId: string) => Promise<BriefItem | null>;
   onPublishTasksPageChange: (page: number) => void;
   onPublishTasksPageSizeChange: (pageSize: number) => void;
 }
@@ -80,9 +82,11 @@ export function DraftBoxPage({
   publishTasksTotal,
   refreshing,
   deletingRemoteId,
+  loadingBriefDetailId,
   onRefresh,
   onDeleteRemote,
   onSyncBrief,
+  onLoadBriefDetail,
   onPublishTasksPageChange,
   onPublishTasksPageSizeChange,
 }: DraftBoxPageProps) {
@@ -256,7 +260,15 @@ export function DraftBoxPage({
                 </div>
               ) : null}
               <details className="draft-list-block">
-                <summary>文章详情</summary>
+                <summary
+                  onClick={() => {
+                    if (!brief.wechat_markdown || !brief.prompt_package_markdown) {
+                      void onLoadBriefDetail(brief.id);
+                    }
+                  }}
+                >
+                  文章详情{loadingBriefDetailId === brief.id ? "（加载中...）" : ""}
+                </summary>
                 <p>{detailExcerpt(brief)}</p>
                 <p>来源数 {brief.source_links.length} / 引文数 {brief.quotes.length}</p>
               </details>

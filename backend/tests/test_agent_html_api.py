@@ -105,9 +105,9 @@ def _build_client(tmp_root: Path) -> TestClient:
         python_multipart_stub.__version__ = "0.0.20"
         sys.modules["python_multipart"] = python_multipart_stub
 
-    import backend.app.reference_projects as reference_projects
+    import backend.app.store.reference_projects as reference_projects
     import backend.app.store as store_module
-    import backend.app.store_base as store_base
+    import backend.app.store.base as store_base
 
     store_base.DATA_FILE = state_file
     store_base.CONFIG_DIR = config_file.parent

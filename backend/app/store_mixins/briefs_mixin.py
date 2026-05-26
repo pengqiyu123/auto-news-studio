@@ -7,6 +7,15 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from ..db import content_database_write_enabled, database_write_enabled, persist_content_assets, persist_ingest_chain_state
+from ..db.config import get_database_settings
+from ..db.read_models import (
+    list_event_deep_dives_from_db,
+    get_deep_dive_from_db,
+    get_deep_dive_by_event_id_from_db,
+    list_briefs_from_db,
+    get_brief_from_db,
+)
 from ..intel.deep_dive import fetch_and_extract_link
 from ..content.briefing import (
     build_agent_article_writing_guide,
@@ -34,6 +43,19 @@ from ..content.wechat_format import markdown_to_wechat_html
 
 
 class BriefsMixin:
+    def _write_with_content_asset_projection(self, state: dict[str, Any]) -> None:
+        self._write(state)
+        if content_database_write_enabled():
+            persisted_state = self._upgrade_state(self._read())
+            persist_content_assets(persisted_state)
+            if database_write_enabled():
+                persist_ingest_chain_state(
+                    persisted_state,
+                    source_key=None,
+                    triggered_by="content_assets",
+                    status="completed",
+                )
+
     def _project_briefs(self, state: dict[str, Any]) -> list[dict[str, Any]]:
         return project_briefs(state)
 
@@ -258,7 +280,7 @@ class BriefsMixin:
                 )
             self._sync_llm_usage(state, llm_service)
             self._append_log(state, "success", "brief", f"已生成简报：{brief['title']}", actor=triggered_by)
-            self._write(state)
+            self._write_with_content_asset_projection(state)
             return BriefItem(**brief)
 
     def create_agent_article(self, payload: AgentArticlePayload) -> BriefItem:
@@ -515,7 +537,7 @@ class BriefsMixin:
                         *(["douyin"] if payload.publish_to_douyin_article else []),
                     ],
                 )
-            self._write(state)
+            self._write_with_content_asset_projection(state)
 
         latest_brief = BriefItem(**brief)
         if payload.publish_to_wechat_draft:
@@ -590,6 +612,7 @@ class BriefsMixin:
                 workflow = self._ensure_agent_workflow(state, event_id=event_id, current_step="event_selected")
             existing = self._find_deep_dive_for_event(state, event_id)
             if existing and not force and str(existing.get("status") or "") in {"ready", "partial"}:
+                self._write_with_content_asset_projection(state)
                 return EventDeepDive(**existing)
 
             resolved_evidence_pack = self._event_deep_dive_inputs(state, event)
@@ -673,16 +696,31 @@ class BriefsMixin:
                     current_step="deep_dive_ready",
                     last_error=str(record.get("last_error") or "正文深挖失败。"),
                 )
-            self._write(state)
+            self._write_with_content_asset_projection(state)
             return EventDeepDive(**record)
 
     def list_event_deep_dives(self) -> list[EventDeepDive]:
+        settings = get_database_settings()
+        if settings.is_database_enabled:
+            items_dict, _total = list_event_deep_dives_from_db(database_url=settings.database_url)
+            return [EventDeepDive(**item_dict) for item_dict in items_dict]
+
+        # Fallback to JSON
         state = self._read_live()
         items = [item for item in state.get("event_deep_dives", []) if isinstance(item, dict)]
         items.sort(key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=UTC), reverse=True)
         return [EventDeepDive(**item) for item in items]
 
     def get_event_deep_dive(self, event_id: str) -> EventDeepDive:
+        settings = get_database_settings()
+        if settings.is_database_enabled:
+            record = get_deep_dive_by_event_id_from_db(database_url=settings.database_url, event_id=event_id)
+            if not record:
+                raise ValueError(f"未找到事件正文深挖：{event_id}")
+            if not record.get("article_writing_guide"):
+                record["article_writing_guide"] = build_agent_article_writing_guide()
+            return EventDeepDive(**record)
+
         state = self._read_live()
         record = self._find_deep_dive_for_event(state, event_id)
         if not record:
@@ -700,6 +738,59 @@ class BriefsMixin:
         q: str = "",
         workflow_mode: str = "all",
     ) -> tuple[list[BriefItem], int, int, int, bool, BriefStageCounts, BriefRecordCounts]:
+        settings = get_database_settings()
+
+        # Exclude heavy content fields from list view
+        LIGHT_FIELDS = {
+            "id", "event_id", "deep_dive_id", "brief_level", "stage", "title", "summary",
+            "one_line", "why_it_matters", "entity_names", "source_links", "risk_notes",
+            "wechat_target_id", "wechat_editor_url", "wechat_remote_appmsg_id", "preview_url",
+            "delivery_status", "delivery_attempt_count", "last_delivery_attempt_at",
+            "last_verified_at", "last_delivery_error_kind", "needs_resync", "last_synced_revision",
+            "last_successful_upload_at", "last_error", "updated_at", "driver_label",
+            "record_status", "record_exception", "draft_remote_updated_at", "publish_record_published_at",
+            "workflow_mode", "workflow_session_id", "read_count", "like_count", "share_count",
+            "recommend_count", "comment_count", "highlight_count", "tip_amount", "reprint_count",
+            "metrics_fetched_at",
+        }
+
+        if settings.is_database_enabled:
+            items_dict, total = list_briefs_from_db(
+                database_url=settings.database_url, page=page, page_size=page_size
+            )
+
+            # Convert to BriefItem (light fields only)
+            light_items = [{k: v for k, v in item.items() if k in LIGHT_FIELDS} for item in items_dict]
+
+            # Calculate counts from all items (not paginated)
+            all_items_dict, _ = list_briefs_from_db(
+                database_url=settings.database_url, page=1, page_size=10000
+            )
+            stage_counts = BriefStageCounts(
+                all=len(all_items_dict),
+                prepared=sum(1 for item in all_items_dict if str(item.get("stage") or "") == "prepared"),
+                synced=sum(1 for item in all_items_dict if str(item.get("stage") or "") == "synced"),
+                failed=sum(
+                    1
+                    for item in all_items_dict
+                    if str(item.get("stage") or "") == "failed" or bool(str(item.get("last_error") or "").strip())
+                ),
+            )
+            record_counts = BriefRecordCounts(
+                all=len(all_items_dict),
+                local_only=sum(1 for item in all_items_dict if str(item.get("record_status") or "") == "local_only"),
+                draft_synced=sum(1 for item in all_items_dict if str(item.get("record_status") or "") == "draft_synced"),
+                published=sum(1 for item in all_items_dict if str(item.get("record_status") or "") == "published"),
+                exceptions=sum(1 for item in all_items_dict if item.get("record_exception")),
+            )
+
+            safe_page = max(1, int(page or 1))
+            safe_page_size = max(1, min(int(page_size or 50), 200))
+            has_more = (safe_page * safe_page_size) < total
+
+            return [BriefItem(**item) for item in light_items], total, safe_page, safe_page_size, has_more, stage_counts, record_counts
+
+        # Fallback to JSON
         state = self._read_live()
         items = self._project_briefs(state)
         items.sort(key=lambda item: parse_time(item.get("updated_at")) or datetime.min.replace(tzinfo=self._utc_tz()), reverse=True)
@@ -760,9 +851,34 @@ class BriefsMixin:
             page=page,
             page_size=page_size,
         )
-        return [BriefItem(**item) for item in page_items], total, safe_page, safe_page_size, has_more, stage_counts, record_counts
+        light_items = [{k: v for k, v in item.items() if k in LIGHT_FIELDS} for item in page_items]
+        return [BriefItem(**item) for item in light_items], total, safe_page, safe_page_size, has_more, stage_counts, record_counts
 
     def get_brief(self, brief_id: str) -> BriefItem:
+        settings = get_database_settings()
+
+        if settings.is_database_enabled:
+            brief = get_brief_from_db(database_url=settings.database_url, brief_id=brief_id)
+            if brief:
+                LIGHT_FIELDS = {
+                    "id", "event_id", "deep_dive_id", "brief_level", "stage", "title", "summary",
+                    "one_line", "why_it_matters", "entity_names", "source_links", "risk_notes",
+                    "facts", "quotes", "timeline",
+                    "prompt_package_markdown", "douyin_prompt_package_markdown",
+                    "wechat_markdown", "wechat_html", "douyin_title", "douyin_summary", "douyin_markdown",
+                    "wechat_target_id", "wechat_editor_url", "wechat_remote_appmsg_id", "preview_url",
+                    "delivery_status", "delivery_attempt_count", "last_delivery_attempt_at",
+                    "last_verified_at", "last_delivery_error_kind", "needs_resync", "last_synced_revision",
+                    "last_successful_upload_at", "last_error", "updated_at", "driver_label",
+                    "record_status", "record_exception", "draft_remote_updated_at", "publish_record_published_at",
+                    "workflow_mode", "workflow_session_id", "read_count", "like_count", "share_count",
+                    "recommend_count", "comment_count", "highlight_count", "tip_amount", "reprint_count",
+                    "metrics_fetched_at",
+                }
+                brief_item = {k: v for k, v in brief.items() if k in LIGHT_FIELDS}
+                return BriefItem(**brief_item)
+            raise ValueError(f"未找到简报：{brief_id}")
+
         state = self._read_live()
         brief = self._find_brief(state, brief_id)
         projected = next((item for item in self._project_briefs(state) if str(item.get("id") or "") == brief_id), None)

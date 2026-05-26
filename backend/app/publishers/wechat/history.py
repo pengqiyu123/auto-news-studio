@@ -79,10 +79,19 @@ def _inspect_wechat_publish_history_document(target) -> dict[str, object]:
     result = target.evaluate(
         """() => {
             const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
-            const titleAnchors = Array.from(document.querySelectorAll('a.weui-desktop-mass-appmsg__title, a.weui-desktop-publish__title, a[href*="mp.weixin.qq.com/s/"]'));
-            const timeNodes = Array.from(document.querySelectorAll('.weui-desktop-mass__time, .weui-desktop-publish__time, .publish_time'));
+            // 2026-05 微信更新：扩展选择器以覆盖新旧结构
+            const titleAnchors = Array.from(document.querySelectorAll(
+                'a.weui-desktop-mass-appmsg__title, a.weui-desktop-publish__title, ' +
+                'a[href*="mp.weixin.qq.com/s/"], a[href*="s?__biz="], ' +
+                '.weui-desktop-mass-appmsg__bd a[href], .weui-desktop-mass-media a[href]'
+            ));
+            const timeNodes = Array.from(document.querySelectorAll(
+                '.weui-desktop-mass__time, .weui-desktop-publish__time, .publish_time, ' +
+                'em.weui-desktop-mass__time, .weui-desktop-card__time'
+            ));
             const hoverCards = Array.from(document.querySelectorAll('.publish_hover_content'));
             const massCards = Array.from(document.querySelectorAll('.weui-desktop-mass-media, .weui-desktop-mass-appmsg'));
+            const dataListNodes = Array.from(document.querySelectorAll('.weui-desktop-mass-media__data-list'));
             const sampleTitles = titleAnchors
                 .map((node) => normalize(node.textContent || node.getAttribute('title') || ''))
                 .filter(Boolean)
@@ -99,6 +108,7 @@ def _inspect_wechat_publish_history_document(target) -> dict[str, object]:
                 time_count: timeNodes.length,
                 hover_card_count: hoverCards.length,
                 mass_card_count: massCards.length,
+                data_list_count: dataListNodes.length,
                 sample_titles: sampleTitles,
                 sample_times: sampleTimes,
                 body_text_head: normalize((document.body && document.body.innerText) || '').slice(0, 240),
@@ -142,22 +152,36 @@ def _scrape_wechat_publish_history_from_target(target) -> list[dict[str, str | N
                 if (!dataList) return zero;
                 const parseNum = (el) => { const t = normalize(el?.textContent || '0'); const n = parseInt(t.replace(/[^0-9]/g, ''), 10); return isNaN(n) ? 0 : n; };
                 const parseMoney = (el) => { const t = normalize(el?.textContent || '0'); return t.replace(/[^0-9.]/g, '') || '0.00'; };
+                // 2026-05 微信更新了 DOM 结构：data-list > tooltip__wrp > data.xxx > data__inner
+                // 使用更宽松的选择器，允许中间有 wrapper 层
+                const findDataInner = (className) => {
+                    const direct = dataList.querySelector(`${className} .weui-desktop-mass-media__data__inner`);
+                    if (direct) return direct;
+                    const viaWrapper = dataList.querySelector(`.weui-desktop-tooltip__wrp ${className} .weui-desktop-mass-media__data__inner`);
+                    if (viaWrapper) return viaWrapper;
+                    const dataNode = dataList.querySelector(className);
+                    if (dataNode) return dataNode.querySelector('.weui-desktop-mass-media__data__inner');
+                    return null;
+                };
                 return {
-                    read_count: parseNum(dataList.querySelector('.appmsg-view .weui-desktop-mass-media__data__inner')),
-                    like_count: parseNum(dataList.querySelector('.appmsg-like .weui-desktop-mass-media__data__inner')),
-                    share_count: parseNum(dataList.querySelector('.appmsg-share .weui-desktop-mass-media__data__inner')),
-                    recommend_count: parseNum(dataList.querySelector('.appmsg-haokan .weui-desktop-mass-media__data__inner')),
-                    comment_count: parseNum(dataList.querySelector('.appmsg-comment .weui-desktop-mass-media__data__inner')),
-                    highlight_count: parseNum(dataList.querySelector('.appmsg-underline .weui-desktop-mass-media__data__inner')),
-                    tip_amount: parseMoney(dataList.querySelector('.appmsg-reward .weui-desktop-mass-media__data__inner')),
-                    reprint_count: parseNum(dataList.querySelector('.appmsg-forward .weui-desktop-mass-media__data__inner')),
+                    read_count: parseNum(findDataInner('.appmsg-view')),
+                    like_count: parseNum(findDataInner('.appmsg-like')),
+                    share_count: parseNum(findDataInner('.appmsg-share')),
+                    recommend_count: parseNum(findDataInner('.appmsg-haokan')),
+                    comment_count: parseNum(findDataInner('.appmsg-comment')),
+                    highlight_count: parseNum(findDataInner('.appmsg-underline')),
+                    tip_amount: parseMoney(findDataInner('.appmsg-reward')),
+                    reprint_count: parseNum(findDataInner('.appmsg-forward')),
                 };
             };
 
             const pushItem = (title, url, publishedAt, occurrence, metricsContainer) => {
                 const cleanTitle = cleanTitleLabel(title);
                 const normalizedUrl = absolutize(url);
-                if (cleanTitle.length < 2) return;
+                // 过滤赞赏统计条目（标题为 ¥0.00 或以 ¥ 开头）
+                if (cleanTitle.startsWith('¥') || cleanTitle.length < 2) return;
+                // 过滤赞赏统计链接（merchant/reward）
+                if (normalizedUrl.includes('merchant/reward')) return;
                 let appmsgId = null;
                 try {
                     if (normalizedUrl) {
@@ -172,7 +196,7 @@ def _scrape_wechat_publish_history_from_target(target) -> list[dict[str, str | N
                         : `publish:${cleanTitle}|${normalize(publishedAt)}|${occurrence}`;
                 if (seenStable.has(stableKey)) return;
                 seenStable.add(stableKey);
-                const metrics = extractMetrics(metricsContainer || container);
+                const metrics = extractMetrics(metricsContainer);
                 results.push({
                     title: cleanTitle,
                     url: normalizedUrl,
@@ -187,7 +211,7 @@ def _scrape_wechat_publish_history_from_target(target) -> list[dict[str, str | N
                     highlight_count: metrics.highlight_count,
                     tip_amount: metrics.tip_amount,
                     reprint_count: metrics.reprint_count,
-                    thumbnail: extractThumbnail(container),
+                    thumbnail: extractThumbnail(metricsContainer),
                 });
             };
 
@@ -222,7 +246,11 @@ def _scrape_wechat_publish_history_from_target(target) -> list[dict[str, str | N
             };
 
             const titleAnchors = Array.from(
-                document.querySelectorAll('a.weui-desktop-mass-appmsg__title, a.weui-desktop-publish__title, a[href*="mp.weixin.qq.com/s/"]')
+                document.querySelectorAll(
+                    'a.weui-desktop-mass-appmsg__title, a.weui-desktop-publish__title, ' +
+                    'a[href*="mp.weixin.qq.com/s/"], a[href*="s?__biz="], ' +
+                    '.weui-desktop-mass-appmsg__bd a[href], .weui-desktop-mass-media a[href]'
+                )
             );
             titleAnchors.forEach((anchor, index) => {
                 const container = findBestContainer(anchor);
@@ -247,11 +275,14 @@ def _scrape_wechat_publish_history_from_target(target) -> list[dict[str, str | N
                         container.querySelector('.weui-desktop-publish__cover__title') ||
                         container.querySelector('.weui-desktop-card__title') ||
                         container.querySelector('a[title]') ||
+                        container.querySelector('a.weui-desktop-mass-appmsg__title span') ||
+                        container.querySelector('a span') ||
                         container.querySelector('h3');
                     const linkNode =
                         container.querySelector('a.weui-desktop-mass-appmsg__title') ||
                         container.querySelector('a.weui-desktop-publish__title') ||
                         container.querySelector('a[href*="mp.weixin.qq.com/s/"]') ||
+                        container.querySelector('a[href*="s?__biz="]') ||
                         container.querySelector('a[href]');
                     const title = cleanTitleLabel(titleNode ? titleNode.textContent : '');
                     const href = linkNode ? linkNode.getAttribute('href') || '' : '';
@@ -314,6 +345,7 @@ def _scrape_wechat_publish_history_items(page, step_logs: list[str] | None = Non
                     f"timeNodes={diag.get('time_count', 0)} "
                     f"hoverCards={diag.get('hover_card_count', 0)} "
                     f"massCards={diag.get('mass_card_count', 0)} "
+                    f"dataLists={diag.get('data_list_count', 0)} "
                     f"samples={','.join(str(item) for item in (diag.get('sample_titles') or [])[:3]) or 'none'}"
                 )
             rows = _scrape_wechat_publish_history_from_target(target)

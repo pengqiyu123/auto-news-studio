@@ -3,8 +3,19 @@ from __future__ import annotations
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime
+import hashlib
+import json
 from typing import Any
 
+from ..db import current_database_url, database_read_is_truth, database_write_enabled, persist_ingest_chain_state
+from ..db.read_models import (
+    get_intel_summary_from_db,
+    list_discovery_items_from_db,
+    list_intel_alert_history_from_db,
+    list_intel_alerts_from_db,
+    list_intel_event_history_from_db,
+    list_intel_events_from_db,
+)
 from ..intel.connectors import collect_from_source
 from ..intel.entity_extractor import entity_id_for_name, entity_type_for_name
 from ..models import (
@@ -32,6 +43,22 @@ from ..store.base import MAX_RAW_ITEMS, UTC, deepcopy_json, now_iso, parse_time
 
 
 class IntelMixin:
+    def _shadow_signature(self, payload: Any) -> str:
+        return hashlib.sha1(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+    def _log_shadow_diff(self, message: str, *, detail: str) -> None:
+        state = self._upgrade_state(self._read())
+        self._append_log(
+            state,
+            "warning",
+            "postgres",
+            message,
+            stream="system_runtime",
+            actor="shadow_read",
+            detail=detail,
+        )
+        self._write(state)
+
     def list_sources(self) -> list[SourceConnector]:
         state = self._upgrade_state(self._read())
         return [SourceConnector(**item) for item in state["sources"]]
@@ -109,6 +136,7 @@ class IntelMixin:
 
     def sync_sources(self, triggered_by: str = "dashboard") -> SourceSyncResponse:
         state = self._upgrade_state(self._read())
+        started_at = now_iso()
         response = self._sync_sources_internal(state, triggered_by=triggered_by)
         self._append_job(
             state,
@@ -116,12 +144,23 @@ class IntelMixin:
             f"已采集 {response.raw_count} 条素材并刷新事件聚合。",
             triggered_by=triggered_by,
         )
+        if database_write_enabled():
+            persist_ingest_chain_state(
+                state,
+                source_key=None,
+                triggered_by=triggered_by,
+                started_at=started_at,
+                finished_at=response.synced_at,
+                status="completed" if not response.warnings else "partial",
+                warnings=list(response.warnings),
+            )
         self._write(state)
         return response
 
     def sync_source(self, source_key: str, triggered_by: str = "dashboard") -> SourceSyncResponse:
         state = self._upgrade_state(self._read())
         source = self._find_source(state, source_key)
+        started_at = now_iso()
         stamp = now_iso()
         warnings: list[str] = []
         try:
@@ -178,6 +217,16 @@ class IntelMixin:
         for warning in warnings[:3]:
             self._append_log(state, "warning", "collection", warning, stream="business_event", actor=triggered_by)
         self._append_job(state, "collect_news", f"已重抓来源《{source['name']}》。", triggered_by=triggered_by)
+        if database_write_enabled():
+            persist_ingest_chain_state(
+                state,
+                source_key=source_key,
+                triggered_by=triggered_by,
+                started_at=started_at,
+                finished_at=stamp,
+                status="completed" if not warnings else "partial",
+                warnings=list(warnings),
+            )
         self._write(state)
         return SourceSyncResponse(
             raw_count=len(state["raw_items"]),
@@ -207,6 +256,8 @@ class IntelMixin:
         raise ValueError(f"未找到事件：{event_id}")
 
     def get_intel_summary(self) -> IntelOverviewSummary:
+        if database_read_is_truth():
+            return get_intel_summary_from_db(database_url=current_database_url())
         with self._lock:
             state = self._read_live()
             recovered_run_id = self._recover_stale_runtime_run(state, actor="intel_summary")
@@ -276,7 +327,7 @@ class IntelMixin:
         item_state_counts = Counter(str(item.get("item_state") or "new_item") for item in discovery_items)
         event_state_counts = Counter(str(item.get("change_state") or "new_event") for item in state.get("intel_events", []))
 
-        return IntelOverviewSummary(
+        result = IntelOverviewSummary(
             alert_count=len(alerts),
             breakout_count=len([item for item in alerts if item.level == "breakout"]),
             rising_count=len([item for item in alerts if item.level == "rising"]),
@@ -308,6 +359,14 @@ class IntelMixin:
             recent_events_24h=recent_events,
             source_alerts=source_alerts[:6],
         )
+        if database_write_enabled():
+            db_result = get_intel_summary_from_db(database_url=current_database_url())
+            if self._shadow_signature(result.model_dump()) != self._shadow_signature(db_result.model_dump()):
+                self._log_shadow_diff(
+                    "summary 数据库影子读与 JSON 投影不一致。",
+                    detail="category=summary",
+                )
+        return result
 
     def list_discovery_items(
         self,
@@ -315,13 +374,24 @@ class IntelMixin:
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[DiscoveryItem], int]:
+        if database_read_is_truth():
+            return list_discovery_items_from_db(database_url=current_database_url(), page=page, page_size=page_size)
         state = self._read_live()
         all_items = [DiscoveryItem(**item) for item in state.get("discovery_items", [])]
         safe_page = max(1, int(page or 1))
         safe_page_size = max(1, min(int(page_size or 50), 200))
         start = (safe_page - 1) * safe_page_size
         end = start + safe_page_size
-        return all_items[start:end], len(all_items)
+        items = all_items[start:end]
+        total = len(all_items)
+        if database_write_enabled():
+            db_items, db_total = list_discovery_items_from_db(database_url=current_database_url(), page=page, page_size=page_size)
+            if total != db_total or self._shadow_signature([item.model_dump() for item in items]) != self._shadow_signature([item.model_dump() for item in db_items]):
+                self._log_shadow_diff(
+                    "stream 数据库影子读与 JSON 投影不一致。",
+                    detail=f"json_total={total} | db_total={db_total}",
+                )
+        return items, total
 
     def list_intel_events(
         self,
@@ -329,6 +399,8 @@ class IntelMixin:
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[IntelEvent], int]:
+        if database_read_is_truth():
+            return list_intel_events_from_db(database_url=current_database_url(), page=page, page_size=page_size)
         state = self._read_live()
         deep_dive_lookup = self._deep_dive_lookup(state)
         brief_lookup = self._brief_lookup(state)
@@ -347,9 +419,20 @@ class IntelMixin:
         safe_page_size = max(1, min(int(page_size or 50), 200))
         start = (safe_page - 1) * safe_page_size
         end = start + safe_page_size
-        return all_items[start:end], len(all_items)
+        items = all_items[start:end]
+        total = len(all_items)
+        if database_write_enabled():
+            db_items, db_total = list_intel_events_from_db(database_url=current_database_url(), page=page, page_size=page_size)
+            if total != db_total or self._shadow_signature([item.model_dump() for item in items]) != self._shadow_signature([item.model_dump() for item in db_items]):
+                self._log_shadow_diff(
+                    "events 数据库影子读与 JSON 投影不一致。",
+                    detail=f"json_total={total} | db_total={db_total}",
+                )
+        return items, total
 
     def list_intel_event_history(self) -> list[dict[str, Any]]:
+        if database_read_is_truth():
+            return [item.model_dump() for item in list_intel_event_history_from_db(database_url=current_database_url())]
         state = self._read_live()
         return self._prune_intel_event_history(state.get("intel_event_history", []))
 
@@ -365,11 +448,13 @@ class IntelMixin:
         )
 
     def list_intel_alerts(self) -> list[IntelAlert]:
+        if database_read_is_truth():
+            return list_intel_alerts_from_db(database_url=current_database_url())
         state = self._read_live()
         event_lookup = self._event_lookup(state)
         deep_dive_lookup = self._deep_dive_lookup(state)
         brief_lookup = self._brief_lookup(state)
-        return [
+        items = [
             IntelAlert(
                 **self._project_alert_runtime_fields(
                     state,
@@ -381,8 +466,18 @@ class IntelMixin:
             )
             for item in state.get("intel_alerts", [])
         ]
+        if database_write_enabled():
+            db_items = list_intel_alerts_from_db(database_url=current_database_url())
+            if self._shadow_signature([item.model_dump() for item in items]) != self._shadow_signature([item.model_dump() for item in db_items]):
+                self._log_shadow_diff(
+                    "alerts 数据库影子读与 JSON 投影不一致。",
+                    detail=f"json_total={len(items)} | db_total={len(db_items)}",
+                )
+        return items
 
     def list_intel_alert_history(self) -> list[dict[str, Any]]:
+        if database_read_is_truth():
+            return [item.model_dump() for item in list_intel_alert_history_from_db(database_url=current_database_url())]
         state = self._read_live()
         return self._prune_intel_alert_history(state.get("intel_alert_history", []))
 
@@ -525,6 +620,13 @@ class IntelMixin:
             state["normalized_items"] = self._project_normalized_items_from_events(state)
             self._append_log(state, "success", "intel", f"已加入重点观察：{event['title']}", actor="dashboard")
             self._write(state)
+            if database_write_enabled():
+                persist_ingest_chain_state(
+                    self._upgrade_state(self._read()),
+                    source_key=None,
+                    triggered_by="dashboard",
+                    status="completed",
+                )
             return IntelEvent(**event)
 
     def ignore_event(self, event_id: str) -> IntelEvent:
@@ -537,6 +639,13 @@ class IntelMixin:
             state["normalized_items"] = self._project_normalized_items_from_events(state)
             self._append_log(state, "warning", "intel", f"已忽略事件：{event['title']}", actor="dashboard")
             self._write(state)
+            if database_write_enabled():
+                persist_ingest_chain_state(
+                    self._upgrade_state(self._read()),
+                    source_key=None,
+                    triggered_by="dashboard",
+                    status="completed",
+                )
             return IntelEvent(**event)
 
     def get_dashboard(self) -> DashboardResponse:
@@ -617,7 +726,7 @@ class IntelMixin:
         )
 
     def get_dashboard_lite(self) -> DashboardResponse:
-        """Lightweight dashboard for polling — only fields the frontend actually uses."""
+        """Lightweight dashboard for polling — excludes heavy data like entity watchlist."""
         with self._lock:
             state = self._read_live()
             recovered_run_id = self._recover_stale_runtime_run(state, actor="dashboard")
@@ -629,7 +738,6 @@ class IntelMixin:
         runtime = self._runtime(snapshot)
         app_version = self.get_app_version_info()
         runtime_status = self._scheduler_status_from_state(snapshot)
-        entity_watchlist_summary = self._build_entity_watchlist_summary(snapshot)
         snapshot["browser"]["wechat"] = browser
 
         return DashboardResponse(
@@ -637,7 +745,7 @@ class IntelMixin:
             update_info=self.get_app_update_info(force=False),
             runtime_plan=self._runtime_plan_from_state(snapshot),
             runtime_status=runtime_status,
-            entity_watchlist_summary=[EntityWatchlistSummaryItem(**item) for item in entity_watchlist_summary],
+            entity_watchlist_summary=[],  # Exclude heavy data from lite version
             browser_session=BrowserSessionState(**browser),
             recent_logs=[LogItem(**item) for item in snapshot["logs"][:8]],
         )

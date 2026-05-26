@@ -94,7 +94,8 @@ export function useWechatState({
     setPublishTasksPageSize(publishTaskData.page_size);
     setPublishTasksTotal(publishTaskData.total);
     onBrowserSessionChange(browserData.item);
-  }, [onBrowserSessionChange, publishTasksPage, publishTasksPageSize]);
+    await onReloadBriefs();
+  }, [onBrowserSessionChange, onReloadBriefs, publishTasksPage, publishTasksPageSize]);
 
   const refreshBrowserSession = useCallback(async () => {
     const response = await api.getBrowserSession();

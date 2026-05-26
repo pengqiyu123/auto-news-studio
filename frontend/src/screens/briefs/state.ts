@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { api } from "../../lib/api";
 import type {
@@ -69,6 +69,8 @@ export function useBriefsState({
   const [pendingDeepDiveTitle, setPendingDeepDiveTitle] = useState<string | null>(null);
   const [pendingBriefTitle, setPendingBriefTitle] = useState<string | null>(null);
   const [agentWorkflows, setAgentWorkflows] = useState<AgentWorkflowItem[]>([]);
+  const [loadingBriefDetailId, setLoadingBriefDetailId] = useState<string | null>(null);
+  const briefsLoadingRef = useRef(false);
 
   const loadBriefsData = useCallback(async (
     page = briefsPage,
@@ -77,23 +79,32 @@ export function useBriefsState({
     workflowMode = briefWorkflowFilter,
     query = briefSearchQuery,
   ) => {
-    const [response, workflowResponse] = await Promise.all([
-      api.getBriefs({
-        page,
-        page_size: pageSize,
-        stage,
-        workflow_mode: workflowMode,
-        q: query,
-      }),
-      api.getAgentWorkflows(),
-    ]);
-    setBriefs(response.items);
-    setBriefsPage(response.page);
-    setBriefsPageSize(response.page_size);
-    setBriefsTotal(response.total);
-    setBriefStageCounts(response.stage_counts);
-    setBriefRecordCounts(response.record_counts);
-    setAgentWorkflows(workflowResponse.items);
+    // In-flight guard: skip if already loading
+    if (briefsLoadingRef.current) {
+      return;
+    }
+    briefsLoadingRef.current = true;
+    try {
+      const [response, workflowResponse] = await Promise.all([
+        api.getBriefs({
+          page,
+          page_size: pageSize,
+          stage,
+          workflow_mode: workflowMode,
+          q: query,
+        }),
+        api.getAgentWorkflows(),
+      ]);
+      setBriefs(response.items);
+      setBriefsPage(response.page);
+      setBriefsPageSize(response.page_size);
+      setBriefsTotal(response.total);
+      setBriefStageCounts(response.stage_counts);
+      setBriefRecordCounts(response.record_counts);
+      setAgentWorkflows(workflowResponse.items);
+    } finally {
+      briefsLoadingRef.current = false;
+    }
   }, [briefSearchQuery, briefStageFilter, briefWorkflowFilter, briefsPage, briefsPageSize]);
 
   const handleDeepDiveEvent = useCallback(async (eventId: string, force = false) => {
@@ -245,6 +256,20 @@ export function useBriefsState({
     await handleBriefAction("copy", brief);
   }, [handleBriefAction]);
 
+  const loadBriefDetail = useCallback(async (briefId: string) => {
+    setLoadingBriefDetailId(briefId);
+    try {
+      const response = await api.getBrief(briefId);
+      setBriefs((current) => current.map((item) => (item.id === briefId ? response.item : item)));
+      return response.item;
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "简报详情加载失败");
+      return null;
+    } finally {
+      setLoadingBriefDetailId((current) => (current === briefId ? null : current));
+    }
+  }, [onError]);
+
   const handleCopyBriefPackage = useCallback(async (briefId: string) => {
     const brief = briefs.find((item) => item.id === briefId);
     if (!brief) return;
@@ -280,6 +305,8 @@ export function useBriefsState({
     handleDeleteBrief,
     handleCopyBrief,
     handleCopyBriefPackage,
+    loadBriefDetail,
+    loadingBriefDetailId,
     setSelectedDeepDive,
   };
 }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+import importlib
 import json
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,21 @@ from ..store.base import (
     schedule_to_minutes,
 )
 from ..llm.store_llm import build_provider_from_profile, build_runtime_tasks, default_llm_state, merge_llm_profiles
+
+
+def _get_database_settings():
+    module = importlib.import_module("backend.app.db.config")
+    return module.get_database_settings()
+
+
+def _check_database_health() -> tuple[bool, str]:
+    try:
+        module = importlib.import_module("backend.app.db.health")
+    except ModuleNotFoundError as exc:
+        if exc.name and exc.name.startswith("sqlalchemy"):
+            return False, "数据库依赖未安装：缺少 sqlalchemy/psycopg/alembic"
+        raise
+    return module.check_database_health()
 
 
 class SettingsMixin:
@@ -90,7 +106,7 @@ class SettingsMixin:
     def get_app_version_info(self) -> AppVersionInfo:
         manifest = self.version_manifest
         return AppVersionInfo(
-            version=str(manifest.get("version") or "0.2.10"),
+            version=str(manifest.get("version") or "0.2.11"),
             release_channel=str(manifest.get("release_channel") or "stable"),
             release_repo=str(manifest.get("release_repo") or DEFAULT_RELEASE_REPO),
             release_notes_url=str(manifest.get("release_notes_url") or DEFAULT_RELEASE_NOTES_URL),
@@ -203,6 +219,18 @@ class SettingsMixin:
                 next_action=None if browser.get("logged_in") else "前往设置 > 微信浏览器，打开公众号后台并完成登录检查。",
             ),
         ]
+        db_settings = _get_database_settings()
+        db_ok, db_detail = _check_database_health()
+        db_enabled = db_settings.state_backend in {"dual_write", "postgres"}
+        items.append(
+            SystemCheckItem(
+                key="postgres",
+                label="PostgreSQL 主账本",
+                ok=db_ok if db_enabled else True,
+                detail=db_detail if db_settings.database_url else f"当前未配置数据库，STATE_BACKEND={db_settings.state_backend}",
+                next_action=None if (db_ok or not db_enabled) else "检查 DATABASE_URL、PostgreSQL 服务和 Alembic 迁移状态。",
+            )
+        )
         ok = all(item.ok for item in items)
         summary = "系统已满足分发版基本使用条件。" if ok else "系统仍有未完成项，请按建议补齐后再投入使用。"
         return SystemDoctorResult(checked_at=now_iso(), ok=ok, items=items, summary=summary)

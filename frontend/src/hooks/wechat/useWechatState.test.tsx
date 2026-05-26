@@ -76,6 +76,7 @@ describe("useWechatState", () => {
 
   it("loads draft-box snapshot without forcing publish-history refresh", async () => {
     const onBrowserSessionChange = vi.fn();
+    const reloadBriefs = vi.fn().mockResolvedValue(undefined);
     mockedApi.getWeChatMapping.mockResolvedValue({
       item: {
         checked_at: "2026-05-12T10:00:00+08:00",
@@ -114,7 +115,7 @@ describe("useWechatState", () => {
         initialPublishTasksPageSize: 20,
         onError: vi.fn(),
         onToast: vi.fn(),
-        onReloadBriefs: vi.fn().mockResolvedValue(undefined),
+        onReloadBriefs: reloadBriefs,
         onReloadOverview: vi.fn().mockResolvedValue(undefined),
       }),
     );
@@ -126,6 +127,7 @@ describe("useWechatState", () => {
     expect(mockedApi.checkWeChatDraftBox).not.toHaveBeenCalled();
     expect(mockedApi.getWeChatMapping).toHaveBeenCalledTimes(1);
     expect(result.current.wechatMapping?.message).toBe("empty");
+    expect(reloadBriefs).toHaveBeenCalledTimes(1);
     expect(onBrowserSessionChange).toHaveBeenCalledWith(expect.objectContaining({ resident_page: "home" }));
   });
 

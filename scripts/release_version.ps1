@@ -31,4 +31,4 @@ git push origin master
 git push origin $tag
 
 Write-Host "[OK] Code and tag pushed."
-Write-Host "[NEXT] Go to GitHub Releases and publish release $tag using docs/RELEASE_NOTES_$Version.md"
+Write-Host "[NEXT] Go to GitHub Releases and publish release $tag using docs/release/RELEASE_NOTES_$Version.md"

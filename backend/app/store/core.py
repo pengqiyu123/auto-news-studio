@@ -64,13 +64,14 @@ from .base import (
     schedule_to_minutes,
 )
 
-from ..intel.connectors import _collect_with_retry, collect_enabled_sources, collect_from_source
-from ..content.briefing import build_prompt_package_markdown, build_rule_brief_payload, build_agent_article_writing_guide
-from ..intel.deep_dive import canonicalize_url, fetch_and_extract_link, search_tavily
-from ..intel.entity_extractor import entity_id_for_name, entity_type_for_name
-from ..intel.pipeline import build_intel_state
-from ..llm import LLMService
-from ..intel.legacy_sources import build_legacy_rss_sources
+# Lazy imports to avoid circular dependencies
+# from ..intel.connectors import ... (imported in methods)
+# from ..content.briefing import ... (imported in methods)
+# from ..intel.deep_dive import ... (imported in methods)
+# from ..intel.entity_extractor import ... (imported in methods)
+# from ..intel.pipeline import ... (imported in methods)
+# from ..llm import ... (imported in methods)
+# from ..intel.legacy_sources import ... (imported in methods)
 from ..models import (
     AgentHtmlDiscoveryItem,
     AgentHtmlDiscoverMode,
@@ -168,13 +169,14 @@ from ..services.wechat_reconcile import (
     project_briefs,
     wechat_title_matches as _wechat_title_matches,
 )
-# store_mixins imported lazily to avoid circular import
 from ..intel.normalize import normalize_raw_items
-# publishers imported lazily in functions that need them
 from .reference_projects import write_reference_baseline
 from ..sources import discover_sources
 from .runtime import StoreCoreRuntimeMixin
 from .state import StoreCoreStateMixin
+
+# StoreCore 不再继承 store_mixins 中的 mixin
+# 这些 mixin 将由 StudioStore 在 __init__.py 中通过多重继承添加
 
 
 def _normalize_wechat_title(value: Any) -> str:
@@ -288,7 +290,8 @@ def _wechat_html(markdown: str) -> str:
     flush_lists()
     return "<section style='font-size:15px;line-height:1.8;color:#222;'>" + "".join(blocks) + "</section>"
 
-class StoreCore(DashboardMixin, DeliveryMixin, LLMEnhanceMixin, SourceSyncMixin, StoreCoreStateMixin, StoreCoreRuntimeMixin):
+
+class StoreCore(StoreCoreStateMixin, StoreCoreRuntimeMixin):
     def __init__(self, data_file: Path | None = None):
         store_module = __import__(__package__, fromlist=["DATA_FILE", "CONFIG_FILE"])
         requested_data_file = data_file or getattr(store_module, "DATA_FILE", DATA_FILE)
@@ -451,6 +454,7 @@ class StoreCore(DashboardMixin, DeliveryMixin, LLMEnhanceMixin, SourceSyncMixin,
         return evidence_pack
 
     def _event_deep_dive_inputs(self, state: dict[str, Any], event: dict[str, Any]) -> list[dict[str, Any]]:
+        from ..intel.deep_dive import canonicalize_url, search_tavily
         candidate_items = self._rank_event_discovery_items(state, event)
         seen_links: set[str] = set()
         resolved: list[dict[str, Any]] = []
@@ -1059,7 +1063,7 @@ class StoreCore(DashboardMixin, DeliveryMixin, LLMEnhanceMixin, SourceSyncMixin,
             *collect_douyin_backend_status(state["channels"]["douyin"], state["browser"]["douyin"]),
         ]
 
-    def _sync_llm_usage(self, state: dict[str, Any], llm_service: LLMService | None) -> None:
+    def _sync_llm_usage(self, state: dict[str, Any], llm_service) -> None:
         if not llm_service:
             return
         state.setdefault("llm", {}).setdefault("usage_today", {})

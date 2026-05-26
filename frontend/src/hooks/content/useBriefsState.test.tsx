@@ -8,6 +8,7 @@ import { useBriefsState } from "./useBriefsState";
 vi.mock("../../lib/api", () => ({
   api: {
     getBriefs: vi.fn(),
+    getBrief: vi.fn(),
     getAgentWorkflows: vi.fn(),
     createEventDeepDive: vi.fn(),
     getEventDeepDive: vi.fn(),
@@ -206,5 +207,55 @@ describe("useBriefsState", () => {
     expect(onActivateBriefs).toHaveBeenCalledTimes(1);
     expect(onMarkBriefsLoaded).toHaveBeenCalledTimes(1);
     expect(onToast).toHaveBeenCalledWith("AI文章已生成：地平线 6 泄露", "success");
+  });
+
+  it("loads single brief detail and merges heavy article fields into local state", async () => {
+    mockedApi.getBriefs.mockResolvedValue({
+      items: [{ ...sampleBrief, wechat_markdown: "", prompt_package_markdown: "" }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      has_more: false,
+      stage_counts: { all: 1, prepared: 1, synced: 0, failed: 0 },
+      record_counts: { all: 1, local_only: 1, draft_synced: 0, published: 0, exceptions: 0 },
+    });
+    mockedApi.getAgentWorkflows.mockResolvedValue({ items: [] });
+    mockedApi.getBrief.mockResolvedValue({
+      item: {
+        ...sampleBrief,
+        prompt_package_markdown: "full-pkg",
+        wechat_markdown: "# 完整正文",
+        quotes: ["引文 1"],
+      },
+    });
+
+    const { result } = renderHook(() =>
+      useBriefsState({
+        onError: vi.fn(),
+        onToast: vi.fn(),
+        onReloadOverview: vi.fn().mockResolvedValue(undefined),
+        onReloadEvents: vi.fn().mockResolvedValue(undefined),
+        onReloadAlerts: vi.fn().mockResolvedValue(undefined),
+        onReloadWatchlist: vi.fn().mockResolvedValue(undefined),
+        onReloadPublishHistory: vi.fn().mockResolvedValue(undefined),
+        onReloadDraftBox: vi.fn().mockResolvedValue(undefined),
+        onMarkBriefsLoaded: vi.fn(),
+        onActivateWatchlist: vi.fn(),
+        onActivateBriefs: vi.fn(),
+        getEventsSnapshot: () => events,
+        getWatchlistSnapshot: () => [],
+        getAlertsSnapshot: () => [],
+      }),
+    );
+
+    await act(async () => {
+      await result.current.loadBriefsData();
+      await result.current.loadBriefDetail("brief-1");
+    });
+
+    expect(mockedApi.getBrief).toHaveBeenCalledWith("brief-1");
+    expect(result.current.briefs[0].wechat_markdown).toBe("# 完整正文");
+    expect(result.current.briefs[0].prompt_package_markdown).toBe("full-pkg");
+    expect(result.current.briefs[0].quotes).toEqual(["引文 1"]);
   });
 });

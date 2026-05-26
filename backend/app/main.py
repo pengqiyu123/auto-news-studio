@@ -105,7 +105,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Auto News Studio API",
-    version=str(VERSION_MANIFEST.get("version") or "0.2.10"),
+    version=str(VERSION_MANIFEST.get("version") or "0.2.11"),
     description="自动化新闻助手运营后台 API，覆盖信息采集、候选选题、公众号草稿和浏览器会话。",
     lifespan=lifespan,
 )
@@ -129,3 +129,7 @@ app.include_router(build_agent_html_router())
 app.include_router(build_browser_router())
 app.include_router(build_wechat_router())
 app.include_router(build_settings_router())
+
+# Agent analytics endpoints
+from .api.admin.agent_analytics import router as agent_analytics_router
+app.include_router(agent_analytics_router)

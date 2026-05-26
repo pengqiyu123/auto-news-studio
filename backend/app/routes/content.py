@@ -19,6 +19,7 @@ from ..models import (
     EventDeepDivesResponse,
     ImportBackupResponse,
 )
+from ..api.admin.agent_analytics import router as analytics_router
 from ..features.briefs.read import (
     copy_brief_package_page as copy_brief_package_page_view,
     get_agent_workflow_page as get_agent_workflow_page_view,
@@ -142,6 +143,9 @@ def build_content_router() -> APIRouter:
             return delete_brief_page_action(brief_id, remote=remote)
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
+
+    # Analytics route group
+    router.include_router(analytics_router)
 
     @router.post("/api/admin/images/upload")
     async def upload_image(file: UploadFile = File(...)):

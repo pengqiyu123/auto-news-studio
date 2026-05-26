@@ -15,6 +15,8 @@ import { type BriefWorkbenchView, type BriefWorkflowFilter, type ShellLogLevelFi
 import { api } from "./lib/api";
 import { deriveRuntimeDisplayStatus, RUNTIME_INTENT_LABELS } from "./lib/runtimeIntent";
 import { draftTabs, intelTabs, systemTabs, type TabKey } from "./navigation/tabs";
+
+const RUNTIME_POLL_INTERVALS = { active: 2000, running: 10000, idle: 10000 } as const;
 import { AlertsPage } from "./screens/alerts/page";
 import { useAlertsState } from "./screens/alerts/state";
 import { BriefsPage } from "./screens/briefs/page";
@@ -45,7 +47,9 @@ const DEFAULT_BRIEFS_PAGE_SIZE = 20;
 const DEFAULT_LOGS_PAGE_SIZE = 50;
 const DEFAULT_PUBLISH_TASKS_PAGE_SIZE = 20;
 const WATCHLIST_TAB_PAGE_SIZE = 200;
-const RUNTIME_AWARE_TABS: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "briefs", "logs"];
+// briefs removed from runtime-aware tabs to prevent request storm
+const RUNTIME_AWARE_TABS: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "logs"];
+const SETTINGS_REMINDER_TOAST = "请先在设置里完成 AI 配置和微信登录，再继续其他工作流。";
 export default function App() {
   useManagedDashboardTab();
 
@@ -61,6 +65,7 @@ export default function App() {
       : null;
 
   const reloadCurrentBriefsRef = useRef<() => Promise<void>>(async () => undefined);
+  const didShowSettingsReminderRef = useRef(false);
 
   const reloadCurrentBriefs = useCallback(() => reloadCurrentBriefsRef.current(), []);
 
@@ -115,6 +120,18 @@ export default function App() {
   const runtimeStatus = dashboard?.runtime_status ?? null;
   const runtimeRunning = Boolean(runtimeStatus?.running);
 
+  const shellLoadBriefsData = useCallback((...args: Parameters<typeof loadBriefsDataRef.current>) => {
+    return loadBriefsDataRef.current(...args);
+  }, []);
+
+  const shellLoadLogsData = useCallback((...args: Parameters<typeof loadLogsDataRef.current>) => {
+    return loadLogsDataRef.current(...args);
+  }, []);
+
+  const shellLoadTabDataImpl = useCallback((tab: TabKey, options: { forceBrowserRefresh: boolean }) => {
+    return loadTabDataImplRef.current(tab, options);
+  }, []);
+
   const {
     loading,
     toast,
@@ -132,9 +149,9 @@ export default function App() {
     dashboardRecentLogs: dashboard?.recent_logs,
     runtimeStatus,
     runtimeAwareTabs: RUNTIME_AWARE_TABS,
-    loadBriefsData: (...args) => loadBriefsDataRef.current(...args),
-    loadLogsData: (...args) => loadLogsDataRef.current(...args),
-    loadTabDataImpl: (tab, options) => loadTabDataImplRef.current(tab, options),
+    loadBriefsData: shellLoadBriefsData,
+    loadLogsData: shellLoadLogsData,
+    loadTabDataImpl: shellLoadTabDataImpl,
     refreshOverviewData,
     onError: setError,
   });
@@ -309,6 +326,8 @@ export default function App() {
     handleDeleteBrief,
     handleCopyBrief,
     handleCopyBriefPackage,
+    loadBriefDetail,
+    loadingBriefDetailId,
   } = useBriefsState({
     onError: (message) => setError(message),
     onToast: showToast,
@@ -395,20 +414,14 @@ export default function App() {
     }
   };
 
+  // Only run once on mount, not on every refreshAll change
+  const didInitRef = useRef(false);
   useEffect(() => {
-    if (activeTab === "settings" || !systemDoctor) {
-      return;
+    if (!didInitRef.current) {
+      didInitRef.current = true;
+      void refreshAll({ refreshActiveTab: false });
     }
-    const llmReady = Boolean(systemDoctor?.items.find((item) => item.key === "llm")?.ok);
-    const wechatReady = Boolean(systemDoctor?.items.find((item) => item.key === "wechat_login")?.ok);
-    if (!llmReady || !wechatReady) {
-      setActiveTab("settings");
-    }
-  }, [systemDoctor, activeTab]);
-
-  useEffect(() => {
-    void refreshAll({ refreshActiveTab: false });
-  }, [refreshAll]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -428,6 +441,18 @@ export default function App() {
       window.clearTimeout(timer);
     };
   }, [loadUpdateInfo]);
+
+  useEffect(() => {
+    if (!systemDoctor || activeTab === "settings" || didShowSettingsReminderRef.current) {
+      return;
+    }
+    const llmReady = Boolean(systemDoctor.items.find((item) => item.key === "llm")?.ok);
+    const wechatReady = Boolean(systemDoctor.items.find((item) => item.key === "wechat_login")?.ok);
+    if (!llmReady || !wechatReady) {
+      didShowSettingsReminderRef.current = true;
+      showToast(SETTINGS_REMINDER_TOAST, "warning");
+    }
+  }, [activeTab, showToast, systemDoctor]);
 
   useEffect(() => {
     void reloadBriefsForActiveTab(briefsPageSize, briefStageFilter, briefWorkflowFilter, briefSearchQuery);
@@ -452,7 +477,7 @@ export default function App() {
     runtimeStatus,
     pollRuntimeStatus,
     runtimeRunning,
-    { active: 2000, running: 10000, idle: 10000 },
+    RUNTIME_POLL_INTERVALS,
   );
 
   function renderNavGroup(items: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }>) {
@@ -797,9 +822,11 @@ export default function App() {
                 publishTasksTotal={publishTasksTotal}
                 refreshing={refreshingMapping}
                 deletingRemoteId={deletingRemoteId}
+                loadingBriefDetailId={loadingBriefDetailId}
                 onRefresh={handleRefreshWeChatMapping}
                 onDeleteRemote={handleDeleteRemoteDraft}
                 onSyncBrief={handleSyncBriefById}
+                onLoadBriefDetail={loadBriefDetail}
                 onPublishTasksPageChange={(page) => {
                   setTabLoading((current) => ({ ...current, ["draft-box"]: true }));
                   void loadDraftBoxData(false, page, publishTasksPageSize).catch((err: unknown) => {

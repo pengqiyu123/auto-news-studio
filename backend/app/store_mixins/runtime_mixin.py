@@ -6,6 +6,7 @@ import time
 import traceback
 from typing import Any
 
+from ..db import database_write_enabled, persist_ingest_chain_state
 from ..models import (
     AutomationMode,
     AutomationModeDefinition,
@@ -731,6 +732,17 @@ class RuntimeMixin:
                 ),
                 triggered_by="scheduler",
             )
+            if database_write_enabled():
+                persist_ingest_chain_state(
+                    state,
+                    source_key=None,
+                    triggered_by="scheduler",
+                    run_id=str(self._runtime_run(runtime).get("run_id") or ""),
+                    started_at=self._runtime_run(runtime).get("started_at"),
+                    finished_at=finish,
+                    status="completed",
+                    warnings=list(sync_response.warnings),
+                )
             with self._lock:
                 self._write(state)
             return {
@@ -771,6 +783,17 @@ class RuntimeMixin:
                 actor=triggered_by,
                 detail=tb,
             )
+            if database_write_enabled():
+                persist_ingest_chain_state(
+                    state,
+                    source_key=None,
+                    triggered_by="scheduler",
+                    run_id=str(self._runtime_run(runtime).get("run_id") or ""),
+                    started_at=self._runtime_run(runtime).get("started_at"),
+                    finished_at=finish,
+                    status="failed",
+                    warnings=[str(exc)],
+                )
             with self._lock:
                 self._write(state)
             raise

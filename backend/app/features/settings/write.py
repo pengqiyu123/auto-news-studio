@@ -4,7 +4,7 @@ from pathlib import Path
 import winreg
 
 from ...routes.common import get_store
-from ...cc_switch_bridge import get_cc_switch_db_path, read_cc_switch_providers
+from ...llm.cc_switch import get_cc_switch_db_path, read_cc_switch_providers
 
 
 def update_wechat_channel(payload):

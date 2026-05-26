@@ -62,9 +62,9 @@ def _make_repo_temp_dir() -> Path:
 
 def _configure_store(temp_dir: Path):
     _prepare_import_stubs()
-    import backend.app.reference_projects as reference_projects
+    import backend.app.store.reference_projects as reference_projects
     import backend.app.store as store_module
-    import backend.app.store_base as store_base
+    import backend.app.store.base as store_base
 
     state_file = temp_dir / "state.json"
     config_file = temp_dir / "config" / "settings.json"

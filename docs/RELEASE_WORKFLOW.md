@@ -1,128 +1,314 @@
-# 发布流程
+# Release Workflow
 
-## 版本号位置
+## Scope
 
-每次发版需要同步更新以下文件中的版本号：
+This document is the canonical release checklist for `D:\python\Auto-news2\auto-news-studio`.
 
-| 文件 | 说明 |
-|------|------|
-| `version.json` | 主版本入口 |
-| `frontend/package.json` | 前端版本 |
-| `frontend/package-lock.json` | 锁文件 |
-| `backend/app/store_base.py` | 后端默认版本常量 |
-| `backend/app/main.py` | 启动时版本 |
-| `backend/app/store_mixins/settings_mixin.py` | 设置相关版本 |
-| `frontend/src/lib/api.ts` | 前端 API 兜底版本 |
-| 测试文件中的硬编码版本 | 如有 |
+It covers:
 
-## 发版步骤
+- version bump
+- validation before release
+- release notes
+- Windows package build
+- git commit / tag / push
+- GitHub Release publication
 
-### 1. 代码与测试
+This repo ships from `master` and the GitHub remote is:
 
-```bash
-# 前端构建 + 类型检查
-cd frontend && npm run build
+- `https://github.com/pengqiyu123/auto-news-studio.git`
 
-# 后端语法检查
-python -m compileall backend/app
+## Source Of Truth
 
-# 后端测试
-python -m pytest backend/tests/ -q
+The app version is primarily sourced from:
 
-# 前端测试
-cd frontend && npm run test -- --run
+- [version.json](/d:/python/Auto-news2/auto-news-studio/version.json)
+
+The backend and frontend both have local fallbacks that must stay aligned with that version.
+
+## Files To Update For Every Release
+
+When bumping the release version, update all of these together:
+
+1. [version.json](/d:/python/Auto-news2/auto-news-studio/version.json)
+2. [frontend/package.json](/d:/python/Auto-news2/auto-news-studio/frontend/package.json)
+3. [frontend/package-lock.json](/d:/python/Auto-news2/auto-news-studio/frontend/package-lock.json)
+4. [backend/app/store/base.py](/d:/python/Auto-news2/auto-news-studio/backend/app/store/base.py)
+5. [backend/app/main.py](/d:/python/Auto-news2/auto-news-studio/backend/app/main.py)
+6. [backend/app/store_mixins/settings_mixin.py](/d:/python/Auto-news2/auto-news-studio/backend/app/store_mixins/settings_mixin.py)
+7. [frontend/src/lib/api.ts](/d:/python/Auto-news2/auto-news-studio/frontend/src/lib/api.ts)
+8. Any tests with pinned app-version expectations
+9. [README.md](/d:/python/Auto-news2/auto-news-studio/README.md)
+10. A new release note under [docs/release](/d:/python/Auto-news2/auto-news-studio/docs/release)
+
+## Pre-Release Rules
+
+Before tagging a release:
+
+1. Do not overwrite or reuse an existing git tag.
+2. Do not treat `git push` as a published release.
+3. Do not publish if the Windows package has not been built and checked.
+4. Do not publish using synthetic or placeholder release notes.
+5. If browser automation or publishing logic changed, validate the real chain, not just mocks.
+
+## Recommended Release Order
+
+Use this order every time:
+
+1. Finish code changes.
+2. Review `git status`.
+3. Bump version files.
+4. Write release notes.
+5. Run validation.
+6. Build Windows package.
+7. Review `git diff`.
+8. Commit.
+9. Tag.
+10. Push branch and tag.
+11. Create GitHub Release.
+12. Verify the Release page and updater metadata.
+
+## Validation Checklist
+
+Run validation from repo root unless noted otherwise.
+
+### Frontend
+
+```powershell
+Set-Location D:\python\Auto-news2\auto-news-studio\frontend
+npm run build
 ```
 
-### 2. 编写更新说明
+If you changed targeted frontend behavior, also run the relevant test files, for example:
 
-新建 `docs/release/RELEASE_NOTES_x.y.z.md`，格式示例：
+```powershell
+npm test -- --run src/hooks/wechat/useWechatState.test.tsx src/hooks/content/useBriefsState.test.tsx
+```
+
+### Backend
+
+From repo root:
+
+```powershell
+Set-Location D:\python\Auto-news2\auto-news-studio
+$env:PYTHONPATH='D:\python\Auto-news2\auto-news-studio'
+pytest backend/tests -q
+```
+
+If the full suite is too heavy for a patch release, run the affected test set explicitly and record that scope in the release note.
+
+### Optional Syntax Safety
+
+```powershell
+Set-Location D:\python\Auto-news2\auto-news-studio
+python -m compileall backend/app
+```
+
+## Release Notes
+
+Each release must have a dedicated markdown file:
+
+- format: `docs/release/RELEASE_NOTES_X.Y.Z.md`
+
+Example:
 
 ```markdown
-# vX.Y.Z
+# 0.2.11 更新说明
 
-## 改动
-- xxx
-- xxx
+## 本次重点
+- ...
 
 ## 修复
-- xxx
+- ...
+
+## 验证
+- ...
 ```
 
-### 3. 构建分发包
+Release notes should describe:
+
+- user-visible outcomes
+- important fixes
+- validation actually performed
+- any release caveats
+
+## Windows Package Build
+
+The Windows package is built by:
+
+- [scripts/build_release.ps1](/d:/python/Auto-news2/auto-news-studio/scripts/build_release.ps1)
+
+Run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/build_release.ps1
+Set-Location D:\python\Auto-news2\auto-news-studio
+powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1
 ```
 
-产物位于 `dist/windows/auto-news-studio-windows.zip`。分发包默认 offline-ready，包含 `.venv`。
+Expected artifacts:
 
-### 4. 提交与打 Tag
+1. `dist/windows/auto-news-studio-windows/`
+2. `dist/windows/auto-news-studio-windows.zip`
 
-```bash
-git add <本次版本相关文件>
-git commit -m "release: ship vX.Y.Z"
-git tag vX.Y.Z
-git push origin master vX.Y.Z
-```
+The package currently bundles:
 
-### 5. 发布 GitHub Release
+- backend app code
+- frontend `dist`
+- `.venv` when present
+- startup / stop / doctor scripts
+- `version.json`
+- `README.md`
+- `LICENSE`
+- `docs/DISTRIBUTION.md`
 
-**方式 A：使用 gh CLI**
+## Git Commit And Tag
 
-```bash
-gh release create vX.Y.Z dist/windows/auto-news-studio-windows.zip \
-  --title "vX.Y.Z" \
-  --notes-file docs/release/RELEASE_NOTES_X.Y.Z.md
-```
-
-**方式 B：无 gh 时，用 Git 凭据调 API**
+Review the final diff first:
 
 ```powershell
-# 读取凭据
+Set-Location D:\python\Auto-news2\auto-news-studio
+git status --short
+git diff --stat
+```
+
+Then stage, commit, and tag:
+
+```powershell
+git add .
+git commit -m "release: ship v0.2.11"
+git tag v0.2.11
+```
+
+If the tag already exists locally:
+
+```powershell
+git tag --list v0.2.11
+```
+
+Do not delete and reuse it for a different payload. Bump to the next version instead.
+
+## Push To GitHub
+
+Push branch and tag:
+
+```powershell
+Set-Location D:\python\Auto-news2\auto-news-studio
+git push origin master
+git push origin v0.2.11
+```
+
+The helper script [scripts/release_version.ps1](/d:/python/Auto-news2/auto-news-studio/scripts/release_version.ps1) can push a tag after frontend build and backend compile, but it does not create release notes, does not build the Windows zip, and does not publish the GitHub Release. Treat it as a helper, not the full workflow.
+
+## Publish GitHub Release
+
+### Option A: GitHub CLI
+
+```powershell
+Set-Location D:\python\Auto-news2\auto-news-studio
+gh release create v0.2.11 dist/windows/auto-news-studio-windows.zip `
+  --title "v0.2.11" `
+  --notes-file docs/release/RELEASE_NOTES_0.2.11.md
+```
+
+### Option B: GitHub API Using Existing Git Credentials
+
+```powershell
+Set-Location D:\python\Auto-news2\auto-news-studio
 $cred = cmd /c "echo protocol=https&echo host=github.com&echo.&exit" | git credential fill
 $token = ($cred | Select-String '^password=').ToString().Replace('password=', '').Trim()
 
-# 创建 Release
 $headers = @{
   Authorization = "Bearer $token"
   Accept = "application/vnd.github+json"
   "User-Agent" = "Auto-News-Studio"
   "X-GitHub-Api-Version" = "2022-11-28"
 }
+
 $body = @{
-  tag_name = "vX.Y.Z"
+  tag_name = "v0.2.11"
   target_commitish = "master"
-  name = "vX.Y.Z"
-  body = (Get-Content docs/release/RELEASE_NOTES_X.Y.Z.md -Raw)
+  name = "v0.2.11"
+  body = (Get-Content .\docs\release\RELEASE_NOTES_0.2.11.md -Raw)
   draft = $false
   prerelease = $false
 } | ConvertTo-Json -Depth 8
 
 Invoke-RestMethod -Method Post `
-  -Uri "https://api.github.com/repos/<owner>/<repo>/releases" `
-  -Headers $headers -Body $body -ContentType "application/json"
+  -Uri "https://api.github.com/repos/pengqiyu123/auto-news-studio/releases" `
+  -Headers $headers `
+  -Body $body `
+  -ContentType "application/json"
 
-# 上传 zip 资产
 $release = Invoke-RestMethod -Method Get `
-  -Uri "https://api.github.com/repos/<owner>/<repo>/releases/tags/vX.Y.Z" `
+  -Uri "https://api.github.com/repos/pengqiyu123/auto-news-studio/releases/tags/v0.2.11" `
   -Headers $headers
+
 $uploadUri = $release.upload_url.Split('{')[0] + '?name=auto-news-studio-windows.zip'
 Invoke-RestMethod -Method Post `
-  -Uri $uploadUri -Headers $headers `
-  -InFile dist/windows/auto-news-studio-windows.zip `
+  -Uri $uploadUri `
+  -Headers $headers `
+  -InFile .\dist\windows\auto-news-studio-windows.zip `
   -ContentType "application/zip"
 ```
 
-### 6. 验证
+## Post-Release Verification
 
-- 启动应用，确认首页/设置页出现更新提示
-- 确认 GitHub Release 页面可见 zip 资产
+After publishing the GitHub Release:
 
-## 注意事项
+1. Open the Release page and confirm the zip is attached.
+2. Confirm the tag and release title match exactly.
+3. Confirm `version.json` inside the repo and inside the Windows package is the new version.
+4. Start the app and verify the version shown by the UI/API matches the release.
+5. Confirm update metadata resolves correctly from GitHub Releases.
 
-- **git push 不等于发版**：应用读取的是 GitHub Releases，不是 commit。必须创建 Release 才会触发旧版本更新提示。
-- **不要复用旧 tag**：如果本地已存在同名 tag，必须升级版本号。
-- **浏览器链路回归**：涉及微信/抖音浏览器操作时，`check-drafts`、`check-publish-history`、`sync`、`delete` 共享同一把浏览器锁，必须串行验证。
-- **Agent 回归**：先确认调度器已停止，再依次测试 sync → deep-dive → brief → agent/articles。
-- **前端 dist 依赖**：某些后端测试读取 `frontend/dist/assets`，所以先 `npm run build` 再跑后端回归。
-- **重启后再验证**：改过后端代码后，必须 stop + start，否则命中旧常驻进程。
+## Product-Specific Release Risks
+
+Pay extra attention to these areas when they changed:
+
+1. Browser automation
+   Real WeChat / Douyin flows can pass unit tests but still fail on real pages.
+
+2. PostgreSQL truth mode
+   If `STATE_BACKEND=postgres` behavior changed, verify both write path and read path.
+
+3. Draft / publish reconciliation
+   Check that local records and remote state still match after release.
+
+4. Startup lifecycle
+   If backend startup, runtime, or settings boot changed, stop and restart the actual service before signoff.
+
+## Minimum Release Evidence To Keep
+
+For each shipped version, keep:
+
+1. the commit SHA
+2. the tag
+3. the release note markdown
+4. the built zip
+5. the commands used for validation
+
+## Current Patch Release Template
+
+For the current repo state, a practical patch release sequence looks like:
+
+```powershell
+Set-Location D:\python\Auto-news2\auto-news-studio
+
+# 1. Validate
+$env:PYTHONPATH='D:\python\Auto-news2\auto-news-studio'
+pytest backend/tests/test_db_ingest_projection.py backend/tests/test_briefs_mixin.py -q
+Set-Location .\frontend
+npm test -- --run src/hooks/wechat/useWechatState.test.tsx src/hooks/content/useBriefsState.test.tsx
+npm run build
+Set-Location ..
+
+# 2. Build release zip
+powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1
+
+# 3. Review and ship
+git status --short
+git add .
+git commit -m "release: ship v0.2.11"
+git tag v0.2.11
+git push origin master
+git push origin v0.2.11
+```

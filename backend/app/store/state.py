@@ -14,7 +14,7 @@ from uuid import uuid4
 import xml.etree.ElementTree as ET
 
 from ..intel.normalize import normalize_raw_items
-from ..publishers import default_browser_profile_path, ensure_channel_defaults, ensure_douyin_channel_defaults
+# publishers imported lazily to avoid circular import
 from .reference_projects import write_reference_baseline
 from .base import (
     DEFAULT_RUNTIME_INTENT,
@@ -138,6 +138,7 @@ def _wechat_html(markdown: str) -> str:
 
 class StoreCoreStateMixin:
     def _bootstrap_state(self) -> dict[str, Any]:
+        from ..publishers import default_browser_profile_path
         reference_projects = write_reference_baseline()
         sources = self._build_source_registry()
         state = {
@@ -337,6 +338,7 @@ class StoreCoreStateMixin:
         )
         return state
     def _bootstrap_user_settings(self) -> dict[str, Any]:
+        from ..publishers import default_browser_profile_path
         settings = deepcopy(DEFAULT_USER_SETTINGS)
         settings["llm"] = default_llm_state()
         settings["wechat"]["risk_keywords"] = ["投资建议", "医疗建议", "未经核实", "爆料"]
@@ -407,6 +409,7 @@ class StoreCoreStateMixin:
         self._write_config(migrated)
 
     def _apply_user_settings_to_state(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+        from ..publishers import ensure_channel_defaults
         state["llm"] = deepcopy_json(config.get("llm", default_llm_state()))
         channels = state.setdefault("channels", {})
         channels["wechat"] = ensure_channel_defaults(config.get("wechat", {}))
@@ -673,6 +676,7 @@ class StoreCoreStateMixin:
             )
 
         channels = state.setdefault("channels", {})
+        from ..publishers import ensure_channel_defaults, ensure_douyin_channel_defaults
         channels["wechat"] = ensure_channel_defaults(channels.get("wechat", {}))
         channels["douyin"] = ensure_douyin_channel_defaults(channels.get("douyin", {}))
 
@@ -1144,6 +1148,7 @@ class StoreCoreStateMixin:
         channels = state.setdefault("channels", {})
         raw_wechat_channel = dict(config.get("wechat", channels.setdefault("wechat", {})))
         raw_douyin_channel = dict(config.get("douyin", channels.setdefault("douyin", {})))
+        from ..publishers import ensure_channel_defaults, ensure_douyin_channel_defaults
         wechat_channel = ensure_channel_defaults(channels.setdefault("wechat", {}))
         wechat_channel.update(ensure_channel_defaults(raw_wechat_channel))
         channels["wechat"] = wechat_channel

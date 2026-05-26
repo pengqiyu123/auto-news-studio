@@ -297,6 +297,23 @@ Returns a quality report with:
 
 Use this during Critique to detect AI-sounding writing patterns.
 
+### Title optimization feedback loop
+
+- `POST /api/admin/agent/analytics/title-optimization`
+
+Generates a Markdown report analyzing high-performing articles from publish history. Use before writing to learn from past success.
+
+Response includes:
+- `report` — Markdown analysis with top 10 performers, title patterns, and AI writing suggestions
+- `high_performers` — List of best articles with metrics (read, like, share, recommend, comment)
+- `stats` — Summary statistics
+
+Workflow:
+1. Call `POST /api/admin/browser/wechat/check-publish-history?triggered_by=agent` to fetch latest metrics
+2. Call `POST /api/admin/agent/analytics/title-optimization` to get the report
+3. Read `report` field for title patterns and writing suggestions
+4. Apply patterns when generating new article titles
+
 How to judge whether collection really succeeded:
 
 1. the sync endpoint returns HTTP `200`
