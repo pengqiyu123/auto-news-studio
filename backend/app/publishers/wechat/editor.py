@@ -7,6 +7,7 @@ from ...store.base import UTC
 from ...content.wechat_format import markdown_to_wechat_html
 from ..browser_base import (
     ARTIFACT_ROOT,
+    _count_context_pages,
     _page_url,
     _pick_selector,
     _pick_visible_locator,

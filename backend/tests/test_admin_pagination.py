@@ -695,6 +695,270 @@ def test_agent_can_create_local_brief_record_without_upload() -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_manual_daily_digest_endpoint_creates_one_local_roundup() -> None:
+    temp_dir = _make_repo_temp_dir()
+    try:
+        client = _build_client(temp_dir)
+        state_file = temp_dir / "data" / "state.json"
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        state["automation_mode"] = "radar_and_draft"
+        state["runtime_plan"] = {
+            "launch_mode": "interval_now",
+            "interval_minutes": 30,
+            "timezone": "Asia/Shanghai",
+            "work_scope": "collect_events_alerts",
+            "delivery_mode": "immediate",
+            "admission_strategy": "balanced",
+            "batch_limit": 5,
+            "admission_filters": {
+                "require_watchlisted": False,
+                "require_entity_match": False,
+                "min_source_count": 0,
+                "min_fulltext_count": 1,
+                "breakout_only": False,
+                "exclude_existing_brief": True,
+                "exclude_synced_brief": True,
+            },
+        }
+        state["briefs"] = []
+        state["intel_events"] = []
+        state["event_deep_dives"] = []
+        for index, title in enumerate(
+            [
+                "华为发布 AI DC 全栈方案",
+                "OpenAI 推出企业管理更新",
+                "国产芯片工具链更新",
+            ],
+            start=1,
+        ):
+            event_id = f"evt-daily-api-{index}"
+            fact = f"{title}，这是第 {index} 条可核验事实。"
+            state["intel_events"].append(
+                {
+                    "id": event_id,
+                    "title": title,
+                    "summary": fact,
+                    "representative_link": f"https://example.com/daily-api-{index}",
+                    "representative_source_name": "Example",
+                    "representative_discovery_item_id": f"disc-daily-api-{index}",
+                    "discovery_item_ids": [f"disc-daily-api-{index}"],
+                    "source_keys": ["rss-openai"],
+                    "source_names": ["Example"],
+                    "platforms": ["rss"],
+                    "platform_count": 1,
+                    "source_count": 2,
+                    "member_count": 1,
+                    "story_count": 1,
+                    "member_delta": 0,
+                    "platform_delta": 0,
+                    "published_at": "2026-05-26T10:00:00+08:00",
+                    "latest_collected_at": "2026-05-26T10:05:00+08:00",
+                    "first_seen_at": "2026-05-26T10:05:00+08:00",
+                    "last_seen_at": "2026-05-26T10:05:00+08:00",
+                    "tags": ["ai"],
+                    "anchor_tokens": ["ai"],
+                    "velocity_score": 80.0,
+                    "coverage_score": 70.0,
+                    "freshness_score": 90.0,
+                    "composite_score": 90.0 - index,
+                    "velocity_details": {},
+                    "alert_state": "breakout" if index == 1 else "rising",
+                    "change_state": "new_event",
+                    "alert_reason": "",
+                    "entity_ids": [],
+                    "entity_names": [title.split()[0]],
+                    "watchlisted": False,
+                    "ignored": False,
+                    "deep_dive_id": f"dd-daily-api-{index}",
+                    "brief_id": None,
+                    "deep_dive_status": "ready",
+                    "brief_status": None,
+                    "worth_to_brief": True,
+                    "worth_reason": "有明确事实和来源。",
+                }
+            )
+            state["event_deep_dives"].append(
+                {
+                    "id": f"dd-daily-api-{index}",
+                    "event_id": event_id,
+                    "status": "ready",
+                    "started_at": "2026-05-26T10:00:00+08:00",
+                    "finished_at": "2026-05-26T10:01:00+08:00",
+                    "updated_at": f"2026-05-26T10:0{index}:00+08:00",
+                    "attempted_count": 1,
+                    "success_count": 1,
+                    "failed_count": 0,
+                    "resolved_evidence_pack": [],
+                    "full_text_sources": [],
+                    "sources": [
+                        {
+                            "source_key": "example",
+                            "source_name": "Example",
+                            "original_link": f"https://example.com/daily-api-{index}",
+                            "canonical_link": f"https://example.com/daily-api-{index}",
+                            "title": title,
+                            "published_at": "2026-05-26T10:00:00+08:00",
+                            "fetch_status": "fetched",
+                            "extract_status": "extracted",
+                            "word_count": 120,
+                            "cleaned_full_text": fact,
+                            "excerpt": fact,
+                            "quotes": [],
+                            "error": None,
+                        }
+                    ],
+                    "facts": [fact],
+                    "quotes": [],
+                    "timeline": [f"2026-05-26：{title}"],
+                    "worthiness": {"worth_to_brief": True, "reason": "该事件值得纳入今日速递。"},
+                    "last_error": None,
+                    "article_writing_guide": "Guide text",
+                }
+            )
+        _write_json(state_file, state)
+
+        response = client.post("/api/admin/briefs/daily-digest?triggered_by=dashboard")
+
+        assert response.status_code == 200
+        payload = response.json()["item"]
+        assert payload["title"].startswith("今日科技速递")
+        assert payload["brief_level"] == "rule"
+        assert payload["workflow_mode"] == "traditional"
+        assert payload["stage"] == "prepared"
+        assert payload["wechat_editor_url"] is None
+        assert "## 1. 华为发布 AI DC 全栈方案" in payload["wechat_markdown"]
+        assert "## 2. OpenAI 推出企业管理更新" in payload["wechat_markdown"]
+        assert "## 3. 国产芯片工具链更新" in payload["wechat_markdown"]
+
+        refreshed = json.loads(state_file.read_text(encoding="utf-8"))
+        assert len(refreshed["briefs"]) == 1
+        assert all(item.get("brief_id") == payload["id"] for item in refreshed["intel_events"])
+        assert all(item.get("brief_status") == "prepared" for item in refreshed["intel_events"])
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_manual_daily_digest_endpoint_requires_two_qualified_events() -> None:
+    temp_dir = _make_repo_temp_dir()
+    try:
+        client = _build_client(temp_dir)
+        state_file = temp_dir / "data" / "state.json"
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        state["automation_mode"] = "radar_and_draft"
+        state["runtime_plan"] = {
+            "launch_mode": "interval_now",
+            "interval_minutes": 30,
+            "timezone": "Asia/Shanghai",
+            "work_scope": "collect_events_alerts",
+            "delivery_mode": "immediate",
+            "admission_strategy": "balanced",
+            "batch_limit": 5,
+            "admission_filters": {
+                "require_watchlisted": False,
+                "require_entity_match": False,
+                "min_source_count": 0,
+                "min_fulltext_count": 1,
+                "breakout_only": False,
+                "exclude_existing_brief": True,
+                "exclude_synced_brief": True,
+            },
+        }
+        state["briefs"] = []
+        state["intel_events"] = [
+            {
+                "id": "evt-daily-api-single",
+                "title": "唯一可写事件",
+                "summary": "只有一条可写事件。",
+                "representative_link": "https://example.com/single",
+                "representative_source_name": "Example",
+                "representative_discovery_item_id": "disc-single",
+                "discovery_item_ids": ["disc-single"],
+                "source_keys": ["rss-openai"],
+                "source_names": ["Example"],
+                "platforms": ["rss"],
+                "platform_count": 1,
+                "source_count": 2,
+                "member_count": 1,
+                "story_count": 1,
+                "member_delta": 0,
+                "platform_delta": 0,
+                "published_at": "2026-05-26T10:00:00+08:00",
+                "latest_collected_at": "2026-05-26T10:05:00+08:00",
+                "first_seen_at": "2026-05-26T10:05:00+08:00",
+                "last_seen_at": "2026-05-26T10:05:00+08:00",
+                "tags": ["ai"],
+                "anchor_tokens": ["ai"],
+                "velocity_score": 80.0,
+                "coverage_score": 70.0,
+                "freshness_score": 90.0,
+                "composite_score": 90.0,
+                "velocity_details": {},
+                "alert_state": "breakout",
+                "change_state": "new_event",
+                "alert_reason": "",
+                "entity_ids": [],
+                "entity_names": ["唯一"],
+                "watchlisted": False,
+                "ignored": False,
+                "deep_dive_id": "dd-daily-api-single",
+                "brief_id": None,
+                "deep_dive_status": "ready",
+                "brief_status": None,
+                "worth_to_brief": True,
+                "worth_reason": "有明确事实和来源。",
+            }
+        ]
+        state["event_deep_dives"] = [
+            {
+                "id": "dd-daily-api-single",
+                "event_id": "evt-daily-api-single",
+                "status": "ready",
+                "started_at": "2026-05-26T10:00:00+08:00",
+                "finished_at": "2026-05-26T10:01:00+08:00",
+                "updated_at": "2026-05-26T10:01:00+08:00",
+                "attempted_count": 1,
+                "success_count": 1,
+                "failed_count": 0,
+                "resolved_evidence_pack": [],
+                "full_text_sources": [],
+                "sources": [
+                    {
+                        "source_key": "example",
+                        "source_name": "Example",
+                        "original_link": "https://example.com/single",
+                        "canonical_link": "https://example.com/single",
+                        "title": "唯一可写事件",
+                        "published_at": "2026-05-26T10:00:00+08:00",
+                        "fetch_status": "fetched",
+                        "extract_status": "extracted",
+                        "word_count": 120,
+                        "cleaned_full_text": "只有一条可写事件。",
+                        "excerpt": "只有一条可写事件。",
+                        "quotes": [],
+                        "error": None,
+                    }
+                ],
+                "facts": ["只有一条可写事件。"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {"worth_to_brief": True, "reason": "该事件值得观察。"},
+                "last_error": None,
+                "article_writing_guide": "Guide text",
+            }
+        ]
+        _write_json(state_file, state)
+
+        response = client.post("/api/admin/briefs/daily-digest?triggered_by=dashboard")
+
+        assert response.status_code == 400
+        assert "至少需要 2 条合格事件" in response.json()["detail"]
+        refreshed = json.loads(state_file.read_text(encoding="utf-8"))
+        assert refreshed["briefs"] == []
+        assert refreshed["intel_events"][0].get("brief_id") is None
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 def test_create_agent_article_still_saves_into_shared_briefs() -> None:
     temp_dir = _make_repo_temp_dir()
     try:
@@ -742,5 +1006,43 @@ def test_create_agent_article_still_saves_into_shared_briefs() -> None:
         assert levels["OpenAI Health 正式发布"] == "enhanced"
         agent_article_title = next(title for title in titles if title.startswith("OpenAI Health 正式发布，医疗 AI 商业化进入新阶段"))
         assert levels[agent_article_title] == "article"
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_abandon_agent_workflow_endpoint_marks_session_abandoned() -> None:
+    temp_dir = _make_repo_temp_dir()
+    try:
+        client = _build_client(temp_dir)
+        state_file = temp_dir / "data" / "state.json"
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        state["agent_workflows"] = [
+            {
+                "workflow_session_id": "agentwf-api-1",
+                "status": "failed",
+                "current_step": "article_saved",
+                "event_id": "evt-1",
+                "material_brief_id": None,
+                "article_brief_id": "brief-1",
+                "target_platforms": ["wechat"],
+                "last_error": "上传失败",
+                "started_at": "2026-05-13T10:00:00+08:00",
+                "updated_at": "2026-05-13T10:01:00+08:00",
+                "finished_at": None,
+            }
+        ]
+        _write_json(state_file, state)
+
+        response = client.post("/api/admin/agent/workflows/agentwf-api-1/abandon?triggered_by=dashboard")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["item"]["workflow_session_id"] == "agentwf-api-1"
+        assert payload["item"]["status"] == "abandoned"
+        assert payload["item"]["finished_at"]
+
+        workflows_response = client.get("/api/admin/agent/workflows")
+        assert workflows_response.status_code == 200
+        assert workflows_response.json()["items"][0]["status"] == "abandoned"
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)

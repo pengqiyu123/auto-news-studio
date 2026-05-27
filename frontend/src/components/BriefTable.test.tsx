@@ -60,6 +60,9 @@ describe("BriefTable", () => {
         onCopyPackage={async () => {}}
         onSyncBrief={async () => {}}
         onDeleteBrief={async () => {}}
+        onAbandonAgentWorkflow={async () => {}}
+        onCreateDailyDigest={async () => {}}
+        onLoadBriefDetail={async () => null}
       />,
     );
 
@@ -77,5 +80,223 @@ describe("BriefTable", () => {
 
     fireEvent.change(screen.getByDisplayValue("20"), { target: { value: "50" } });
     expect(onPageSizeChange).toHaveBeenCalledWith(50);
+  });
+
+  it("shows the manual daily digest action and disables it after today's digest exists", () => {
+    const onCreateDailyDigest = vi.fn();
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+    const { rerender } = render(
+      <BriefTable
+        briefs={[brief]}
+        page={1}
+        pageSize={20}
+        total={1}
+        view="all"
+        workflowView="all"
+        searchTerm=""
+        recordCounts={{ all: 1, local_only: 1, draft_synced: 0, published: 0, exceptions: 0 }}
+        agentWorkflows={[]}
+        onViewChange={() => {}}
+        onWorkflowViewChange={() => {}}
+        onSearchChange={() => {}}
+        onPageChange={() => {}}
+        onPageSizeChange={() => {}}
+        onRefreshBrief={async () => {}}
+        onCopyBrief={async () => {}}
+        onCopyPackage={async () => {}}
+        onSyncBrief={async () => {}}
+        onDeleteBrief={async () => {}}
+        onAbandonAgentWorkflow={async () => {}}
+        onCreateDailyDigest={onCreateDailyDigest}
+        onLoadBriefDetail={async () => null}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "生成今日速递" }));
+    expect(onCreateDailyDigest).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <BriefTable
+        briefs={[{ ...brief, title: `今日科技速递｜${today}` }]}
+        page={1}
+        pageSize={20}
+        total={1}
+        view="all"
+        workflowView="all"
+        searchTerm=""
+        recordCounts={{ all: 1, local_only: 1, draft_synced: 0, published: 0, exceptions: 0 }}
+        agentWorkflows={[]}
+        onViewChange={() => {}}
+        onWorkflowViewChange={() => {}}
+        onSearchChange={() => {}}
+        onPageChange={() => {}}
+        onPageSizeChange={() => {}}
+        onRefreshBrief={async () => {}}
+        onCopyBrief={async () => {}}
+        onCopyPackage={async () => {}}
+        onSyncBrief={async () => {}}
+        onDeleteBrief={async () => {}}
+        onAbandonAgentWorkflow={async () => {}}
+        onCreateDailyDigest={onCreateDailyDigest}
+        onLoadBriefDetail={async () => null}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "今日速递已生成" })).toBeDisabled();
+  });
+
+  it("renders included events only for digest brief details", () => {
+    const digestBrief: BriefItem = {
+      ...brief,
+      id: "brief-digest",
+      title: "今日科技速递｜2026-05-26",
+      workflow_mode: "traditional",
+      brief_level: "rule",
+      included_events: [
+        {
+          event_id: "evt-1",
+          title: "华为发布 AI DC 全栈方案",
+          alert_state: "breakout",
+          source_count: 3,
+          deep_dive_status: "ready",
+          representative_link: "https://example.com/huawei-ai-dc",
+        },
+        {
+          event_id: "evt-2",
+          title: "OpenAI 推出企业管理更新",
+          alert_state: "rising",
+          source_count: 2,
+          deep_dive_status: "ready",
+          representative_link: "https://example.com/openai-enterprise",
+        },
+      ],
+    };
+
+    const { rerender } = render(
+      <BriefTable
+        briefs={[brief]}
+        page={1}
+        pageSize={20}
+        total={1}
+        view="all"
+        workflowView="all"
+        searchTerm=""
+        recordCounts={{ all: 1, local_only: 1, draft_synced: 0, published: 0, exceptions: 0 }}
+        agentWorkflows={[]}
+        onViewChange={() => {}}
+        onWorkflowViewChange={() => {}}
+        onSearchChange={() => {}}
+        onPageChange={() => {}}
+        onPageSizeChange={() => {}}
+        onRefreshBrief={async () => {}}
+        onCopyBrief={async () => {}}
+        onCopyPackage={async () => {}}
+        onSyncBrief={async () => {}}
+        onDeleteBrief={async () => {}}
+        onAbandonAgentWorkflow={async () => {}}
+        onCreateDailyDigest={async () => {}}
+        onLoadBriefDetail={async () => null}
+      />,
+    );
+
+    expect(screen.queryByText("收录事件")).not.toBeInTheDocument();
+
+    rerender(
+      <BriefTable
+        briefs={[digestBrief]}
+        page={1}
+        pageSize={20}
+        total={1}
+        view="all"
+        workflowView="all"
+        searchTerm=""
+        recordCounts={{ all: 1, local_only: 1, draft_synced: 0, published: 0, exceptions: 0 }}
+        agentWorkflows={[]}
+        onViewChange={() => {}}
+        onWorkflowViewChange={() => {}}
+        onSearchChange={() => {}}
+        onPageChange={() => {}}
+        onPageSizeChange={() => {}}
+        onRefreshBrief={async () => {}}
+        onCopyBrief={async () => {}}
+        onCopyPackage={async () => {}}
+        onSyncBrief={async () => {}}
+        onDeleteBrief={async () => {}}
+        onAbandonAgentWorkflow={async () => {}}
+        onCreateDailyDigest={async () => {}}
+        onLoadBriefDetail={async () => null}
+      />,
+    );
+
+    expect(screen.getByText("收录事件")).toBeInTheDocument();
+    expect(screen.getByText("华为发布 AI DC 全栈方案")).toBeInTheDocument();
+    expect(screen.getByText("breakout")).toBeInTheDocument();
+    expect(screen.getByText("来源 3")).toBeInTheDocument();
+    expect(screen.getAllByText("深挖 ready")[0]).toBeInTheDocument();
+  });
+
+  it("shows abandon action for unfinished agent workflows only", () => {
+    const onAbandonAgentWorkflow = vi.fn();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { rerender } = render(
+      <BriefTable
+        briefs={[brief]}
+        page={1}
+        pageSize={20}
+        total={1}
+        view="all"
+        workflowView="all"
+        searchTerm=""
+        recordCounts={{ all: 1, local_only: 1, draft_synced: 0, published: 0, exceptions: 0 }}
+        agentWorkflows={[{ workflow_session_id: "agentwf-1", status: "failed", current_step: "article_saved", target_platforms: ["wechat"], started_at: "2026-05-13T10:00:00+08:00", updated_at: "2026-05-13T10:01:00+08:00" }]}
+        onViewChange={() => {}}
+        onWorkflowViewChange={() => {}}
+        onSearchChange={() => {}}
+        onPageChange={() => {}}
+        onPageSizeChange={() => {}}
+        onRefreshBrief={async () => {}}
+        onCopyBrief={async () => {}}
+        onCopyPackage={async () => {}}
+        onSyncBrief={async () => {}}
+        onDeleteBrief={async () => {}}
+        onAbandonAgentWorkflow={onAbandonAgentWorkflow}
+        onCreateDailyDigest={async () => {}}
+        onLoadBriefDetail={async () => null}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "放弃 Agent 会话" }));
+    expect(onAbandonAgentWorkflow).toHaveBeenCalledWith("agentwf-1");
+
+    rerender(
+      <BriefTable
+        briefs={[brief]}
+        page={1}
+        pageSize={20}
+        total={1}
+        view="all"
+        workflowView="all"
+        searchTerm=""
+        recordCounts={{ all: 1, local_only: 1, draft_synced: 0, published: 0, exceptions: 0 }}
+        agentWorkflows={[{ workflow_session_id: "agentwf-1", status: "abandoned", current_step: "article_saved", target_platforms: ["wechat"], started_at: "2026-05-13T10:00:00+08:00", updated_at: "2026-05-13T10:02:00+08:00", finished_at: "2026-05-13T10:02:00+08:00" }]}
+        onViewChange={() => {}}
+        onWorkflowViewChange={() => {}}
+        onSearchChange={() => {}}
+        onPageChange={() => {}}
+        onPageSizeChange={() => {}}
+        onRefreshBrief={async () => {}}
+        onCopyBrief={async () => {}}
+        onCopyPackage={async () => {}}
+        onSyncBrief={async () => {}}
+        onDeleteBrief={async () => {}}
+        onAbandonAgentWorkflow={onAbandonAgentWorkflow}
+        onCreateDailyDigest={async () => {}}
+        onLoadBriefDetail={async () => null}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "放弃 Agent 会话" })).not.toBeInTheDocument();
   });
 });

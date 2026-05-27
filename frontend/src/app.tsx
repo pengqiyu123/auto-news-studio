@@ -318,10 +318,14 @@ export default function App() {
     busyBriefId,
     pendingDeepDiveTitle,
     pendingBriefTitle,
+    creatingDailyDigest,
+    abandoningWorkflowId,
     loadBriefsData,
     handleDeepDiveEvent,
     handleOpenDeepDive,
     handleCreateBrief,
+    handleCreateDailyDigestBrief,
+    handleAbandonAgentWorkflow,
     handleBriefAction,
     handleDeleteBrief,
     handleCopyBrief,
@@ -361,6 +365,7 @@ export default function App() {
     handleStartRuntime,
     handleStopRuntime,
     handleSaveRuntimePlan,
+    handleSetAutomationMode,
     handleRunRuntimeIntent,
   } = useRuntimeState({
     runtimePlan: dashboard?.runtime_plan ?? null,
@@ -638,6 +643,7 @@ export default function App() {
                 busyMaintenanceIntent={busyMaintenanceIntent}
                 refreshing={loading}
                 onSaveRuntimePlan={handleSaveRuntimePlan}
+                onSetAutomationMode={handleSetAutomationMode}
                 onStart={handleStartRuntime}
                 onStop={handleStopRuntime}
                 onRunIntent={handleRunRuntimeIntent}
@@ -769,6 +775,9 @@ export default function App() {
                 agentWorkflows={agentWorkflows}
                 loading={Boolean(tabLoading.briefs)}
                 busyBriefId={busyBriefId}
+                creatingDailyDigest={creatingDailyDigest}
+                abandoningWorkflowId={abandoningWorkflowId}
+                loadingBriefDetailId={loadingBriefDetailId}
                 onViewChange={(view) => {
                   setBriefStageFilter(view);
                   setBriefsPage(1);
@@ -794,10 +803,13 @@ export default function App() {
                   setBriefsPage(1);
                 }}
                 onRefreshBrief={(eventId) => handleCreateBrief(eventId)}
+                onCreateDailyDigest={handleCreateDailyDigestBrief}
+                onLoadBriefDetail={loadBriefDetail}
                 onCopyBrief={handleCopyBrief}
                 onCopyPackage={handleCopyBriefPackage}
                 onSyncBrief={(brief) => handleBriefAction("sync", brief)}
                 onDeleteBrief={handleDeleteBrief}
+                onAbandonAgentWorkflow={handleAbandonAgentWorkflow}
               />
             ) : null}
 

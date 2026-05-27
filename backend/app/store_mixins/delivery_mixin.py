@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from ..store.base import UTC, now_iso, parse_clock_time, parse_time
+from ..store.base import UTC, parse_clock_time, parse_time
 
 
 class DeliveryMixin:
@@ -99,6 +99,9 @@ class DeliveryMixin:
                     continue
                 if not bool(event.get("worth_to_brief")):
                     continue
+            elif strategy == "top_scored":
+                if alert_state == "cooling":
+                    continue
             elif strategy == "balanced":
                 if alert_state not in {"rising", "breakout"}:
                     continue
@@ -134,7 +137,7 @@ class DeliveryMixin:
             if not bool(event.get("worth_to_brief")):
                 continue
             alert_state = str(event.get("alert_state") or "")
-            if alert_state == "cooling" or alert_state == "new":
+            if alert_state == "cooling" or (alert_state == "new" and str(plan.get("admission_strategy") or "balanced") != "top_scored"):
                 continue
             if filters["require_watchlisted"] and not bool(event.get("watchlisted")):
                 continue
@@ -207,10 +210,21 @@ class DeliveryMixin:
 
     def _run_delivery_pipeline(self, state: dict[str, Any], runtime: dict[str, Any], *, triggered_by: str) -> None:
         plan = self._delivery_plan(state)
+        delivery_mode = str(plan.get("delivery_mode") or "collect_only")
+        if delivery_mode == "collect_only":
+            self._append_log(
+                state,
+                "info",
+                "delivery",
+                "交付设置为不生成简报：跳过自动交付。",
+                stream="system_runtime",
+                actor=triggered_by,
+            )
+            self._write_runtime_checkpoint(state)
+            return
+        upload_enabled = delivery_mode in {"immediate", "scheduled_batch"} and self._delivery_mode_due(state)
         due_for_upload = self._select_retry_briefs(state)
-        events: list[dict[str, Any]] = []
-        if len(due_for_upload) < max(int(plan.get("batch_limit", 3) or 3), 1):
-            events = self._select_delivery_events(state)
+        events = self._select_delivery_events(state)
         selected_titles = [str(item.get("title") or "").strip() for item in events if str(item.get("title") or "").strip()]
         self._set_runtime_cycle_metric(runtime, "selected_event_count", len(events))
         runtime.setdefault("current_cycle_metrics", {})["selected_titles"] = selected_titles[:5]
@@ -238,10 +252,8 @@ class DeliveryMixin:
 
         deep_dives_completed = 0
         briefs_completed = 0
-        synced_completed = 0
-        verify_completed = 0
         brief_titles: list[str] = []
-        synced_titles: list[str] = []
+        generated_brief_ids: list[str] = []
         if events:
             runtime["current_cycle"] = "deep_dive"
             self._set_runtime_progress(
@@ -260,6 +272,7 @@ class DeliveryMixin:
                 try:
                     deep_dive = self.create_event_deep_dive(event_id).model_dump()
                     state.update(self._upgrade_state(self._read()))
+                    runtime = self._runtime(state)
                     if str(deep_dive.get("status") or "") not in {"ready", "partial"}:
                         continue
                     if int(deep_dive.get("success_count", 0) or 0) < max(int(self._delivery_filters(state)["min_fulltext_count"]), 0):
@@ -290,130 +303,80 @@ class DeliveryMixin:
             self._heartbeat_runtime_run(runtime, stage="briefing")
             self._write_runtime_checkpoint(state)
 
-            for index, event in enumerate(events, start=1):
+            refreshed_state = self._upgrade_state(self._read())
+            digest_event_ids: list[str] = []
+            for event in events:
                 event_id = str(event.get("id") or "")
-                refreshed_state = self._upgrade_state(self._read())
                 deep_dive = self._find_deep_dive_for_event(refreshed_state, event_id)
                 if not deep_dive or str(deep_dive.get("status") or "") not in {"ready", "partial"}:
                     continue
                 if int(deep_dive.get("success_count", 0) or 0) < max(int(self._delivery_filters(refreshed_state)["min_fulltext_count"]), 0):
                     continue
+                digest_event_ids.append(event_id)
+
+            try:
+                brief = self.create_daily_digest_brief_from_events(digest_event_ids, triggered_by=triggered_by).model_dump()
+                state.update(self._upgrade_state(self._read()))
+                runtime = self._runtime(state)
+                briefs_completed = 1
+                brief_title = str(brief.get("title") or "").strip()
+                if brief_title:
+                    brief_titles.append(brief_title)
+                generated_brief_ids.append(str(brief.get("id") or ""))
+                self._set_runtime_cycle_metric(runtime, "brief_count", briefs_completed)
+                runtime.setdefault("current_cycle_metrics", {})["brief_titles"] = brief_titles[:5]
+                self._set_runtime_progress(
+                    runtime,
+                    percent=self._stage_progress_percent(runtime, "briefing", 100),
+                    done=1,
+                    total=1,
+                    label=f"已生成今日短讯合集：{len(digest_event_ids)} 条事件",
+                )
+                self._heartbeat_runtime_run(runtime, stage="briefing")
+                self._write_runtime_checkpoint(state)
+            except Exception as exc:
+                self._append_log(state, "warning", "delivery", f"今日短讯合集生成失败：{exc}", stream="system_runtime", actor=triggered_by)
+                self._write_runtime_checkpoint(state)
+
+        if upload_enabled:
+            upload_ids = list(dict.fromkeys([*generated_brief_ids, *[str(item.get("id") or "") for item in due_for_upload]]))
+            synced_count = 0
+            verified_count = 0
+            synced_titles: list[str] = []
+            for brief_id in upload_ids:
+                if not brief_id:
+                    continue
                 try:
-                    brief = self.create_brief_from_event(event_id).model_dump()
+                    latest_brief = self.sync_brief_wechat_draft(brief_id, triggered_by=triggered_by).model_dump()
                     state.update(self._upgrade_state(self._read()))
-                    briefs_completed += 1
-                    due_for_upload.append(brief)
-                    brief_title = str(brief.get("title") or "").strip()
-                    if brief_title:
-                        brief_titles.append(brief_title)
-                    self._set_runtime_cycle_metric(runtime, "brief_count", briefs_completed)
-                    runtime.setdefault("current_cycle_metrics", {})["brief_titles"] = brief_titles[:5]
-                    self._set_runtime_progress(
-                        runtime,
-                        percent=self._stage_progress_percent(runtime, "briefing", index / max(len(events), 1) * 100),
-                        done=index,
-                        total=max(len(events), 1),
-                        label=f"已生成简报 {briefs_completed}/{max(len(events), 1)}",
-                    )
-                    self._heartbeat_runtime_run(runtime, stage="briefing")
-                    self._write_runtime_checkpoint(state)
+                    runtime = self._runtime(state)
+                    if str(latest_brief.get("stage") or "") == "synced":
+                        synced_count += 1
+                    if str(latest_brief.get("last_verified_at") or "").strip():
+                        verified_count += 1
+                    title = str(latest_brief.get("title") or "").strip()
+                    if title:
+                        synced_titles.append(title)
                 except Exception as exc:
-                    self._append_log(state, "warning", "delivery", f"简报生成失败：{event.get('title') or event_id} - {exc}", stream="system_runtime", actor=triggered_by)
-
-        delivery_due = self._delivery_mode_due(state)
-        delivery_mode = str(plan.get("delivery_mode") or "immediate")
-        if due_for_upload and delivery_due:
-            runtime["current_cycle"] = "wechat_sync"
-            self._set_runtime_progress(
-                runtime,
-                percent=self._stage_progress_percent(runtime, "wechat_sync", 5),
-                done=0,
-                total=max(len(due_for_upload), 1),
-                label=f"阶段 {stage_positions.get('wechat_sync', stage_total)}/{stage_total}：开始上传微信草稿箱",
-            )
-            self._progress_snapshot["cycle"] = "wechat_sync"
-            self._heartbeat_runtime_run(runtime, stage="wechat_sync")
+                    self._append_log(state, "warning", "delivery", f"自动上传微信草稿失败：{brief_id} - {exc}", stream="system_runtime", actor=triggered_by)
+            self._set_runtime_cycle_metric(runtime, "wechat_sync_count", synced_count)
+            self._set_runtime_cycle_metric(runtime, "wechat_verify_count", verified_count)
+            if delivery_mode == "scheduled_batch" and synced_count:
+                runtime["last_delivery_batch_at"] = datetime.now(UTC).replace(microsecond=0).isoformat()
+            runtime.setdefault("current_cycle_metrics", {})["synced_titles"] = synced_titles[:5]
             self._write_runtime_checkpoint(state)
-
-            for index, brief in enumerate(due_for_upload, start=1):
-                brief_id = str(brief.get("id") or "")
-                try:
-                    synced = self.sync_brief_wechat_draft(brief_id, triggered_by="scheduler").model_dump()
-                    state.update(self._upgrade_state(self._read()))
-                    if str(synced.get("stage") or "") != "synced":
-                        raise RuntimeError(str(synced.get("last_error") or "上传失败"))
-                    synced_completed += 1
-                    synced_title = str(synced.get("title") or "").strip()
-                    if synced_title:
-                        synced_titles.append(synced_title)
-                    self._set_runtime_cycle_metric(runtime, "wechat_sync_count", synced_completed)
-                    self._set_runtime_cycle_metric(runtime, "publish_count", synced_completed)
-                    runtime.setdefault("current_cycle_metrics", {})["synced_titles"] = synced_titles[:5]
-                    self._set_runtime_progress(
-                        runtime,
-                        percent=self._stage_progress_percent(runtime, "wechat_sync", index / max(len(due_for_upload), 1) * 100),
-                        done=index,
-                        total=max(len(due_for_upload), 1),
-                        label=f"已上传微信草稿箱 {synced_completed}/{max(len(due_for_upload), 1)}",
-                    )
-                    self._heartbeat_runtime_run(runtime, stage="wechat_sync")
-                    self._write_runtime_checkpoint(state)
-                except Exception as exc:
-                    error_text = str(exc)
-                    latest_state = self._upgrade_state(self._read())
-                    latest_brief = self._find_brief(latest_state, brief_id)
-                    if bool(latest_state.get("browser", {}).get("wechat", {}).get("is_session_level_error")):
-                        runtime["blocked_reason"] = f"微信上传失败：{error_text}"
-                        self._append_log(state, "error", "delivery", runtime["blocked_reason"], stream="system_runtime", actor=triggered_by)
-                        raise
-                    self._append_log(
-                        state,
-                        "warning",
-                        "delivery",
-                        f"简报上传失败，继续下一条：{brief.get('title') or brief_id} - {error_text}",
-                        stream="system_runtime",
-                        actor=triggered_by,
-                    )
-                    self._set_runtime_progress(
-                        runtime,
-                        percent=self._stage_progress_percent(runtime, "wechat_sync", index / max(len(due_for_upload), 1) * 100),
-                        done=index,
-                        total=max(len(due_for_upload), 1),
-                        label=f"已处理微信上传 {index}/{max(len(due_for_upload), 1)}",
-                    )
-                    self._heartbeat_runtime_run(runtime, stage="wechat_sync")
-                    self._write_runtime_checkpoint(state)
-
-            runtime["current_cycle"] = "wechat_verify"
-            self._set_runtime_progress(
-                runtime,
-                percent=self._stage_progress_percent(runtime, "wechat_verify", 15),
-                done=0,
-                total=max(synced_completed, 1),
-                label=f"阶段 {stage_positions.get('wechat_verify', stage_total)}/{stage_total}：检查微信草稿箱",
+        elif due_for_upload:
+            upload_skip_message = (
+                f"已有 {len(due_for_upload)} 条简报待上传；定时批量上传尚未到设定时间，暂不上传微信。"
+                if delivery_mode == "scheduled_batch"
+                else f"已有 {len(due_for_upload)} 条简报待上传；当前交付设置仅生成本地简报，跳过微信上传。"
             )
-            self._progress_snapshot["cycle"] = "wechat_verify"
-            self._heartbeat_runtime_run(runtime, stage="wechat_verify")
-            self._write_runtime_checkpoint(state)
-            verify_result = self.check_wechat_draft_box()
-            verify_completed = 1 if verify_result else 0
-            self._set_runtime_cycle_metric(runtime, "wechat_verify_count", verify_completed)
-            runtime["last_delivery_batch_at"] = now_iso()
-            self._set_runtime_progress(
-                runtime,
-                percent=self._stage_progress_percent(runtime, "wechat_verify", 100),
-                done=verify_completed,
-                total=max(synced_completed, 1),
-                label="微信草稿箱检查完成",
-            )
-            self._heartbeat_runtime_run(runtime, stage="wechat_verify")
-            self._write_runtime_checkpoint(state)
-        elif due_for_upload and delivery_mode == "scheduled_batch":
             self._append_log(
                 state,
                 "info",
                 "delivery",
-                f"已有 {len(due_for_upload)} 条简报待定时批量上传，等待 {plan.get('delivery_schedule_time') or '固定时间'}。",
+                upload_skip_message,
                 stream="system_runtime",
                 actor=triggered_by,
             )
+            self._write_runtime_checkpoint(state)

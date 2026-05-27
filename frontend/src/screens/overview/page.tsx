@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { deriveRuntimeDisplayStatus, deriveRuntimeVisualState, describeLastOutcome, explainAlertsEmptyState, explainEventsEmptyState, getRuntimeProgressMeta, isLoopLaunchMode, RUNTIME_INTENT_LABELS, runtimeDisplayTone } from "../../lib/runtimeIntent";
 import { formatDateTime, formatDuration, formatRelativeTime, toDateTimeLocalValue } from "../../lib/time";
 import { formatRuntimeIssueLabel } from "../../lib/runtimeUtils";
-import type { EntityWatchlistSummaryItem, HistoryRecordStatus, IntelAlert, IntelAlertHistoryItem, IntelEvent, IntelEventHistoryItem, IntelOverviewSummary, RuntimeIntent, RuntimePlan, SchedulerStatus } from "../../types";
+import type { AutomationMode, EntityWatchlistSummaryItem, HistoryRecordStatus, IntelAlert, IntelAlertHistoryItem, IntelEvent, IntelEventHistoryItem, IntelOverviewSummary, RuntimeIntent, RuntimePlan, SchedulerStatus } from "../../types";
 
 type OverviewTab = "alerts" | "events" | "source-health";
 
@@ -18,6 +18,7 @@ interface OverviewPageProps {
   busyMaintenanceIntent?: RuntimeIntent | null;
   refreshing?: boolean;
   onSaveRuntimePlan: (payload: Omit<RuntimePlan, "effective_mode">) => Promise<void>;
+  onSetAutomationMode: (mode: AutomationMode) => Promise<void>;
   onStart: () => Promise<void>;
   onStop: () => Promise<void>;
   onRunIntent: (intent: RuntimeIntent) => Promise<void>;
@@ -36,11 +37,14 @@ const LAUNCH_MODE_LABELS: Record<RuntimePlan["launch_mode"], string> = {
 };
 
 const DELIVERY_MODE_LABELS: Record<RuntimePlan["delivery_mode"], string> = {
-  immediate: "立即上传",
-  scheduled_batch: "定时批量",
+  collect_only: "不生成简报",
+  local_digest: "仅生成本地简报",
+  immediate: "立即上传微信",
+  scheduled_batch: "定时批量上传",
 };
 
 const ADMISSION_STRATEGY_LABELS: Record<RuntimePlan["admission_strategy"], string> = {
+  top_scored: "按热度自动选",
   conservative: "仅爆发",
   balanced: "上升+爆发",
   aggressive: "上升+爆发+观察",
@@ -151,6 +155,7 @@ export function OverviewPage({
   busyMaintenanceIntent,
   refreshing,
   onSaveRuntimePlan,
+  onSetAutomationMode,
   onStart,
   onStop,
   onRunIntent,
@@ -204,6 +209,7 @@ export function OverviewPage({
   }, [runtime.current_cycle_progress_percent, runtime.current_cycle_progress_total, runtime.current_cycle]);
 
   const planDirty = useMemo(() => !plansEqual(planDraft, runtimePlan), [planDraft, runtimePlan]);
+  const isManualMode = runtimePlan.effective_mode === "manual";
   const displayStatus = useMemo(() => deriveRuntimeDisplayStatus(runtime), [runtime]);
   const visualState = useMemo(() => deriveRuntimeVisualState(runtime), [runtime]);
   const progressMeta = useMemo(() => getRuntimeProgressMeta(runtime), [runtime]);
@@ -232,10 +238,10 @@ export function OverviewPage({
     return `${formatDateTime(planDraft.start_at, { fallback: "未设定" })} 开始，每 ${planDraft.interval_minutes ?? 30} 分钟`;
   }, [planDraft]);
   const deliveryDescriptor = useMemo(() => {
-    if (planDraft.delivery_mode === "immediate") {
-      return `交付层${DELIVERY_MODE_LABELS[planDraft.delivery_mode]}`;
+    if (planDraft.delivery_mode === "scheduled_batch") {
+      return `交付层${DELIVERY_MODE_LABELS[planDraft.delivery_mode]} ${planDraft.delivery_schedule_time || "未设定"}`;
     }
-    return `交付层${DELIVERY_MODE_LABELS[planDraft.delivery_mode]} ${planDraft.delivery_schedule_time || "未设定"}`;
+    return `交付层${DELIVERY_MODE_LABELS[planDraft.delivery_mode]}`;
   }, [planDraft.delivery_mode, planDraft.delivery_schedule_time]);
   const nextRunTime = summary.next_run_at ?? runtime.next_collect_at ?? null;
   const lastRunResultLabel = useMemo(() => {
@@ -436,13 +442,26 @@ export function OverviewPage({
             <section className="intel-plan-group">
               <div className="intel-plan-group-header">
                 <p className="eyebrow">传统模式</p>
-                <h3>这里是前端传统自动化控制台，不是 Agent 工作入口</h3>
+                <h3>选择手动操作，或让计划自动跑</h3>
+              </div>
+              <div className="intel-plan-stack">
+                <label>
+                  <span>运行模式</span>
+                  <select
+                    value={runtimePlan.effective_mode}
+                    disabled={savingRuntimePlan}
+                    onChange={(event) => void onSetAutomationMode(event.target.value as AutomationMode)}
+                  >
+                    <option value="manual">手动模式</option>
+                    <option value="automated">计划模式</option>
+                  </select>
+                </label>
               </div>
             </section>
             <section className="intel-plan-group">
               <div className="intel-plan-group-header">
                 <p className="eyebrow">信息获取</p>
-                <h3>信息获取与事件筛选</h3>
+                <h3>{isManualMode ? "手动模式只负责采集与评分" : "信息获取与事件筛选"}</h3>
               </div>
               <div className="intel-plan-stack">
                 <label>
@@ -502,25 +521,29 @@ export function OverviewPage({
                   </label>
                 ) : null}
 
-                <label>
-                  <span>事件筛选</span>
-                  <select
-                    value={planDraft.admission_strategy}
-                    onChange={(event) =>
-                      setPlanDraft((current) => ({
-                        ...current,
-                        admission_strategy: event.target.value as RuntimePlan["admission_strategy"],
-                      }))
-                    }
-                  >
-                    <option value="conservative">仅爆发</option>
-                    <option value="balanced">上升+爆发</option>
-                    <option value="aggressive">上升+爆发+观察</option>
-                  </select>
-                </label>
+                {!isManualMode ? (
+                  <label>
+                    <span>事件筛选</span>
+                    <select
+                      value={planDraft.admission_strategy}
+                      onChange={(event) =>
+                        setPlanDraft((current) => ({
+                          ...current,
+                          admission_strategy: event.target.value as RuntimePlan["admission_strategy"],
+                        }))
+                      }
+                    >
+                      <option value="top_scored">按热度自动选</option>
+                      <option value="conservative">仅爆发</option>
+                      <option value="balanced">上升+爆发</option>
+                      <option value="aggressive">上升+爆发+观察</option>
+                    </select>
+                  </label>
+                ) : null}
               </div>
             </section>
 
+            {!isManualMode ? (
             <section className="intel-plan-group">
               <div className="intel-plan-group-header">
                 <p className="eyebrow">交付设置</p>
@@ -539,7 +562,9 @@ export function OverviewPage({
                       }))
                     }
                   >
-                    <option value="immediate">立即上传</option>
+                    <option value="collect_only">不生成简报</option>
+                    <option value="local_digest">仅生成本地简报</option>
+                    <option value="immediate">立即上传微信</option>
                     <option value="scheduled_batch">定时批量上传</option>
                   </select>
                 </label>
@@ -579,6 +604,7 @@ export function OverviewPage({
                 </label>
               </div>
             </section>
+            ) : null}
           </div>
         ) : null}
 
@@ -589,8 +615,9 @@ export function OverviewPage({
               <span>当前状态: {footerPhaseLabel}</span>
               <span>上轮: {formatDateTime(runtime.last_cycle_started_at, { fallback: "尚未执行" })}</span>
               <span>耗时: {formatDuration(runtime.last_cycle_duration_seconds, "暂无")}</span>
-              <span>交付: {DELIVERY_MODE_LABELS[planDraft.delivery_mode]}</span>
-              <span>筛选: {ADMISSION_STRATEGY_LABELS[planDraft.admission_strategy]}</span>
+              <span>模式: {isManualMode ? "手动模式" : "计划模式"}</span>
+              {!isManualMode ? <span>交付: {DELIVERY_MODE_LABELS[planDraft.delivery_mode]}</span> : null}
+              {!isManualMode ? <span>筛选: {ADMISSION_STRATEGY_LABELS[planDraft.admission_strategy]}</span> : null}
             </div>
             <div className="intel-plan-actions">
               {planDirty ? <span className="dirty-chip">有未保存变更</span> : <span className="subtle-chip">已保存</span>}

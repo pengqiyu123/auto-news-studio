@@ -13,6 +13,8 @@ vi.mock("../../lib/api", () => ({
     createEventDeepDive: vi.fn(),
     getEventDeepDive: vi.fn(),
     createBriefFromEvent: vi.fn(),
+    createDailyDigestBrief: vi.fn(),
+    abandonAgentWorkflow: vi.fn(),
     syncBriefWeChatDraft: vi.fn(),
     copyBriefPackage: vi.fn(),
     deleteBrief: vi.fn(),
@@ -209,6 +211,183 @@ describe("useBriefsState", () => {
     expect(onToast).toHaveBeenCalledWith("AI文章已生成：地平线 6 泄露", "success");
   });
 
+  it("creates daily digest and refreshes the brief workbench", async () => {
+    const onReloadOverview = vi.fn().mockResolvedValue(undefined);
+    const onReloadEvents = vi.fn().mockResolvedValue(undefined);
+    const onReloadAlerts = vi.fn().mockResolvedValue(undefined);
+    const onReloadWatchlist = vi.fn().mockResolvedValue(undefined);
+    const onMarkBriefsLoaded = vi.fn();
+    const onActivateBriefs = vi.fn();
+    const onToast = vi.fn();
+
+    const digestBrief: BriefItem = {
+      ...sampleBrief,
+      id: "brief-digest",
+      title: "今日科技速递｜2026-05-26",
+      one_line: "3 条值得关注的科技动态。",
+      brief_level: "rule",
+      workflow_mode: "traditional",
+      workflow_session_id: null,
+      wechat_markdown: "# 今日科技速递｜2026-05-26",
+    };
+    mockedApi.createDailyDigestBrief.mockResolvedValue({ item: digestBrief });
+    mockedApi.getBriefs.mockResolvedValue({
+      items: [digestBrief],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      has_more: false,
+      stage_counts: { all: 1, prepared: 1, synced: 0, failed: 0 },
+      record_counts: { all: 1, local_only: 1, draft_synced: 0, published: 0, exceptions: 0 },
+    });
+    mockedApi.getAgentWorkflows.mockResolvedValue({ items: [] });
+
+    const { result } = renderHook(() =>
+      useBriefsState({
+        onError: vi.fn(),
+        onToast,
+        onReloadOverview,
+        onReloadEvents,
+        onReloadAlerts,
+        onReloadWatchlist,
+        onReloadPublishHistory: vi.fn().mockResolvedValue(undefined),
+        onReloadDraftBox: vi.fn().mockResolvedValue(undefined),
+        onMarkBriefsLoaded,
+        onActivateWatchlist: vi.fn(),
+        onActivateBriefs,
+        getEventsSnapshot: () => events,
+        getWatchlistSnapshot: () => [],
+        getAlertsSnapshot: (): IntelAlert[] => [],
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleCreateDailyDigestBrief();
+    });
+
+    expect(mockedApi.createDailyDigestBrief).toHaveBeenCalledWith("dashboard");
+    expect(result.current.creatingDailyDigest).toBe(false);
+    expect(mockedApi.getBriefs).toHaveBeenCalledTimes(1);
+    expect(result.current.briefs[0].title).toBe("今日科技速递｜2026-05-26");
+    expect(onReloadOverview).toHaveBeenCalledWith(true);
+    expect(onReloadEvents).toHaveBeenCalledTimes(1);
+    expect(onReloadAlerts).toHaveBeenCalledTimes(1);
+    expect(onReloadWatchlist).toHaveBeenCalledTimes(1);
+    expect(onActivateBriefs).toHaveBeenCalledTimes(1);
+    expect(onMarkBriefsLoaded).toHaveBeenCalledTimes(1);
+    expect(onToast).toHaveBeenCalledWith("今日速递已生成：今日科技速递｜2026-05-26", "success");
+  });
+
+  it("surfaces daily digest API errors without reloading", async () => {
+    const onError = vi.fn();
+    const onReloadOverview = vi.fn().mockResolvedValue(undefined);
+
+    mockedApi.createDailyDigestBrief.mockRejectedValue(new Error("至少需要 2 条合格事件才能生成今日速递"));
+
+    const { result } = renderHook(() =>
+      useBriefsState({
+        onError,
+        onToast: vi.fn(),
+        onReloadOverview,
+        onReloadEvents: vi.fn().mockResolvedValue(undefined),
+        onReloadAlerts: vi.fn().mockResolvedValue(undefined),
+        onReloadWatchlist: vi.fn().mockResolvedValue(undefined),
+        onReloadPublishHistory: vi.fn().mockResolvedValue(undefined),
+        onReloadDraftBox: vi.fn().mockResolvedValue(undefined),
+        onMarkBriefsLoaded: vi.fn(),
+        onActivateWatchlist: vi.fn(),
+        onActivateBriefs: vi.fn(),
+        getEventsSnapshot: () => events,
+        getWatchlistSnapshot: () => [],
+        getAlertsSnapshot: (): IntelAlert[] => [],
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleCreateDailyDigestBrief();
+    });
+
+    expect(onError).toHaveBeenCalledWith("至少需要 2 条合格事件才能生成今日速递");
+    expect(onReloadOverview).not.toHaveBeenCalled();
+    expect(result.current.creatingDailyDigest).toBe(false);
+  });
+
+  it("abandons an unfinished agent workflow and refreshes the workbench", async () => {
+    const onToast = vi.fn();
+    const onReloadOverview = vi.fn().mockResolvedValue(undefined);
+    mockedApi.abandonAgentWorkflow.mockResolvedValue({
+      item: {
+        workflow_session_id: "agentwf-1",
+        status: "abandoned",
+        current_step: "article_saved",
+        target_platforms: ["wechat"],
+        started_at: "2026-05-13T10:00:00+08:00",
+        updated_at: "2026-05-13T10:02:00+08:00",
+        finished_at: "2026-05-13T10:02:00+08:00",
+      },
+    });
+    mockedApi.getBriefs.mockResolvedValue({
+      items: [sampleBrief],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      has_more: false,
+      stage_counts: { all: 1, prepared: 1, synced: 0, failed: 0 },
+      record_counts: { all: 1, local_only: 1, draft_synced: 0, published: 0, exceptions: 0 },
+    });
+    mockedApi.getAgentWorkflows
+      .mockResolvedValueOnce({
+        items: [{
+          workflow_session_id: "agentwf-1",
+          status: "failed",
+          current_step: "article_saved",
+          target_platforms: ["wechat"],
+          started_at: "2026-05-13T10:00:00+08:00",
+          updated_at: "2026-05-13T10:01:00+08:00",
+        }],
+      })
+      .mockResolvedValueOnce({
+        items: [{
+          workflow_session_id: "agentwf-1",
+          status: "abandoned",
+          current_step: "article_saved",
+          target_platforms: ["wechat"],
+          started_at: "2026-05-13T10:00:00+08:00",
+          updated_at: "2026-05-13T10:02:00+08:00",
+          finished_at: "2026-05-13T10:02:00+08:00",
+        }],
+      });
+
+    const { result } = renderHook(() =>
+      useBriefsState({
+        onError: vi.fn(),
+        onToast,
+        onReloadOverview,
+        onReloadEvents: vi.fn().mockResolvedValue(undefined),
+        onReloadAlerts: vi.fn().mockResolvedValue(undefined),
+        onReloadWatchlist: vi.fn().mockResolvedValue(undefined),
+        onReloadPublishHistory: vi.fn().mockResolvedValue(undefined),
+        onReloadDraftBox: vi.fn().mockResolvedValue(undefined),
+        onMarkBriefsLoaded: vi.fn(),
+        onActivateWatchlist: vi.fn(),
+        onActivateBriefs: vi.fn(),
+        getEventsSnapshot: () => events,
+        getWatchlistSnapshot: () => [],
+        getAlertsSnapshot: (): IntelAlert[] => [],
+      }),
+    );
+
+    await act(async () => {
+      await result.current.loadBriefsData();
+      await result.current.handleAbandonAgentWorkflow("agentwf-1");
+    });
+
+    expect(mockedApi.abandonAgentWorkflow).toHaveBeenCalledWith("agentwf-1");
+    expect(onReloadOverview).toHaveBeenCalledWith(false);
+    expect(result.current.agentWorkflows[0].status).toBe("abandoned");
+    expect(onToast).toHaveBeenCalledWith("已放弃 Agent 会话", "success");
+  });
+
   it("loads single brief detail and merges heavy article fields into local state", async () => {
     mockedApi.getBriefs.mockResolvedValue({
       items: [{ ...sampleBrief, wechat_markdown: "", prompt_package_markdown: "" }],
@@ -226,6 +405,16 @@ describe("useBriefsState", () => {
         prompt_package_markdown: "full-pkg",
         wechat_markdown: "# 完整正文",
         quotes: ["引文 1"],
+        included_events: [
+          {
+            event_id: "evt-1",
+            title: "地平线 6 泄露",
+            alert_state: "watch",
+            source_count: 1,
+            deep_dive_status: "ready",
+            representative_link: "https://example.com/e1",
+          },
+        ],
       },
     });
 
@@ -257,5 +446,6 @@ describe("useBriefsState", () => {
     expect(result.current.briefs[0].wechat_markdown).toBe("# 完整正文");
     expect(result.current.briefs[0].prompt_package_markdown).toBe("full-pkg");
     expect(result.current.briefs[0].quotes).toEqual(["引文 1"]);
+    expect(result.current.briefs[0].included_events?.[0].title).toBe("地平线 6 泄露");
   });
 });

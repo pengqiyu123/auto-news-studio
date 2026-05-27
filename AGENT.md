@@ -2,18 +2,29 @@
 
 This file is for external AI coding tools that can read the repository and drive the project directly.
 
-The project has one business database only:
+The project has two data stores:
 
-- `data/state.json`
+- **PostgreSQL** — primary ledger (when `STATE_BACKEND=postgres` or `dual_write`)
+- **`data/state.json`** — compatibility projection, always available
 
 Do not create a second Agent database, Agent console runtime, MCP sidecar, or fake mirror state.
 
 ## Product truth
 
 - The shared information layer, deep dives, article records, WeChat draft mapping, and publish tasks all live in the same state.
-- Traditional mode is the built-in script/rule-driven workflow.
-- Agent mode is external-AI-driven workflow.
-- The frontend overview page is only the traditional automation console. Do not treat it as the Agent work entry.
+- **Recommended path: Agent mode.** External AI should normally use Agent mode because it can make editorial decisions: skip weak topics, write a short brief, write a long article, or build a mixed package.
+- **Traditional mode** is the built-in script/rule-driven workflow for users who do not have a model available or only want lightweight automation. It now has two product modes:
+  - `manual`: collection, deep dive, digest generation, and upload are all triggered by the user.
+  - `automated`: the scheduler runs the pipeline; `delivery_mode` controls how far it goes.
+- **Automated delivery modes**:
+  - `collect_only`: collect -> cluster -> score; no deep dive, no brief, no upload.
+  - `local_digest`: collect -> cluster -> score -> deep dive -> one daily digest; no WeChat upload.
+  - `immediate`: collect -> cluster -> score -> deep dive -> one daily digest -> upload -> verify.
+  - `scheduled_batch`: collect -> cluster -> score -> deep dive -> one daily digest, then upload and verify only when the schedule is due.
+- Traditional daily digest briefs merge 3-5 events into one short article. They are a fallback/productivity tool, not the preferred writing path when Agent mode is available.
+- **Agent mode** is external-AI-driven workflow. You decide what to write and in what form: short brief, long article, mixed package, or skip. You are the editor-in-chief.
+- The two modes share the same data source but produce independent outputs. Traditional digest briefs have `brief_level="rule"`. Agent articles have `brief_level="article"`.
+- The frontend overview page is only the traditional manual/automated console. Do not treat it as the Agent work entry.
 - Agent mode must strictly follow the project-defined chain:
   `sources/sync -> intel/events -> deep-dive -> brief -> agent/articles -> platform execution`
 - WeChat and Douyin are downstream execution targets, not alternate content-ingest paths.
@@ -23,14 +34,29 @@ Do not create a second Agent database, Agent console runtime, MCP sidecar, or fa
 - If the user says `开始今日的工作`, treat it as a shortcut for the full Agent daily workflow, not as a request to start the built-in traditional scheduler.
 - For the Agent path, you should:
   1. collect and inspect shared intel
-  2. decide what is worth writing
+  2. decide what is worth writing, and choose the right content form: do not write / short brief / long article / mixed package
   3. deep-dive and verify
   4. create one local brief/material record for tracking and source packaging
-  5. write the full article yourself
-  6. save the full article into the shared article store
+  5. write the final content yourself
+  6. save the final content into the shared article store
   7. upload to WeChat draft box
 
 The shared article container is still the existing `briefs` collection in `state.json`. In Agent usage, the traditional brief record is a local material record, and the final long article is stored as a separate `article` record in that same shared collection.
+
+## Current repository layout
+
+The project structure has been reorganized. When exploring or implementing, use the current modules rather than assuming the older flat layout.
+
+- Backend entry: `backend/app/main.py`
+- Backend route layer: `backend/app/routes/`
+- Backend feature pages/actions: `backend/app/features/`
+- Browser automation: `backend/app/publishers/`
+- Shared state logic: `backend/app/store/` and `backend/app/store_mixins/`
+- Services/utilities: `backend/app/services/`
+- Frontend app: `frontend/src/`
+- Frontend development server: Vite on `http://127.0.0.1:4173`
+
+Do not assume legacy paths like a single monolithic `publishers.py` or direct route/store wiring if the repo has already been split into packages.
 
 ## Real API surface
 
@@ -56,6 +82,13 @@ If the backend is not reachable:
 - if `start.bat` reports an existing project backend or stale PID/port state, run `stop.bat` first, then retry `start.bat`
 - if port `8000` is occupied by a non-project process, free that port before retrying
 - if `start.bat` reports `frontend/dist` missing, run `cd frontend && npm run build` first
+
+## Frontend development notes
+
+- Production-style local app is still served by backend on `http://127.0.0.1:8000`
+- Frontend dev server is `http://127.0.0.1:4173`
+- In development, the Vite server must proxy `/api` and `/assets` to `8000`; if API calls look stale or empty, verify the dev server is using current proxy config
+- If checking a frontend-only change, prefer `4173`; if checking backend-served built assets, rebuild frontend and verify through `8000`
 
 ## Response envelope rules
 
@@ -163,9 +196,9 @@ The table below maps every traditional mode UI tab to its Agent-accessible API e
 | Force re-dive (re-run) | `POST /api/admin/intel/events/{event_id}/deep-dive?triggered_by=agent` with body `{ "force": true }` |
 | Generate rule-based brief (traditional) | `POST /api/admin/intel/events/{event_id}/brief?triggered_by=agent` |
 
-The deep dive response includes an `article_writing_guide` field with detailed formatting, structure, and style instructions for WeChat public account articles — you MUST follow this guide when composing the article.
+The deep dive response includes an `article_writing_guide` field with detailed formatting, structure, and style instructions for WeChat public account content — you MUST follow this guide when composing the final content.
 
-Key requirements from the guide: 1500-3000 word full article (not a bullet-point brief), 36氪/极客公园 style, specific numbers over vague adjectives, Markdown format with `#` title, `##` sections, `>` for quotes.
+Key requirements from the guide: Agent decides the content form. Use a 300-600 word short brief for ordinary but publishable events, an 800-1000 word article for major events, and a mixed package when the day has one major event plus several smaller updates. For Douyin articles, target 400-600 words. Use specific numbers over vague adjectives, Markdown format with `#` title, `##` sections, and `>` only for real quotes.
 
 ### Tab 7: 简报/文章 (Briefs)
 
@@ -173,6 +206,8 @@ Key requirements from the guide: 1500-3000 word full article (not a bullet-point
 |---|---|
 | Read all articles/briefs | `GET /api/admin/briefs?page=1&page_size=20&stage=all&q=` |
 | Read single article/brief | `GET /api/admin/briefs/{brief_id}` |
+| Read Agent sessions | `GET /api/admin/agent/workflows` |
+| Abandon unfinished Agent session | `POST /api/admin/agent/workflows/{workflow_session_id}/abandon?triggered_by=agent` |
 | **Save AI-authored article** | `POST /api/admin/agent/articles` (see detail below) |
 | Upload article to WeChat draft | Do **not** use this row for Agent longform uploads. Use `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true`. |
 | Get copy package (for clipboard) | `POST /api/admin/briefs/{brief_id}/copy-package` |
@@ -186,7 +221,12 @@ Key requirements from the guide: 1500-3000 word full article (not a bullet-point
 | Read publish tasks | `GET /api/admin/publish-tasks?page=1&page_size=20` |
 | Check real WeChat publish history | `POST /api/admin/browser/wechat/check-publish-history?triggered_by=agent` |
 
-Note: The publish history check now also fetches article engagement metrics (reads, likes, shares, comments, etc.) from WeChat and writes them back to the corresponding brief records. After calling this endpoint, the brief items will have `read_count`, `like_count`, `share_count`, etc. populated.
+Notes:
+
+- The publish history check now fetches article engagement metrics (reads, likes, shares, comments, etc.) from WeChat and writes them back to the corresponding brief records. After calling this endpoint, the brief items will have `read_count`, `like_count`, `share_count`, etc. populated.
+- The current product intent is: one manual refresh should gather both publish-history article metrics and the related WeChat analytics overview when available.
+- Article-level data must come from `内容管理 -> 发表记录`.
+- Do not treat the top-level `数据分析` menu click as the final target page. Analytics scraping must go into a real subpage such as `内容分析` when that workflow is being implemented or debugged.
 
 ### Tab 9: 微信草稿箱 (Draft Box)
 
@@ -197,6 +237,17 @@ Note: The publish history check now also fetches article engagement metrics (rea
 | Check remote draft box | `POST /api/admin/browser/wechat/check-drafts?triggered_by=agent` |
 | **Delete remote WeChat draft** | `DELETE /api/admin/wechat/remote-drafts/{remote_id}` |
 | Re-sync brief to draft | Reserved for the dedicated article record created by `POST /api/admin/agent/articles`. Do **not** use it on traditional brief records. |
+
+### WeChat browser path rules
+
+- For article upload:
+  `公众号首页 -> 新的创作 -> 文章 -> 编辑页 -> 保存草稿`
+- For publish-history metrics:
+  `内容管理 -> 发表记录`
+- For analytics debugging:
+  `数据分析 -> 内容分析` (or other explicit subpages), not just the top-level menu shell
+
+If the user provides concrete menu HTML, prefer that concrete path over old assumptions.
 
 ### Tab 10: 设置 (Settings)
 
@@ -234,7 +285,7 @@ Note: The publish history check now also fetches article engagement metrics (rea
 
 ## Key API details
 
-### Save an AI-authored full article directly
+### Save AI-authored content directly
 
 - `POST /api/admin/agent/articles`
 
@@ -262,7 +313,7 @@ JSON body:
 
 Behavior:
 
-- saves the article into the shared `briefs` store
+- saves the Agent-authored content into the shared `briefs` store
 - reuses the existing event linkage and deep-dive linkage
 - if `publish_to_wechat_draft=true`, automatically reuses the existing WeChat draft upload chain
 - if `publish_to_douyin_article=true`, automatically opens the Douyin article page and fills title, summary, body, and AI illustration
@@ -327,7 +378,7 @@ Do **not** assume a fixed event count threshold. Event volume depends on source 
 
 `POST /api/admin/runtime/run-intent` accepts `{ "intent": "..." }` with these values:
 
-- `normal_monitoring` — full cycle: collect, normalize, cluster, score, alert
+- `normal_monitoring` — one scheduler cycle. In `manual`, delivery is skipped; in `automated`, `delivery_mode` decides whether it stops at collect/score, local digest, immediate upload, or scheduled upload.
 - `collect_only` — source sync only
 - `rebuild_events` — re-cluster without re-collecting
 - `rebuild_alerts` — re-score and re-alert without re-collecting
@@ -379,6 +430,7 @@ WeChat browser operations (check-drafts, check-publish-history, delete remote dr
 4. If backend startup fails because `frontend/dist` is missing, build the frontend before retrying.
 5. If WeChat inspection fails, report it as remote-state unavailable, not as empty remote data.
 6. If a browser endpoint returns `"浏览器忙"`, wait a few seconds and retry — another operation is holding the lock.
+7. If a WeChat browser endpoint returns old cached check data, do not claim fresh remote verification until a new timestamp or the new target title is visible in the returned items.
 
 ## Suggested Agent workflow
 
@@ -403,13 +455,20 @@ If the user does not specify a target platform, default to the existing WeChat d
 1. `POST /api/admin/runtime/stop` — stop the traditional scheduler if it is running (avoid conflicts)
 2. `POST /api/admin/sources/sync?triggered_by=agent` — collect fresh intel (manual one-shot, not scheduler-driven)
 3. `GET /api/admin/intel/events` — read hot events
-4. choose up to 5 high-value events
+4. decide the output mix for the day:
+   - no write: weak, stale, duplicated, or evidence-poor events
+   - short brief: one clear news point, enough sources, but not enough complexity for a long article
+   - long article: one major event with multiple sources, enough facts, clear reader value, and room for analysis
+   - mixed package: one long article plus several short briefs when the day has one dominant story and multiple smaller updates
 5. for each chosen event:
    - `POST /api/admin/intel/events/{event_id}/deep-dive?triggered_by=agent` — deep-dive to get verified material
    - read the response, follow `article_writing_guide` for writing style
    - `POST /api/admin/intel/events/{event_id}/brief?triggered_by=agent` — generate a local brief record for material tracking only
    - do extra online verification yourself
-   - write a 1500-3000 word full article following the `article_writing_guide`
+   - write the chosen content form following the `article_writing_guide`
+     - short brief: 300-600 words, answer “what happened / why it matters / what is still uncertain”
+     - long article: 800-1000 words, use the full article structure from the guide
+     - Douyin article: 400-600 words, follow the Douyin writing guide in the deep-dive response
    - before saving, you MUST run a separate Critique pass against the draft
    - Critique must independently check:
      - facts, numbers, dates, names, and quotations are traceable to source material or clearly marked as uncertain
@@ -424,13 +483,25 @@ If the user does not specify a target platform, default to the existing WeChat d
 6. after upload, optionally verify:
    - `POST /api/admin/browser/wechat/check-drafts?triggered_by=agent`
    - `POST /api/admin/browser/wechat/check-publish-history?triggered_by=agent`
+7. for Douyin articles, after saving via `POST /api/admin/agent/articles` with `publish_to_douyin_article: true`:
+   - the backend automatically opens the Douyin creator center and fills the article
+   - target word count: 400-600 words
+   - style: direct, conversational, mobile-first (see Douyin writing guide in deep-dive response)
+   - do NOT include source links, "参考资料", or WeChat-style formatting
 7. if an article needs correction:
    - `DELETE /api/admin/wechat/remote-drafts/{remote_id}` — delete remote draft first (get `remote_id` from `GET /api/admin/wechat/mapping`)
    - `DELETE /api/admin/briefs/{brief_id}?remote=false&triggered_by=agent` — then delete local record (use `remote=false` since remote is already gone)
    - re-write and re-submit via `POST /api/admin/agent/articles`
    - `POST /api/admin/wechat/mapping/refresh?triggered_by=agent` — refresh mapping to verify consistency
 
-**Key distinction:** The brief record from step 5 is a local material record. The article from `POST /api/admin/agent/articles` is your own full-length piece and is stored as a separate article record in the shared `briefs` collection. Never use `POST /api/admin/briefs/{id}/wechat-draft` on a traditional brief record — that is not the final Agent article. Always use `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true` for the final upload, and only after Critique has approved the draft.
+**Key distinction:** The brief record from step 5 is a local material record. The content from `POST /api/admin/agent/articles` is your own final Agent-authored piece, whether it is a short brief or long article, and is stored as a separate article record in the shared `briefs` collection. Never use `POST /api/admin/briefs/{id}/wechat-draft` on a traditional brief record — that is not the final Agent article. Always use `POST /api/admin/agent/articles` with `publish_to_wechat_draft: true` for the final upload, and only after Critique has approved the draft.
+
+### Date discipline for daily work
+
+- When running a “today” workflow, validate that the chosen event is actually from the current date in local timezone.
+- Prefer checking `published_at`, `first_seen_at`, and `last_seen_at` together.
+- Do not reuse yesterday’s topic just because it still has a high score.
+- In status updates and final reporting, include the actual date when clarifying “today”, “yesterday”, or “this round”.
 
 ## Logging expectation
 

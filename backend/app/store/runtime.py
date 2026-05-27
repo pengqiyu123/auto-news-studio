@@ -52,10 +52,10 @@ class StoreCoreRuntimeMixin:
             "interval_minutes": interval_minutes,
             "timezone": "Asia/Shanghai",
             "work_scope": "collect_events_alerts",
-            "delivery_mode": "immediate",
+            "delivery_mode": "collect_only" if state.get("automation_mode") == "manual" else "local_digest",
             "delivery_schedule_time": None,
-            "admission_strategy": "balanced",
-            "batch_limit": 3,
+            "admission_strategy": "top_scored",
+            "batch_limit": int(profile.get("brief_limit", 5) or 5),
             "admission_filters": {
                 "require_watchlisted": False,
                 "require_entity_match": False,
@@ -74,8 +74,14 @@ class StoreCoreRuntimeMixin:
             runtime_plan.setdefault(key, value)
         runtime_plan["timezone"] = str(runtime_plan.get("timezone") or "Asia/Shanghai")
         runtime_plan["launch_mode"] = str(runtime_plan.get("launch_mode") or "interval_now")
-        runtime_plan["delivery_mode"] = str(runtime_plan.get("delivery_mode") or "immediate")
-        runtime_plan["admission_strategy"] = str(runtime_plan.get("admission_strategy") or "balanced")
+        valid_delivery_modes = {"collect_only", "local_digest", "immediate", "scheduled_batch"}
+        delivery_mode = str(runtime_plan.get("delivery_mode") or "")
+        runtime_plan["delivery_mode"] = delivery_mode if delivery_mode in valid_delivery_modes else defaults["delivery_mode"]
+        valid_admission_strategies = {"top_scored", "conservative", "balanced", "aggressive"}
+        admission_strategy = str(runtime_plan.get("admission_strategy") or "")
+        runtime_plan["admission_strategy"] = (
+            admission_strategy if admission_strategy in valid_admission_strategies else defaults["admission_strategy"]
+        )
         try:
             runtime_plan["batch_limit"] = max(int(runtime_plan.get("batch_limit") or defaults["batch_limit"]), 1)
         except (TypeError, ValueError):
@@ -114,11 +120,11 @@ class StoreCoreRuntimeMixin:
             start_at=plan.get("start_at"),
             interval_minutes=plan.get("interval_minutes"),
             timezone=str(plan.get("timezone") or "Asia/Shanghai"),
-            effective_mode=state.get("automation_mode", "radar_only"),
+            effective_mode=state.get("automation_mode", "manual"),
             work_scope=str(plan.get("work_scope") or "collect_events_alerts"),
-            delivery_mode=str(plan.get("delivery_mode") or "immediate"),
+            delivery_mode=str(plan.get("delivery_mode") or "collect_only"),
             delivery_schedule_time=plan.get("delivery_schedule_time"),
-            admission_strategy=str(plan.get("admission_strategy") or "balanced"),
+            admission_strategy=str(plan.get("admission_strategy") or "top_scored"),
             batch_limit=max(int(plan.get("batch_limit", 3) or 3), 1),
             admission_filters=deepcopy(plan.get("admission_filters", {})),
         )
@@ -495,7 +501,7 @@ class StoreCoreRuntimeMixin:
         duration_seconds = float(runtime.get("last_cycle_duration_seconds", 0) or 0)
         summary = RuntimeCycleSummary(
             run_id=run.get("run_id"),
-            mode_key=str(runtime.get("current_mode") or state.get("automation_mode") or "radar_only"),
+            mode_key=str(runtime.get("current_mode") or state.get("automation_mode") or "manual"),
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=max(int(round(duration_seconds * 1000)), 0),
@@ -555,17 +561,16 @@ class StoreCoreRuntimeMixin:
         intent = str(self._runtime_run(runtime).get("intent") or DEFAULT_RUNTIME_INTENT)
         if intent != "normal_monitoring":
             return deepcopy(INTENT_STAGE_PLANS.get(intent, [{"key": "collecting", "label": "执行维护任务"}]))
-        mode_key = str(runtime.get("current_mode") or "radar_only")
-        return deepcopy(MODE_STAGE_PLANS.get(mode_key, MODE_STAGE_PLANS["radar_only"]))
+        mode_key = str(runtime.get("current_mode") or "manual")
+        return deepcopy(MODE_STAGE_PLANS.get(mode_key, MODE_STAGE_PLANS["manual"]))
 
     def _stage_display_key(self, runtime: dict[str, Any], cycle: str) -> str:
-        mode_key = str(runtime.get("current_mode") or "radar_only")
         intent = str(self._runtime_run(runtime).get("intent") or DEFAULT_RUNTIME_INTENT)
         if cycle in {"starting", "idle"}:
             plan = self._stage_plan(runtime)
             return plan[0]["key"] if plan else "idle"
-        if cycle == "wechat_sync" and intent == "normal_monitoring" and mode_key == "radar_and_draft":
-            return "drafting"
+        if cycle == "wechat_sync" and intent == "normal_monitoring" and str(runtime.get("delivery_mode") or "") == "local_digest":
+            return "briefing"
         if cycle.startswith("collecting"):
             return "collecting"
         if cycle.startswith("clustering"):

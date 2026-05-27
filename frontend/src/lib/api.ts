@@ -85,8 +85,8 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
   };
 
   const currentAutomationMode: AutomationModeDefinition = dashboard.current_automation_mode ?? {
-    key: "radar_only",
-    label: "仅雷达捕获",
+    key: "manual",
+    label: "手动模式",
     description: "",
     auto_collect: true,
     auto_build_events: true,
@@ -105,10 +105,10 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     last_event_sync_at: null,
     last_brief_at: null,
     next_collect_at: null,
-    delivery_mode: "immediate",
+    delivery_mode: "collect_only",
     delivery_schedule_time: null,
-    admission_strategy: "balanced",
-    batch_limit: 3,
+    admission_strategy: "top_scored",
+    batch_limit: 5,
     current_cycle: "idle",
     current_cycle_progress_percent: 0,
     current_cycle_progress_done: 0,
@@ -167,10 +167,10 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
     timezone: "Asia/Shanghai",
     effective_mode: currentAutomationMode.key,
     work_scope: "collect_events_alerts",
-    delivery_mode: "immediate",
+    delivery_mode: "collect_only",
     delivery_schedule_time: null,
-    admission_strategy: "balanced",
-    batch_limit: 3,
+    admission_strategy: "top_scored",
+    batch_limit: 5,
     admission_filters: {
       require_watchlisted: false,
       require_entity_match: false,
@@ -200,7 +200,7 @@ function normalizeDashboard(payload: DashboardResponse | Record<string, unknown>
   };
 
   const appVersion = dashboard.app_version ?? {
-    version: "0.2.12",
+    version: "0.2.13",
     release_channel: "stable",
     release_repo: "pengqiyu123/auto-news-studio",
     release_notes_url: "https://github.com/pengqiyu123/auto-news-studio/releases"
@@ -270,7 +270,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Request failed: ${response.status}`);
+    let message = text;
+    try {
+      const payload = JSON.parse(text) as { detail?: unknown };
+      if (typeof payload.detail === "string") {
+        message = payload.detail;
+      }
+    } catch {
+      // Non-JSON errors are already useful as plain text.
+    }
+    throw new Error(message || `Request failed: ${response.status}`);
   }
 
   return response.json() as Promise<T>;
@@ -307,6 +316,10 @@ export const api = {
     request<{ item: BriefItem }>(`/api/admin/intel/events/${eventId}/brief?triggered_by=${encodeURIComponent(triggeredBy)}`, {
       method: "POST"
     }),
+  createDailyDigestBrief: (triggeredBy = "dashboard") =>
+    request<{ item: BriefItem }>(`/api/admin/briefs/daily-digest?triggered_by=${encodeURIComponent(triggeredBy)}`, {
+      method: "POST"
+    }),
   getBriefs: (params?: {
     page?: number;
     page_size?: number;
@@ -327,6 +340,10 @@ export const api = {
   getAgentWorkflows: () => request<{ items: AgentWorkflowItem[] }>("/api/admin/agent/workflows"),
   getAgentWorkflow: (workflowSessionId: string) =>
     request<{ item: AgentWorkflowItem }>(`/api/admin/agent/workflows/${workflowSessionId}`),
+  abandonAgentWorkflow: (workflowSessionId: string) =>
+    request<{ item: AgentWorkflowItem }>(`/api/admin/agent/workflows/${workflowSessionId}/abandon?triggered_by=dashboard`, {
+      method: "POST"
+    }),
   syncBriefWeChatDraft: (briefId: string) =>
     request<{ item: BriefItem }>(`/api/admin/briefs/${briefId}/wechat-draft`, {
       method: "POST"

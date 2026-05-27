@@ -6,8 +6,19 @@ import re
 WECHAT_WRAPPER_STYLE = "font-size:15px;line-height:1.8;color:#222;"
 
 
+def normalize_markdown_newlines(markdown: str) -> str:
+    text = str(markdown or "")
+    if not text:
+        return ""
+    actual_newlines = text.count("\n")
+    powershell_escape_count = text.count("`n") + text.count("`r")
+    if powershell_escape_count and (actual_newlines == 0 or powershell_escape_count >= max(3, actual_newlines * 2)):
+        text = text.replace("`r`n", "\n").replace("`n", "\n").replace("`r", "\r")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def strip_markdown_title(markdown: str, title: str) -> str:
-    lines = list(str(markdown or "").splitlines())
+    lines = list(normalize_markdown_newlines(markdown).splitlines())
     while lines and not lines[0].strip():
         lines.pop(0)
     if not lines:
@@ -119,7 +130,7 @@ def markdown_to_wechat_html(markdown: str, *, include_wrapper: bool = True) -> s
         flush_ordered()
         flush_code()
 
-    for raw in str(markdown or "").splitlines():
+    for raw in normalize_markdown_newlines(markdown).splitlines():
         stripped = raw.strip()
         if stripped.startswith("```"):
             if in_code_block:

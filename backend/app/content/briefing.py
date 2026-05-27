@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from .wechat_format import strip_markdown_title
@@ -752,7 +753,7 @@ def build_prompt_package_markdown(
     guide = str(article_writing_guide or build_agent_article_writing_guide()).strip()
     lines = [
         "## 写作任务",
-        "基于以下已核验素材，写一篇 1500-3000 字的公众号深度文章。",
+        "基于以下已核验素材，写一篇 800-1000 字的公众号文章。",
         "同时生成一段 40-60 字的摘要，摘要与标题互补（标题说了 What，摘要说 Why 或 How），推送时显示在标题下方。",
         "",
     ]
@@ -855,7 +856,7 @@ def build_douyin_article_writing_guide() -> str:
 - 适合直接出现在抖音文章摘要输入框
 
 ### 正文结构
-- 正文建议 400-900 字，硬上限 1000 字
+- 正文建议 400-600 字，硬上限 800 字
 - 开头 1-2 句内必须交代时间点、发生了什么、结论是什么
 - 第一屏就要把最关键的新信息说出来，不要先讲背景
 - 全文以短段落为主，每段 1-2 句，少用长分析段
@@ -1054,28 +1055,7 @@ def build_rule_brief_payload(event: dict[str, Any], deep_dive: dict[str, Any]) -
         source_links=source_links,
         article_writing_guide=writing_guide,
     )
-    wechat_lines = [
-        f"# {title}",
-        "",
-        f"一句话：{one_line}",
-        "",
-        "## 核心事实",
-    ]
-    if facts:
-        wechat_lines.extend([f"- {item}" for item in facts[:5]])
-    else:
-        wechat_lines.append("- 暂无足够正文事实，请继续核验。")
-    if quotes:
-        wechat_lines.extend(["", "## 关键引文"])
-        for quote in quotes[:3]:
-            wechat_lines.append(f"> {quote}")
-    if timeline:
-        wechat_lines.extend(["", "## 时间线"])
-        wechat_lines.extend([f"- {item}" for item in timeline[:5]])
-    if source_links:
-        wechat_lines.extend(["", "## 来源链接"])
-        wechat_lines.extend([f"- {item}" for item in source_links[:6]])
-    wechat_markdown = "\n".join(wechat_lines).strip()
+    wechat_markdown = build_short_brief_markdown(event, deep_dive)
     douyin_title = build_douyin_title(title)
     douyin_summary = build_douyin_summary(summary or one_line, douyin_title or title)
     douyin_markdown = build_douyin_article_markdown(
@@ -1122,6 +1102,237 @@ def build_rule_brief_payload(event: dict[str, Any], deep_dive: dict[str, Any]) -
     }
 
 
+def _deep_dive_source_links(deep_dive: dict[str, Any]) -> list[str]:
+    links: list[str] = []
+    for item in deep_dive.get("sources", []):
+        if not isinstance(item, dict):
+            continue
+        link = str(item.get("canonical_link") or item.get("original_link") or "").strip()
+        if link:
+            links.append(link)
+    return list(dict.fromkeys(links))
+
+
+def _daily_digest_date_label() -> str:
+    return datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+
+
+def build_daily_digest_brief_payload(events: list[dict[str, Any]], deep_dives: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build one rule-only WeChat digest from multiple already-verified events."""
+    def _clean_values(value: Any) -> list[str]:
+        if isinstance(value, str):
+            candidates = [value]
+        elif isinstance(value, (list, tuple, set)):
+            candidates = value
+        else:
+            return []
+        return [str(item).strip() for item in candidates if str(item).strip()]
+
+    deep_dive_by_event = {str(item.get("event_id") or ""): item for item in deep_dives if isinstance(item, dict)}
+    qualified: list[tuple[dict[str, Any], dict[str, Any], list[str], list[str]]] = []
+    for event in events:
+        event_id = str(event.get("id") or "").strip()
+        if not event_id or bool(event.get("ignored")):
+            continue
+        deep_dive = deep_dive_by_event.get(event_id)
+        if not deep_dive or str(deep_dive.get("status") or "") not in {"ready", "partial"}:
+            continue
+        facts = [str(item).strip() for item in deep_dive.get("facts", []) if str(item).strip()]
+        summary = str(event.get("summary") or "").strip()
+        source_links = _deep_dive_source_links(deep_dive)
+        if not source_links or not (facts or summary):
+            continue
+        qualified.append((event, deep_dive, facts, source_links))
+        if len(qualified) >= 5:
+            break
+
+    if len(qualified) < 2:
+        raise ValueError("今日短讯合集至少需要 2 条合格事件。")
+
+    date_label = _daily_digest_date_label()
+    title = f"今日科技速递｜{date_label}"
+    facts: list[str] = []
+    timeline: list[str] = []
+    risk_notes: list[str] = []
+    source_links: list[str] = []
+    entity_names: list[str] = []
+    tags: list[str] = []
+    alert_states: list[str] = []
+    section_lines: list[str] = []
+    source_lines: list[str] = []
+
+    for index, (event, deep_dive, event_facts, event_links) in enumerate(qualified, start=1):
+        event_title = str(event.get("title") or deep_dive.get("title") or f"事件 {index}").strip()
+        first_fact = event_facts[0] if event_facts else str(event.get("summary") or "").strip()
+        worth_reason = str(deep_dive.get("worthiness", {}).get("reason") or "").strip()
+        uncertainty: list[str] = []
+        if str(deep_dive.get("status") or "") == "partial":
+            uncertainty.append("部分来源仍需继续核验")
+        if int(event.get("source_count", 0) or 0) <= 1:
+            uncertainty.append("当前来源仍偏少")
+
+        section_lines.extend(["", f"## {index}. {event_title}", first_fact])
+        if worth_reason:
+            section_lines.append(worth_reason)
+        if uncertainty:
+            section_lines.append("不确定项：" + "；".join(list(dict.fromkeys(uncertainty))) + "。")
+
+        facts.append(first_fact)
+        facts.extend(event_facts[1:2])
+        timeline.extend([str(item).strip() for item in deep_dive.get("timeline", []) if str(item).strip()][:1])
+        risk_notes.extend(uncertainty)
+        entity_names.extend(_clean_values(event.get("entity_names")))
+        tags.extend(_clean_values(event.get("tags")))
+        alert_state = str(event.get("alert_state") or "").strip().lower()
+        if alert_state:
+            alert_states.append(alert_state)
+        for link in event_links[:2]:
+            source_links.append(link)
+            source_lines.append(f"- {event_title}：{link}")
+
+    unique_links = list(dict.fromkeys(source_links))[:10]
+    unique_entities = list(dict.fromkeys(entity_names))[:12]
+    unique_tags = list(dict.fromkeys(tags))[:8]
+    unique_risks = list(dict.fromkeys(risk_notes))[:5]
+    summary = f"今日筛选出 {len(qualified)} 条值得关注的科技动态。"
+    one_line = summary
+    why_parts = [summary.rstrip("。")]
+    if len(unique_entities) >= 3:
+        why_parts.append(f"涉及 {'、'.join(unique_entities[:3])} 等主体的动态")
+    elif unique_entities:
+        why_parts.append(f"涉及 {'、'.join(unique_entities[:3])} 的动态")
+    if unique_tags:
+        tag_suffix = "等方向" if len(unique_tags) > 3 else "方向"
+        why_parts.append(f"覆盖 {'、'.join(unique_tags[:3])} {tag_suffix}")
+    breakout_count = alert_states.count("breakout")
+    rising_count = alert_states.count("rising")
+    status_parts: list[str] = []
+    if breakout_count:
+        status_parts.append(f"{breakout_count} 条处于爆发状态")
+    if rising_count:
+        status_parts.append(f"{rising_count} 条处于上升状态")
+    if status_parts:
+        why_parts.append("其中 " + "、".join(status_parts))
+    why_it_matters = "，".join(why_parts) + "，适合短讯快速扫读。"
+    wechat_markdown = "\n".join(
+        [
+            f"# {title}",
+            "",
+            why_it_matters,
+            *section_lines,
+            "",
+            "## 来源链接",
+            *list(dict.fromkeys(source_lines))[:10],
+        ]
+    ).strip()
+    douyin_title = build_douyin_title(title)
+    douyin_summary = build_douyin_summary(summary, douyin_title or title)
+    douyin_markdown = build_douyin_article_markdown(
+        title=douyin_title or title,
+        summary=douyin_summary,
+        article_markdown=wechat_markdown,
+        one_line=one_line,
+        why_it_matters=why_it_matters,
+        facts=facts[:6],
+        timeline=timeline[:6],
+        source_links=unique_links,
+    )
+    prompt_package_markdown = build_prompt_package_markdown(
+        title=title,
+        one_line=one_line,
+        why_it_matters=why_it_matters,
+        facts=facts[:8],
+        full_text_sources=[],
+        source_quotes=[],
+        timeline=timeline[:8],
+        risk_notes=unique_risks,
+        source_links=unique_links,
+        article_writing_guide=build_agent_article_writing_guide(),
+    )
+    douyin_prompt_package_markdown = build_douyin_prompt_package_markdown(
+        title=title,
+        one_line=one_line,
+        why_it_matters=why_it_matters,
+        facts=facts[:8],
+        full_text_sources=[],
+        source_quotes=[],
+        timeline=timeline[:8],
+        risk_notes=unique_risks,
+        source_links=unique_links,
+        article_markdown=wechat_markdown,
+    )
+    return {
+        "included_event_ids": [str(event.get("id") or "") for event, _deep_dive, _facts, _links in qualified],
+        "included_deep_dive_ids": [str(deep_dive.get("id") or "") for _event, deep_dive, _facts, _links in qualified],
+        "title": title,
+        "one_line": one_line,
+        "why_it_matters": why_it_matters,
+        "summary": summary,
+        "facts": facts[:8],
+        "quotes": [],
+        "timeline": timeline[:8],
+        "entity_names": unique_entities,
+        "source_links": unique_links,
+        "risk_notes": unique_risks,
+        "prompt_package_markdown": prompt_package_markdown,
+        "wechat_markdown": wechat_markdown,
+        "douyin_prompt_package_markdown": douyin_prompt_package_markdown,
+        "douyin_title": douyin_title,
+        "douyin_summary": douyin_summary,
+        "douyin_markdown": douyin_markdown,
+    }
+
+
+def build_short_brief_markdown(event: dict[str, Any], deep_dive: dict[str, Any]) -> str:
+    """Build a rule-only WeChat short brief without asking an LLM to rewrite facts."""
+    title = str(event.get("title") or deep_dive.get("title") or "未命名事件").strip()
+    facts = [str(item).strip() for item in deep_dive.get("facts", []) if str(item).strip()]
+    source_links = [
+        str(item.get("canonical_link") or item.get("original_link") or "").strip()
+        for item in deep_dive.get("sources", [])
+        if isinstance(item, dict) and str(item.get("canonical_link") or item.get("original_link") or "").strip()
+    ]
+    worth_reason = str(deep_dive.get("worthiness", {}).get("reason") or "").strip()
+    one_line = facts[0] if facts else (str(event.get("summary") or "").strip() or "信息仍待进一步确认。")
+    why_it_matters = worth_reason or f"当前事件处于 {event.get('alert_state') or '观察'} 阶段，具备继续追踪价值。"
+
+    uncertainty: list[str] = []
+    if deep_dive.get("status") in {"partial", "failed"}:
+        uncertainty.append("仅完成部分正文核验，部分来源抓取或提取失败。")
+    if not facts:
+        uncertainty.append("当前事实仍偏少，建议继续人工核验来源。")
+    if int(event.get("source_count", 0) or 0) <= 1:
+        uncertainty.append("当前来源仍偏少，后续判断需要等待更多信源交叉确认。")
+    if not source_links:
+        uncertainty.append("当前缺少可追溯来源链接，暂不应当作完整可发布稿。")
+
+    lines = [
+        f"# {title}",
+        "",
+        f"一句话：{one_line}",
+        "",
+        "## 核心事实",
+    ]
+    if facts:
+        lines.extend(facts[:3])
+    else:
+        lines.append("暂无足够正文事实，请继续核验。")
+
+    lines.extend(["", "## 这意味着什么", why_it_matters])
+    lines.extend(["", "## 还不确定什么"])
+    if uncertainty:
+        lines.extend([f"- {item}" for item in list(dict.fromkeys(uncertainty))])
+    else:
+        lines.append("- 暂未发现额外不确定项，但仍需以来源后续更新为准。")
+
+    lines.extend(["", "## 来源链接"])
+    if source_links:
+        lines.extend([f"- {item}" for item in source_links[:3]])
+    else:
+        lines.append("- 暂无来源链接")
+    return "\n".join(lines).strip()
+
+
 def build_agent_article_writing_guide() -> str:
     banned_phrases = "、".join(_AI_STYLE_BANNED_PHRASES)
     return f"""\
@@ -1129,10 +1340,58 @@ def build_agent_article_writing_guide() -> str:
 
 ### 你是谁
 你是一位在科技媒体行业深耕多年的资深记者，为微信公众号撰写深度科技分析文章。
-你的写作不是汇报材料、不是论文、不是简报——而是一篇让普通读者愿意一口气读完的好文章。
+你的写作不是汇报材料、不是论文，也不是为了凑字数的长文。你需要先判断当前事件适合短讯、长文，还是不写。
+
+### 先判断内容形态
+不要默认写长文。先根据事件热度、来源数量、事实完整度和读者价值选择形态：
+
+1. 不写
+   - 来源不足、时间过旧、只是重复消息、没有明确读者价值，或者关键事实无法确认。
+2. 短讯
+   - 适合多数日常事件。
+   - 事件有一个清楚的信息点，来源和事实足够支撑发布，但不需要展开成长文。
+   - 多个小事件可以分别写成多条短讯，不要硬塞进一篇长文。
+3. 长文
+   - 只适合重大事件、复杂政策/产品变化、多来源冲突、需要对比分析或读者确实需要一次性搞懂的话题。
+4. 混合
+   - 当天有一个主事件和几个小事件时，可以写一篇长文加几条短讯。
 
 ### 字数要求
-正文 1500-3000 字。不含标题、摘要和来源链接。
+- 短讯：300-600 字，不含来源链接。
+- 长文：800-1000 字，不含标题、摘要和来源链接。
+
+### 短讯结构
+短讯不需要角度规划，不要扩写成小长文。只回答三个问题：
+
+1. 发生了什么？
+2. 为什么值得看？
+3. 现在还不能下什么结论？
+
+短讯推荐结构：
+
+```markdown
+# 标题
+
+一句话：50 字以内说清发生了什么。
+
+## 核心事实
+用 1-3 个短段落或少量列表写清可核验事实。
+
+## 这意味着什么
+用 1 段说明读者为什么需要知道，不要夸大。
+
+## 还不确定什么
+写明未披露、未确认、来源不足、仍需观察的部分。
+
+## 来源链接
+- https://example.com
+```
+
+短讯禁止事项：
+- 不要为了凑字数写行业大背景。
+- 不要把单一事实包装成趋势判断。
+- 不要编造未来影响。
+- 不要省略不确定项。
 
 ### 标题策略（决定打开率）
 - 字数 14-25 字，前 14 字必须放最关键的信息点，避免折叠后失真
@@ -1159,40 +1418,28 @@ def build_agent_article_writing_guide() -> str:
 - 控制在 40-60 字，至少包含一个标题里没有的新信息点
 - 例——标题”OpenAI 完成 65 亿美元融资”的摘要：”Thrive Capital 领投，微软跟投，创 AI 领域单轮融资记录”
 
-### 文章结构（按顺序，用过渡句自然衔接）
+### 长文结构（按顺序，用过渡句自然衔接）
 
 **第一部分：导语（50-80 字，2-3 句）**
 - 第一句必须是具体事实、数字或时间点，不要以宏大背景开头
 - 第二句说明这件事意味着什么，为什么与读者有关
 
-好的导语：
-> 谷歌今天凌晨发布了 Gemini 2.0。多模态推理能力是上一代的 3 倍，API 调用价格降了一半。
-
-差的导语：
-> 在人工智能技术飞速发展的今天，谷歌再次震撼了整个行业，发布了备受瞩目的 Gemini 2.0 模型，标志着多模态AI进入了新的发展阶段。
-
-**第二部分：背景与冲突（100-200 字）**
+**第二部分：背景与冲突（80-120 字）**
 - 交代技术、商业或政策背景
 - 必须呈现一个张力或冲突点：竞争格局、技术路线分歧、利益博弈
 
-**第三部分：核心展开（3-5 个小节，共 1000-2000 字）**
+**第三部分：核心展开（2-3 个小节，共 400-600 字）**
 - 用 ## 小标题分隔，每节聚焦一个明确论点而非一个”维度”
 - 小标题本身必须传达信息，不要写”技术分析””商业影响”等空泛分类
-- 优先把数字、判断、转折写进小标题，例如”推理成本降 60%，价格战正式打响”
+- 优先把数字、判断、转折写进小标题
 - 每个小节内部遵循”事实 -> 分析 -> 这意味着什么”的递进
-- 小节之间要有自然衔接，不要硬切
-- 引用原文穿插在相关段落中（用 > 格式，紧跟 1-2 句解读），不要集中放在一个区块
-- 只引用最有信息量的原文，不超过 3 条
+- 引用原文穿插在相关段落中（用 > 格式，紧跟 1-2 句解读），不超过 2 条
 
-**第四部分：展望与收束（100-200 字）**
+**第四部分：展望与收束（50-100 字）**
 - 不要写”总结”或”总之”，而是给出一个前瞻性判断
-- 用以下方式之一自然收束：
-  - 一句有力的判断（”这场价格战才刚刚开始，最终赢家可能不是模型最强的那一个”）
-  - 对读者的直接提问（”你觉得这个变化会影响你的工作吗？”）
-  - 前瞻暗示（”下周的 Google I/O 可能会有更多细节”）
 
 **第五部分：来源链接**
-- 列出 3-6 条核心来源 URL
+- 列出 2-4 条核心来源 URL
 
 ### 引文与事实底线（最高优先级，违反即废稿）
 
@@ -1220,7 +1467,7 @@ def build_agent_article_writing_guide() -> str:
 - 段落长度必须有变化：允许 1 句成段的短段落制造冲击力，也允许 4-5 句的分析段落
 - 禁止连续出现长度和结构相似的段落（这是 AI 写作最明显的标志）
 - 每 2-3 个事实密集段落后，跟一段稍长的分析或解释作为节奏缓冲
-- 每 300-500 字设置一个”注意力高点”——一个让人忍不住截图发朋友圈的句子或数据
+- 全文至少设置一个”注意力高点”——一个让人忍不住截图发朋友圈的句子或数据
 
 **数据使用**
 - 多用阿拉伯数字和对比参照，例如”比去年降了 60%”，少用”显著提升””大幅增长”这类空泛表述
@@ -1232,8 +1479,7 @@ def build_agent_article_writing_guide() -> str:
 
 **视觉节奏**
 - 段落之间保留一个空行
-- 每 500 字左右标注一个配图建议位置：<!-- 配图建议：[图片内容描述] -->
-- 加粗只用于关键数据或核心判断，全文加粗不超过 8 处
+- 加粗只用于关键数据或核心判断，全文加粗不超过 5 处
 
 ### 格式要求
 - Markdown 格式输出

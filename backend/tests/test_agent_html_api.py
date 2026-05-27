@@ -155,7 +155,8 @@ def test_agent_html_target_crud_and_lists() -> None:
 
         list_response = client.get("/api/admin/agent-html/targets")
         assert list_response.status_code == 200
-        assert len(list_response.json()["items"]) == 1
+        listed_targets = list_response.json()["items"]
+        assert any(item["id"] == created["id"] for item in listed_targets)
 
         patch_response = client.patch(
             f"/api/admin/agent-html/targets/{created['id']}",

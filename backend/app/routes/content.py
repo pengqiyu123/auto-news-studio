@@ -30,8 +30,10 @@ from ..features.briefs.read import (
     list_deep_dives_page as list_deep_dives_page_view,
 )
 from ..features.briefs.write import (
+    abandon_agent_workflow_page as abandon_agent_workflow_page_action,
     create_agent_article_page as create_agent_article_page_action,
     create_brief_from_event_page as create_brief_from_event_page_action,
+    create_daily_digest_brief_page as create_daily_digest_brief_page_action,
     create_event_deep_dive_page as create_event_deep_dive_page_action,
     delete_brief_page as delete_brief_page_action,
     sync_brief_wechat_draft_page as sync_brief_wechat_draft_page_action,
@@ -109,10 +111,24 @@ def build_content_router() -> APIRouter:
     def list_agent_workflows():
         return AgentWorkflowsResponse(**list_agent_workflows_page_view())
 
+    @router.post("/api/admin/briefs/daily-digest", response_model=BriefResponse)
+    def create_daily_digest_brief(triggered_by: str = "dashboard"):
+        try:
+            return BriefResponse(**create_daily_digest_brief_page_action(triggered_by=triggered_by))
+        except ValueError as exc:
+            raise http_from_value_error(exc) from exc
+
     @router.get("/api/admin/agent/workflows/{workflow_session_id}", response_model=AgentWorkflowResponse)
     def get_agent_workflow(workflow_session_id: str):
         try:
             return AgentWorkflowResponse(**get_agent_workflow_page_view(workflow_session_id))
+        except ValueError as exc:
+            raise http_from_value_error(exc) from exc
+
+    @router.post("/api/admin/agent/workflows/{workflow_session_id}/abandon", response_model=AgentWorkflowResponse)
+    def abandon_agent_workflow(workflow_session_id: str, triggered_by: str = "dashboard"):
+        try:
+            return AgentWorkflowResponse(**abandon_agent_workflow_page_action(workflow_session_id, triggered_by=triggered_by))
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 

@@ -1,4 +1,4 @@
-import { Copy, FileSearch, RefreshCcw, RadioTower, Trash2 } from "lucide-react";
+import { Copy, FileSearch, Newspaper, RefreshCcw, RadioTower, Trash2 } from "lucide-react";
 import { useMemo } from "react";
 
 import { formatDateTime, formatRelativeTime } from "../../lib/time";
@@ -17,6 +17,9 @@ interface BriefsPageProps {
   agentWorkflows: AgentWorkflowItem[];
   loading?: boolean;
   busyBriefId?: string | null;
+  creatingDailyDigest?: boolean;
+  abandoningWorkflowId?: string | null;
+  loadingBriefDetailId?: string | null;
   onViewChange: (view: BriefWorkbenchView) => void;
   onWorkflowViewChange: (view: BriefWorkflowView) => void;
   onSearchChange: (value: string) => void;
@@ -27,6 +30,9 @@ interface BriefsPageProps {
   onCopyPackage: (briefId: string) => Promise<void>;
   onSyncBrief: (brief: BriefItem) => Promise<void>;
   onDeleteBrief: (brief: BriefItem) => Promise<void>;
+  onAbandonAgentWorkflow: (workflowSessionId: string) => Promise<void>;
+  onCreateDailyDigest: () => Promise<void>;
+  onLoadBriefDetail: (briefId: string) => Promise<BriefItem | null>;
 }
 
 type BriefWorkbenchView = "all" | "local_only" | "draft_synced" | "published" | "exceptions";
@@ -78,6 +84,26 @@ function detailExcerpt(brief: BriefItem): string {
   return truncate(text.replace(/^#+\s*/gm, "").replace(/\s+/g, " ").trim(), 240) || "暂无正文摘要。";
 }
 
+function todayDateLabel(): string {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const day = String(today.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function isTodayDailyDigest(brief: BriefItem, today = todayDateLabel()): boolean {
+  return brief.title.includes("今日科技速递") && brief.title.includes(today);
+}
+
+function shouldShowIncludedEvents(brief: BriefItem): boolean {
+  return brief.workflow_mode === "traditional" && brief.title.includes("今日科技速递") && Boolean(brief.included_events?.length);
+}
+
+function canAbandonWorkflow(workflow?: AgentWorkflowItem | null): workflow is AgentWorkflowItem {
+  return Boolean(workflow && (workflow.status === "running" || workflow.status === "failed"));
+}
+
 export function BriefsPage({
   briefs,
   page,
@@ -90,6 +116,9 @@ export function BriefsPage({
   agentWorkflows,
   loading = false,
   busyBriefId,
+  creatingDailyDigest = false,
+  abandoningWorkflowId,
+  loadingBriefDetailId,
   onViewChange,
   onWorkflowViewChange,
   onSearchChange,
@@ -100,6 +129,9 @@ export function BriefsPage({
   onCopyPackage,
   onSyncBrief,
   onDeleteBrief,
+  onAbandonAgentWorkflow,
+  onCreateDailyDigest,
+  onLoadBriefDetail,
 }: BriefsPageProps) {
   const workflowCounts = useMemo(
     () => ({
@@ -117,6 +149,8 @@ export function BriefsPage({
     () => [...briefs].sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()),
     [briefs],
   );
+  const hasTodayDigest = useMemo(() => briefs.some((brief) => isTodayDailyDigest(brief)), [briefs]);
+  const dailyDigestButtonLabel = hasTodayDigest ? "今日速递已生成" : creatingDailyDigest ? "生成中..." : "生成今日速递";
 
   return (
     <section className="panel">
@@ -124,6 +158,17 @@ export function BriefsPage({
         <div>
           <p className="eyebrow">简报</p>
           <h2>共享总账：区分传统链与 Agent 会话产物</h2>
+        </div>
+        <div className="panel-header-actions">
+          <button
+            type="button"
+            className="primary-button compact"
+            disabled={creatingDailyDigest || hasTodayDigest}
+            onClick={() => void onCreateDailyDigest()}
+          >
+            <Newspaper size={14} />
+            {dailyDigestButtonLabel}
+          </button>
         </div>
       </div>
 
@@ -196,6 +241,7 @@ export function BriefsPage({
         {filtered.length ? filtered.map((brief) => {
           const busy = busyBriefId === brief.id;
           const workflow = brief.workflow_session_id ? workflowMap.get(brief.workflow_session_id) : null;
+          const workflowBusy = Boolean(workflow && abandoningWorkflowId === workflow.workflow_session_id);
           return (
             <article key={brief.id} className="intel-row-card">
               <div className="intel-card-topline">
@@ -244,8 +290,35 @@ export function BriefsPage({
                 </div>
               ) : null}
               <details className="draft-list-block">
-                <summary>文章详情</summary>
+                <summary
+                  onClick={() => {
+                    if (!brief.wechat_markdown || !brief.prompt_package_markdown || (brief.title.includes("今日科技速递") && !brief.included_events)) {
+                      void onLoadBriefDetail(brief.id);
+                    }
+                  }}
+                >
+                  文章详情{loadingBriefDetailId === brief.id ? "（加载中...）" : ""}
+                </summary>
                 <p>{detailExcerpt(brief)}</p>
+                {shouldShowIncludedEvents(brief) ? (
+                  <div className="draft-list-block">
+                    <span>收录事件</span>
+                    <ul>
+                      {brief.included_events?.map((event) => (
+                        <li key={event.event_id}>
+                          {event.representative_link ? (
+                            <a href={event.representative_link} target="_blank" rel="noreferrer">{event.title}</a>
+                          ) : event.title}
+                          <div className="intel-score-row">
+                            <span>{event.alert_state}</span>
+                            <span>来源 {event.source_count}</span>
+                            <span>深挖 {event.deep_dive_status ?? "pending"}</span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
               </details>
               {(brief.read_count || 0) > 0 || (brief.like_count || 0) > 0 || (brief.share_count || 0) > 0 ? (
                 <div className="intel-score-row" style={{ gap: "12px" }}>
@@ -288,6 +361,19 @@ export function BriefsPage({
                   <Trash2 size={14} />
                   删除简报
                 </button>
+                {canAbandonWorkflow(workflow) ? (
+                  <button
+                    type="button"
+                    className="ghost-button compact danger"
+                    disabled={busy || workflowBusy}
+                    onClick={() => {
+                      if (!window.confirm("确定放弃这个 Agent 会话吗？这不会删除已保存的文章，只会解除未完成会话状态。")) return;
+                      void onAbandonAgentWorkflow(workflow.workflow_session_id);
+                    }}
+                  >
+                    {workflowBusy ? "放弃中..." : "放弃 Agent 会话"}
+                  </button>
+                ) : null}
               </div>
             </article>
           );

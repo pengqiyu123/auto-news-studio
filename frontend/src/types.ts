@@ -1,4 +1,6 @@
 export type AutomationMode =
+  | "manual"
+  | "automated"
   | "radar_only"
   | "radar_and_draft"
   | "full_pipeline";
@@ -37,8 +39,8 @@ export type RuntimeLaunchMode = "once_now" | "once_at" | "interval_now" | "inter
 export type IntelWorkScope = "collect_only" | "collect_events" | "collect_events_alerts";
 export type RuntimeIntent = "normal_monitoring" | "collect_validation" | "event_rebuild" | "alert_rebuild";
 export type RuntimeRunOutcome = "completed" | "failed" | "abandoned" | "stopped";
-export type DeliveryMode = "immediate" | "scheduled_batch";
-export type AdmissionStrategy = "conservative" | "balanced" | "aggressive";
+export type DeliveryMode = "collect_only" | "local_digest" | "immediate" | "scheduled_batch";
+export type AdmissionStrategy = "top_scored" | "conservative" | "balanced" | "aggressive";
 export type IntelEventState = "new" | "watch" | "rising" | "breakout" | "cooling";
 export type IntelAlertLevel = "watch" | "rising" | "breakout" | "cooling";
 export type IntelItemChangeState = "new_item" | "seen_item" | "updated_item";
@@ -581,6 +583,16 @@ export interface BriefItem {
   tip_amount?: string;
   reprint_count?: number;
   metrics_fetched_at?: string | null;
+  included_events?: BriefIncludedEvent[];
+}
+
+export interface BriefIncludedEvent {
+  event_id: string;
+  title: string;
+  alert_state: IntelEventState;
+  source_count: number;
+  deep_dive_status?: DeepDiveStatus | null;
+  representative_link: string;
 }
 
 export interface AgentWorkflowItem {

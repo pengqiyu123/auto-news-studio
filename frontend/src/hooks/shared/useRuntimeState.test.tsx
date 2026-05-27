@@ -11,6 +11,7 @@ vi.mock("../../lib/api", () => ({
     getAgentWorkflows: vi.fn(),
     startRuntime: vi.fn(),
     stopRuntime: vi.fn(),
+    setAutomationMode: vi.fn(),
     updateRuntimePlan: vi.fn(),
     runRuntimeIntent: vi.fn(),
   },
@@ -22,7 +23,7 @@ const runtimeStatus: DashboardResponse["runtime_status"] = {
   running: true,
   control_state: "running",
   launch_mode: "interval_now",
-  current_mode: "full_pipeline",
+  current_mode: "automated",
   work_scope: "collect_events_alerts",
   last_collect_at: null,
   last_event_sync_at: null,
@@ -30,7 +31,7 @@ const runtimeStatus: DashboardResponse["runtime_status"] = {
   next_collect_at: "2026-05-13T10:00:00+08:00",
   delivery_mode: "immediate",
   delivery_schedule_time: null,
-  admission_strategy: "balanced",
+  admission_strategy: "top_scored",
   batch_limit: 3,
   current_cycle: "idle",
   current_cycle_progress_percent: 0,
@@ -71,14 +72,14 @@ const runtimeStatus: DashboardResponse["runtime_status"] = {
 
 const dashboard: DashboardResponse = {
   app_version: {
-    version: "0.2.12",
+    version: "0.2.13",
     release_channel: "stable",
     release_repo: "example/repo",
     release_notes_url: "https://example.com/release-notes",
   },
   update_info: {
-    current_version: "0.2.12",
-    latest_version: "0.2.12",
+    current_version: "0.2.13",
+    latest_version: "0.2.13",
     update_available: false,
     checked_at: "2026-05-13T10:00:00+08:00",
     source: "github",
@@ -131,8 +132,8 @@ const dashboard: DashboardResponse = {
     source_alerts: [],
   },
   current_automation_mode: {
-    key: "full_pipeline",
-    label: "智能模式",
+    key: "automated",
+    label: "计划模式",
     description: "",
     auto_collect: true,
     auto_build_events: true,
@@ -141,7 +142,7 @@ const dashboard: DashboardResponse = {
     available: true,
   },
   current_automation_profile: {
-    mode: "full_pipeline",
+    mode: "automated",
     collect_interval_minutes: 15,
     brief_trigger: "manual",
     brief_schedule_time: null,
@@ -159,11 +160,11 @@ const dashboard: DashboardResponse = {
     start_at: null,
     interval_minutes: 15,
     timezone: "Asia/Shanghai",
-    effective_mode: "full_pipeline",
+    effective_mode: "automated",
     work_scope: "collect_events_alerts",
     delivery_mode: "immediate",
     delivery_schedule_time: null,
-    admission_strategy: "balanced",
+    admission_strategy: "top_scored",
     batch_limit: 3,
     admission_filters: {},
   },
@@ -290,11 +291,11 @@ describe("useRuntimeState", () => {
       start_at: null,
       interval_minutes: 30,
       timezone: "Asia/Shanghai",
-      effective_mode: "full_pipeline",
+      effective_mode: "automated",
       work_scope: "collect_events_alerts",
       delivery_mode: "immediate",
       delivery_schedule_time: null,
-      admission_strategy: "balanced",
+      admission_strategy: "top_scored",
       batch_limit: 5,
       admission_filters: {},
     };
@@ -310,7 +311,7 @@ describe("useRuntimeState", () => {
         work_scope: "collect_events_alerts",
         delivery_mode: "immediate",
         delivery_schedule_time: null,
-        admission_strategy: "balanced",
+        admission_strategy: "top_scored",
         batch_limit: 5,
         admission_filters: {},
       });
@@ -335,7 +336,7 @@ describe("useRuntimeState", () => {
     expect(onToast).toHaveBeenCalledWith("已执行一次完整补跑");
   });
 
-  it("blocks full pipeline start when unfinished agent workflow exists", async () => {
+  it("blocks automated upload start when unfinished agent workflow exists", async () => {
     mockedApi.getAgentWorkflows.mockResolvedValue({
       items: [
         {
@@ -355,6 +356,6 @@ describe("useRuntimeState", () => {
     });
 
     expect(mockedApi.startRuntime).not.toHaveBeenCalled();
-    expect(onError).toHaveBeenCalledWith("当前存在未完成的 Agent 会话，请先完成或明确放弃后，再启动传统全流程。");
+    expect(onError).toHaveBeenCalledWith("当前存在未完成的 Agent 会话，请先完成或明确放弃后，再启动计划上传。");
   });
 });

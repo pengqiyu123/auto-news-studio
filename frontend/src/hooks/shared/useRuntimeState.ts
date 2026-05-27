@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 
 import { api } from "../../lib/api";
 import { pickNewerRuntimeStatus, RUNTIME_INTENT_LABELS } from "../../lib/runtimeIntent";
-import type { AgentWorkflowItem, DashboardResponse, IntelOverviewSummary, RuntimeIntent, RuntimePlan } from "../../types";
+import type { AgentWorkflowItem, AutomationMode, DashboardResponse, IntelOverviewSummary, RuntimeIntent, RuntimePlan } from "../../types";
 
 type ToastTone = "success" | "info" | "warning";
 
@@ -43,11 +43,11 @@ export function useRuntimeState({
   const handleStartRuntime = useCallback(async () => {
     setBusyRuntimeAction("start");
     try {
-      if (runtimePlan?.effective_mode === "full_pipeline") {
+      if (runtimePlan?.effective_mode === "automated" && ["immediate", "scheduled_batch"].includes(runtimePlan.delivery_mode)) {
         const workflowResponse = await api.getAgentWorkflows();
         const unfinished = workflowResponse.items.filter((item: AgentWorkflowItem) => item.status === "running" || item.status === "failed");
         if (unfinished.length) {
-          throw new Error("当前存在未完成的 Agent 会话，请先完成或明确放弃后，再启动传统全流程。");
+          throw new Error("当前存在未完成的 Agent 会话，请先完成或明确放弃后，再启动计划上传。");
         }
       }
       const response = await api.startRuntime();
@@ -112,6 +112,20 @@ export function useRuntimeState({
     }
   }, [onDashboardChange, onError, onReloadOverview]);
 
+  const handleSetAutomationMode = useCallback(async (mode: AutomationMode) => {
+    setSavingRuntimePlan(true);
+    try {
+      const response = await api.setAutomationMode(mode);
+      onDashboardChange((current) => (current ? { ...current, current_automation_mode: response.current } : current));
+      await onReloadOverview(false);
+      onToast(mode === "automated" ? "已切换到计划模式" : "已切换到手动模式");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "运行模式切换失败");
+    } finally {
+      setSavingRuntimePlan(false);
+    }
+  }, [onDashboardChange, onError, onReloadOverview, onToast]);
+
   const handleRunRuntimeIntent = useCallback(async (intent: RuntimeIntent) => {
     setBusyMaintenanceIntent(intent);
     try {
@@ -136,6 +150,7 @@ export function useRuntimeState({
     handleStartRuntime,
     handleStopRuntime,
     handleSaveRuntimePlan,
+    handleSetAutomationMode,
     handleRunRuntimeIntent,
   };
 }

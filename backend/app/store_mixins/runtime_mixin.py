@@ -69,8 +69,18 @@ class RuntimeMixin:
         if not modes[mode].get("available"):
             raise ValueError("该模式当前不可用。")
         state["automation_mode"] = mode
+        plan = self._runtime_plan(state)
+        if mode == "manual":
+            plan["delivery_mode"] = "collect_only"
+            plan["admission_strategy"] = "top_scored"
+        elif mode == "automated":
+            if str(plan.get("delivery_mode") or "") == "collect_only":
+                plan["delivery_mode"] = "local_digest"
+            plan["admission_strategy"] = "top_scored"
         runtime = self._runtime(state)
         runtime["current_mode"] = mode
+        runtime["delivery_mode"] = plan.get("delivery_mode", "collect_only")
+        runtime["admission_strategy"] = plan.get("admission_strategy", "top_scored")
         runtime["next_collect_at"] = self._calculate_next_collect_at(
             state,
             minimum_interval_minutes=self._collect_interval_for_profile(state),
@@ -98,9 +108,9 @@ class RuntimeMixin:
             runtime = self._runtime(state)
             runtime["launch_mode"] = plan["launch_mode"]
             runtime["work_scope"] = plan.get("work_scope", "collect_events_alerts")
-            runtime["delivery_mode"] = plan.get("delivery_mode", "immediate")
+            runtime["delivery_mode"] = plan.get("delivery_mode", "collect_only")
             runtime["delivery_schedule_time"] = plan.get("delivery_schedule_time")
-            runtime["admission_strategy"] = plan.get("admission_strategy", "balanced")
+            runtime["admission_strategy"] = plan.get("admission_strategy", "top_scored")
             runtime["batch_limit"] = int(plan.get("batch_limit", 3) or 3)
             if runtime.get("control_state") != "running":
                 runtime["scheduled_start_at"] = (
@@ -171,9 +181,9 @@ class RuntimeMixin:
             last_event_sync_at=runtime.get("last_event_sync_at"),
             last_brief_at=runtime.get("last_brief_at"),
             next_collect_at=runtime.get("next_collect_at"),
-            delivery_mode=str(self._runtime_plan(state).get("delivery_mode") or "immediate"),
+            delivery_mode=str(self._runtime_plan(state).get("delivery_mode") or "collect_only"),
             delivery_schedule_time=self._runtime_plan(state).get("delivery_schedule_time"),
-            admission_strategy=str(self._runtime_plan(state).get("admission_strategy") or "balanced"),
+            admission_strategy=str(self._runtime_plan(state).get("admission_strategy") or "top_scored"),
             batch_limit=max(int(self._runtime_plan(state).get("batch_limit", 3) or 3), 1),
             current_cycle=current_cycle,
             current_cycle_progress_percent=progress_percent,
@@ -283,9 +293,9 @@ class RuntimeMixin:
             runtime["current_mode"] = state["automation_mode"]
             runtime["launch_mode"] = plan["launch_mode"]
             runtime["work_scope"] = plan.get("work_scope", "collect_events_alerts")
-            runtime["delivery_mode"] = plan.get("delivery_mode", "immediate")
+            runtime["delivery_mode"] = plan.get("delivery_mode", "collect_only")
             runtime["delivery_schedule_time"] = plan.get("delivery_schedule_time")
-            runtime["admission_strategy"] = plan.get("admission_strategy", "balanced")
+            runtime["admission_strategy"] = plan.get("admission_strategy", "top_scored")
             runtime["batch_limit"] = int(plan.get("batch_limit", 3) or 3)
             runtime["last_error"] = None
             runtime["blocked_reason"] = None
@@ -415,9 +425,9 @@ class RuntimeMixin:
             runtime["current_mode"] = state["automation_mode"]
             runtime["launch_mode"] = "once_now"
             runtime["work_scope"] = work_scope
-            runtime["delivery_mode"] = self._runtime_plan(state).get("delivery_mode", "immediate")
+            runtime["delivery_mode"] = self._runtime_plan(state).get("delivery_mode", "collect_only")
             runtime["delivery_schedule_time"] = self._runtime_plan(state).get("delivery_schedule_time")
-            runtime["admission_strategy"] = self._runtime_plan(state).get("admission_strategy", "balanced")
+            runtime["admission_strategy"] = self._runtime_plan(state).get("admission_strategy", "top_scored")
             runtime["batch_limit"] = int(self._runtime_plan(state).get("batch_limit", 3) or 3)
             runtime["last_error"] = None
             runtime["blocked_reason"] = None
@@ -708,7 +718,18 @@ class RuntimeMixin:
                 minimum_interval_minutes=None,
             )
             self._write_runtime_checkpoint(state)
-            self._run_delivery_pipeline(state, runtime, triggered_by=triggered_by)
+            if str(state.get("automation_mode") or "manual") == "manual":
+                self._append_log(
+                    state,
+                    "info",
+                    "delivery",
+                    "手动模式：跳过自动交付，请在对应页面手动触发深挖、生成速递或上传。",
+                    stream="system_runtime",
+                    actor=triggered_by,
+                )
+                self._write_runtime_checkpoint(state)
+            else:
+                self._run_delivery_pipeline(state, runtime, triggered_by=triggered_by)
             state = self._upgrade_state(self._read())
             runtime = self._runtime(state)
 

@@ -70,6 +70,8 @@ export function useBriefsState({
   const [pendingBriefTitle, setPendingBriefTitle] = useState<string | null>(null);
   const [agentWorkflows, setAgentWorkflows] = useState<AgentWorkflowItem[]>([]);
   const [loadingBriefDetailId, setLoadingBriefDetailId] = useState<string | null>(null);
+  const [creatingDailyDigest, setCreatingDailyDigest] = useState(false);
+  const [abandoningWorkflowId, setAbandoningWorkflowId] = useState<string | null>(null);
   const briefsLoadingRef = useRef(false);
 
   const loadBriefsData = useCallback(async (
@@ -180,6 +182,43 @@ export function useBriefsState({
       setPendingBriefTitle(null);
     }
   }, [getAlertsSnapshot, getEventsSnapshot, getWatchlistSnapshot, loadBriefsData, onActivateBriefs, onError, onMarkBriefsLoaded, onReloadAlerts, onReloadEvents, onReloadOverview, onReloadWatchlist, onToast]);
+
+  const handleCreateDailyDigestBrief = useCallback(async () => {
+    setCreatingDailyDigest(true);
+    try {
+      const response = await api.createDailyDigestBrief("dashboard");
+      await Promise.all([
+        onReloadOverview(true),
+        loadBriefsData(),
+        onReloadEvents(),
+        onReloadWatchlist(),
+        onReloadAlerts(),
+      ]);
+      onActivateBriefs();
+      onMarkBriefsLoaded();
+      onToast(`今日速递已生成：${response.item.title}`, "success");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "今日速递生成失败");
+    } finally {
+      setCreatingDailyDigest(false);
+    }
+  }, [loadBriefsData, onActivateBriefs, onError, onMarkBriefsLoaded, onReloadAlerts, onReloadEvents, onReloadOverview, onReloadWatchlist, onToast]);
+
+  const handleAbandonAgentWorkflow = useCallback(async (workflowSessionId: string) => {
+    setAbandoningWorkflowId(workflowSessionId);
+    try {
+      await api.abandonAgentWorkflow(workflowSessionId);
+      await Promise.all([
+        onReloadOverview(false),
+        loadBriefsData(),
+      ]);
+      onToast("已放弃 Agent 会话", "success");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Agent 会话放弃失败");
+    } finally {
+      setAbandoningWorkflowId(null);
+    }
+  }, [loadBriefsData, onError, onReloadOverview, onToast]);
 
   const handleBriefAction = useCallback(async (kind: "sync" | "copy" | "copyPackage" | "refresh", brief: BriefItem) => {
     setBusyBriefId(brief.id);
@@ -297,10 +336,14 @@ export function useBriefsState({
     busyBriefId,
     pendingDeepDiveTitle,
     pendingBriefTitle,
+    creatingDailyDigest,
+    abandoningWorkflowId,
     loadBriefsData,
     handleDeepDiveEvent,
     handleOpenDeepDive,
     handleCreateBrief,
+    handleCreateDailyDigestBrief,
+    handleAbandonAgentWorkflow,
     handleBriefAction,
     handleDeleteBrief,
     handleCopyBrief,

@@ -127,6 +127,40 @@ def automation_to_publish_mode(mode: str) -> str:
     return "draft_only"
 
 
+def _migrate_automation_mode_and_delivery(state: dict[str, Any]) -> None:
+    runtime_plan = state.setdefault("runtime_plan", {})
+    runtime = state.setdefault("runtime", {})
+    current_mode = str(state.get("automation_mode") or "manual")
+    runtime_mode = str(runtime.get("current_mode") or current_mode)
+
+    def _apply(mode: str, delivery_mode: str) -> None:
+        state["automation_mode"] = mode
+        runtime["current_mode"] = mode
+        runtime_plan["delivery_mode"] = delivery_mode
+        runtime["delivery_mode"] = delivery_mode
+        runtime_plan["admission_strategy"] = "top_scored"
+        runtime["admission_strategy"] = "top_scored"
+
+    if current_mode == "radar_only":
+        _apply("manual", "collect_only")
+    elif current_mode == "radar_and_draft":
+        _apply("automated", "local_digest")
+    elif current_mode == "full_pipeline":
+        _apply("automated", "immediate")
+    elif current_mode in {"manual", "automated"}:
+        state["automation_mode"] = current_mode
+        runtime["current_mode"] = current_mode if runtime_mode in {"radar_only", "radar_and_draft", "full_pipeline"} else runtime_mode
+        if current_mode == "manual":
+            runtime_plan.setdefault("delivery_mode", "collect_only")
+        else:
+            runtime_plan.setdefault("delivery_mode", "local_digest")
+        runtime.setdefault("delivery_mode", runtime_plan.get("delivery_mode", "collect_only"))
+        runtime_plan.setdefault("admission_strategy", "top_scored")
+        runtime.setdefault("admission_strategy", runtime_plan.get("admission_strategy", "top_scored"))
+    else:
+        _apply("manual", "collect_only")
+
+
 JOB_LABELS = {
     "collect_news": "雷达获取",
     "rebuild_candidates": "刷新事件聚合",
@@ -184,7 +218,7 @@ class StoreCoreStateMixin:
         reference_projects = write_reference_baseline()
         sources = self._build_source_registry()
         state = {
-            "automation_mode": "radar_only",
+            "automation_mode": "manual",
             "automation_mode_definitions": deepcopy(AUTOMATION_MODE_DEFINITIONS),
             "automation_profiles": deepcopy(DEFAULT_AUTOMATION_PROFILES),
             "sources": sources,
@@ -311,21 +345,25 @@ class StoreCoreStateMixin:
                 "interval_minutes": 30,
                 "timezone": "Asia/Shanghai",
                 "work_scope": "collect_events_alerts",
+                "delivery_mode": "collect_only",
+                "delivery_schedule_time": None,
+                "admission_strategy": "top_scored",
+                "batch_limit": 5,
             },
             "runtime": {
                 "scheduler_running": False,
                 "control_state": "stopped",
                 "launch_mode": "interval_now",
-                "current_mode": "radar_only",
+                "current_mode": "manual",
                 "work_scope": "collect_events_alerts",
                 "last_collect_at": None,
                 "last_event_sync_at": None,
                 "last_brief_at": None,
                 "next_collect_at": None,
-                "delivery_mode": "immediate",
+                "delivery_mode": "collect_only",
                 "delivery_schedule_time": None,
-                "admission_strategy": "balanced",
-                "batch_limit": 3,
+                "admission_strategy": "top_scored",
+                "batch_limit": 5,
                 "current_cycle": "idle",
                 "current_cycle_progress_percent": 0,
                 "current_cycle_progress_done": 0,
@@ -669,7 +707,7 @@ class StoreCoreStateMixin:
             return self._apply_user_settings_to_state(state, config)
 
     def _ensure_live_state_defaults(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        state.setdefault("automation_mode", "radar_only")
+        state.setdefault("automation_mode", "manual")
         state.setdefault("automation_mode_definitions", deepcopy(AUTOMATION_MODE_DEFINITIONS))
         state.setdefault("automation_profiles", deepcopy(DEFAULT_AUTOMATION_PROFILES))
         state.setdefault("raw_items", [])
@@ -696,6 +734,7 @@ class StoreCoreStateMixin:
         state.setdefault("logs", [])
         state.setdefault("reference_projects", [])
         state.setdefault("runtime_plan", {})
+        _migrate_automation_mode_and_delivery(state)
         state.setdefault(
             "notifications",
             {
@@ -775,16 +814,16 @@ class StoreCoreStateMixin:
         runtime.setdefault("scheduler_running", False)
         runtime.setdefault("control_state", "stopped")
         runtime.setdefault("launch_mode", "interval_now")
-        runtime.setdefault("current_mode", state.get("automation_mode", "radar_only"))
+        runtime.setdefault("current_mode", state.get("automation_mode", "manual"))
         runtime.setdefault("work_scope", state.get("runtime_plan", {}).get("work_scope", "collect_events_alerts"))
         runtime.setdefault("last_collect_at", None)
         runtime.setdefault("last_event_sync_at", None)
         runtime.setdefault("last_brief_at", None)
         runtime.setdefault("next_collect_at", None)
-        runtime.setdefault("delivery_mode", "immediate")
+        runtime.setdefault("delivery_mode", state.get("runtime_plan", {}).get("delivery_mode", "collect_only"))
         runtime.setdefault("delivery_schedule_time", None)
-        runtime.setdefault("admission_strategy", "balanced")
-        runtime.setdefault("batch_limit", 3)
+        runtime.setdefault("admission_strategy", state.get("runtime_plan", {}).get("admission_strategy", "top_scored"))
+        runtime.setdefault("batch_limit", int(state.get("runtime_plan", {}).get("batch_limit", 5) or 5))
         runtime.setdefault("current_cycle", "idle")
         runtime.setdefault("current_cycle_progress_percent", 0)
         runtime.setdefault("current_cycle_progress_done", 0)
@@ -1171,7 +1210,7 @@ class StoreCoreStateMixin:
         ]
         llm.pop("tasks", None)
         llm.setdefault("usage_today", {})
-        state.setdefault("automation_mode", "radar_only")
+        state.setdefault("automation_mode", "manual")
         state.setdefault("automation_mode_definitions", deepcopy(AUTOMATION_MODE_DEFINITIONS))
         state.setdefault("automation_profiles", deepcopy(DEFAULT_AUTOMATION_PROFILES))
         state.setdefault("discovery_items", [])
@@ -1188,6 +1227,7 @@ class StoreCoreStateMixin:
         settings.setdefault("entity_watchlist", [])
         settings["tavily_api_key"] = str(config.get("settings", {}).get("tavily_api_key") or "").strip()
         state.setdefault("runtime_plan", {})
+        _migrate_automation_mode_and_delivery(state)
         state.setdefault("notifications", {
             "webhook": {
                 "enabled": False,
@@ -1258,16 +1298,16 @@ class StoreCoreStateMixin:
         runtime.setdefault("scheduler_running", False)
         runtime.setdefault("control_state", "stopped")
         runtime.setdefault("launch_mode", "interval_now")
-        runtime.setdefault("current_mode", state.get("automation_mode", "radar_only"))
+        runtime.setdefault("current_mode", state.get("automation_mode", "manual"))
         runtime.setdefault("work_scope", state.get("runtime_plan", {}).get("work_scope", "collect_events_alerts"))
         runtime.setdefault("last_collect_at", None)
         runtime.setdefault("last_event_sync_at", None)
         runtime.setdefault("last_brief_at", None)
         runtime.setdefault("next_collect_at", None)
-        runtime.setdefault("delivery_mode", "immediate")
+        runtime.setdefault("delivery_mode", state.get("runtime_plan", {}).get("delivery_mode", "collect_only"))
         runtime.setdefault("delivery_schedule_time", None)
-        runtime.setdefault("admission_strategy", "balanced")
-        runtime.setdefault("batch_limit", 3)
+        runtime.setdefault("admission_strategy", state.get("runtime_plan", {}).get("admission_strategy", "top_scored"))
+        runtime.setdefault("batch_limit", int(state.get("runtime_plan", {}).get("batch_limit", 5) or 5))
         runtime.setdefault("current_cycle", "idle")
         runtime.setdefault("current_cycle_progress_percent", 0)
         runtime.setdefault("current_cycle_progress_done", 0)

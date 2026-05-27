@@ -192,6 +192,41 @@ def test_agent_brief_and_article_share_workflow_session() -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def test_abandon_agent_workflow_marks_session_finished() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["agent_workflows"] = [
+            {
+                "workflow_session_id": "agentwf-abandon-1",
+                "status": "running",
+                "current_step": "article_saved",
+                "event_id": "evt-1",
+                "material_brief_id": "brief-material-1",
+                "article_brief_id": "brief-article-1",
+                "target_platforms": ["wechat"],
+                "last_error": None,
+                "started_at": "2026-05-13T10:00:00+08:00",
+                "updated_at": "2026-05-13T10:01:00+08:00",
+                "finished_at": None,
+            }
+        ]
+        store._write(state)
+
+        workflow = store.abandon_agent_workflow("agentwf-abandon-1", triggered_by="dashboard")
+
+        assert workflow.workflow_session_id == "agentwf-abandon-1"
+        assert workflow.status == "abandoned"
+        assert workflow.finished_at is not None
+        assert workflow.last_error == "用户已放弃该 Agent 会话"
+
+        refreshed = store._upgrade_state(store._read())
+        assert refreshed["agent_workflows"][0]["status"] == "abandoned"
+        assert any("已放弃 Agent 会话" in str(item.get("message") or "") for item in refreshed["logs"])
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def test_create_agent_article_optimizes_title_and_rewrites_markdown_heading() -> None:
     store, temp_root = _make_store()
     try:
@@ -247,6 +282,60 @@ def test_create_agent_article_optimizes_title_and_rewrites_markdown_heading() ->
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def test_create_agent_article_normalizes_powershell_literal_newlines() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["intel_events"] = [
+            {
+                "id": "evt-psnl-1",
+                "title": "AI Event",
+                "summary": "summary",
+                "alert_state": "watch",
+                "entity_names": [],
+                "entity_ids": [],
+                "brief_id": None,
+                "watchlisted": True,
+                "ignored": False,
+            }
+        ]
+        state["event_deep_dives"] = [
+            {
+                "id": "dd-psnl-1",
+                "event_id": "evt-psnl-1",
+                "status": "ready",
+                "sources": [],
+                "facts": ["事实 1"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {"reason": "worth watching"},
+                "updated_at": "2026-05-13T10:00:00+08:00",
+            }
+        ]
+        store._write(state)
+
+        article = store.create_agent_article(
+            AgentArticlePayload(
+                event_id="evt-psnl-1",
+                title="测试标题",
+                article_markdown="# 测试标题`n`n第一段。`n`n## 小标题`n`n第二段。",
+                summary="显式摘要优先",
+                one_line="一句话结论",
+                facts=["事实 1"],
+                publish_to_wechat_draft=False,
+                publish_to_douyin_article=False,
+                triggered_by="agent",
+            )
+        )
+
+        assert "`n" not in article.wechat_markdown
+        assert "<code>n</code>" not in article.wechat_html
+        assert "<h2>小标题</h2>" in article.wechat_html
+        assert "<p>第一段。</p>" in article.wechat_html
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def test_create_brief_from_event_generates_summary_and_writing_guide_prompt() -> None:
     store, temp_root = _make_store()
     try:
@@ -269,10 +358,29 @@ def test_create_brief_from_event_generates_summary_and_writing_guide_prompt() ->
                 "id": "dd-brief-1",
                 "event_id": "evt-brief-1",
                 "status": "ready",
-                "sources": [],
-                "facts": ["Thrive Capital 领投，微软继续跟投"],
-                "quotes": [],
-                "timeline": [],
+                "sources": [
+                    {
+                        "source_key": "example",
+                        "source_name": "Example",
+                        "original_link": "https://example.com/openai-funding",
+                        "canonical_link": "https://example.com/openai-funding",
+                        "title": "OpenAI funding",
+                        "fetch_status": "fetched",
+                        "extract_status": "extracted",
+                        "word_count": 100,
+                        "cleaned_full_text": "Thrive Capital 领投，微软继续跟投。",
+                        "excerpt": "Thrive Capital 领投",
+                        "quotes": [],
+                    }
+                ],
+                "facts": [
+                    "Thrive Capital 领投，微软继续跟投",
+                    "这笔融资被多家媒体称为 AI 领域重要融资事件",
+                    "融资细节仍以官方披露为准",
+                    "第四条事实不应进入短讯核心事实段",
+                ],
+                "quotes": ["OpenAI 表示资金将用于继续扩展 AI 基础设施"],
+                "timeline": ["2026-05-13：融资消息披露"],
                 "worthiness": {"reason": "值得跟踪 AI 融资格局变化"},
                 "updated_at": "2026-05-13T10:00:00+08:00",
             }
@@ -282,8 +390,480 @@ def test_create_brief_from_event_generates_summary_and_writing_guide_prompt() ->
         brief = store.create_brief_from_event("evt-brief-1", triggered_by="agent")
 
         assert brief.summary == "Thrive Capital 领投，微软继续跟投"
+        assert brief.brief_level == "rule"
+        assert "## 核心事实" in brief.wechat_markdown
+        assert "## 这意味着什么" in brief.wechat_markdown
+        assert "## 还不确定什么" in brief.wechat_markdown
+        assert "## 来源链接" in brief.wechat_markdown
+        assert "Thrive Capital 领投，微软继续跟投" in brief.wechat_markdown
+        assert "这笔融资被多家媒体称为 AI 领域重要融资事件" in brief.wechat_markdown
+        assert "融资细节仍以官方披露为准" in brief.wechat_markdown
+        assert "第四条事实不应进入短讯核心事实段" not in brief.wechat_markdown
+        assert "值得跟踪 AI 融资格局变化" in brief.wechat_markdown
+        assert "https://example.com/openai-funding" in brief.wechat_markdown
         assert "## 写作要求" in brief.prompt_package_markdown
         assert "### 摘要" in brief.prompt_package_markdown
+        assert "Thrive Capital 领投，微软继续跟投" in brief.prompt_package_markdown
+        assert brief.douyin_markdown
+        assert "Thrive Capital 领投，微软继续跟投" in brief.douyin_markdown
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_create_brief_from_event_short_brief_exposes_partial_and_missing_facts() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["intel_events"] = [
+            {
+                "id": "evt-partial-1",
+                "title": "某 AI 产品更新",
+                "summary": "事件原始摘要",
+                "alert_state": "rising",
+                "entity_names": [],
+                "entity_ids": [],
+                "brief_id": None,
+                "watchlisted": True,
+                "ignored": False,
+                "source_count": 1,
+            }
+        ]
+        state["event_deep_dives"] = [
+            {
+                "id": "dd-partial-1",
+                "event_id": "evt-partial-1",
+                "status": "partial",
+                "sources": [
+                    {
+                        "source_key": "example",
+                        "source_name": "Example",
+                        "original_link": "https://example.com/ai-update",
+                        "canonical_link": "https://example.com/ai-update",
+                        "title": "AI update",
+                        "fetch_status": "fetch_failed",
+                        "extract_status": "extract_failed",
+                        "word_count": 0,
+                        "cleaned_full_text": "",
+                        "excerpt": "",
+                        "quotes": [],
+                    }
+                ],
+                "facts": [],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {},
+                "updated_at": "2026-05-13T10:00:00+08:00",
+            }
+        ]
+        store._write(state)
+
+        brief = store.create_brief_from_event("evt-partial-1", triggered_by="dashboard")
+
+        assert brief.brief_level == "rule"
+        assert "暂无足够正文事实，请继续核验。" in brief.wechat_markdown
+        assert "仅完成部分正文核验，部分来源抓取或提取失败。" in brief.wechat_markdown
+        assert "当前事实仍偏少，建议继续人工核验来源。" in brief.wechat_markdown
+        assert "## 还不确定什么" in brief.wechat_markdown
+        assert "https://example.com/ai-update" in brief.wechat_markdown
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_create_daily_digest_brief_from_events_generates_one_roundup_and_marks_members() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["intel_events"] = [
+            {
+                "id": "evt-digest-1",
+                "title": "华为发布 AI DC 全栈方案",
+                "summary": "华为发布 AI DC 数据基础设施全栈方案。",
+                "alert_state": "breakout",
+                "entity_names": ["华为"],
+                "entity_ids": [],
+                "tags": ["AI 基础设施", "数据中心"],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 2,
+            },
+            {
+                "id": "evt-digest-2",
+                "title": "OpenAI 推出新企业功能",
+                "summary": "OpenAI 面向企业用户更新管理能力。",
+                "alert_state": "rising",
+                "entity_names": ["OpenAI"],
+                "entity_ids": [],
+                "tags": ["企业 AI", "产品能力"],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 2,
+            },
+            {
+                "id": "evt-digest-3",
+                "title": "国产芯片工具链更新",
+                "summary": "国产芯片工具链发布新版本。",
+                "alert_state": "rising",
+                "entity_names": ["芯片工具链"],
+                "entity_ids": [],
+                "tags": ["芯片", "工具链"],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 1,
+            },
+        ]
+        state["event_deep_dives"] = [
+            {
+                "id": "dd-digest-1",
+                "event_id": "evt-digest-1",
+                "status": "ready",
+                "sources": [
+                    {
+                        "source_name": "量子位",
+                        "canonical_link": "https://example.com/huawei-ai-dc",
+                        "original_link": "https://example.com/huawei-ai-dc",
+                        "title": "华为 AI DC",
+                        "cleaned_full_text": "华为发布 AI DC 数据基础设施全栈方案。",
+                        "quotes": [],
+                    }
+                ],
+                "facts": ["华为发布 AI DC 数据基础设施全栈方案", "方案覆盖数据中心训练和推理场景"],
+                "quotes": [],
+                "timeline": ["2026-05-26：方案发布"],
+                "worthiness": {"reason": "数据中心基础设施是 AI 落地的重要环节。"},
+                "updated_at": "2026-05-26T10:00:00+08:00",
+            },
+            {
+                "id": "dd-digest-2",
+                "event_id": "evt-digest-2",
+                "status": "ready",
+                "sources": [
+                    {
+                        "source_name": "TechCrunch",
+                        "canonical_link": "https://example.com/openai-enterprise",
+                        "original_link": "https://example.com/openai-enterprise",
+                        "title": "OpenAI enterprise",
+                        "cleaned_full_text": "OpenAI 面向企业用户更新管理能力。",
+                        "quotes": [],
+                    }
+                ],
+                "facts": ["OpenAI 面向企业用户更新管理能力", "新功能强调权限和团队管理"],
+                "quotes": [],
+                "timeline": ["2026-05-26：功能更新"],
+                "worthiness": {"reason": "企业 AI 管理能力正在成为产品竞争点。"},
+                "updated_at": "2026-05-26T10:05:00+08:00",
+            },
+            {
+                "id": "dd-digest-3",
+                "event_id": "evt-digest-3",
+                "status": "partial",
+                "sources": [
+                    {
+                        "source_name": "IT之家",
+                        "canonical_link": "https://example.com/chip-toolchain",
+                        "original_link": "https://example.com/chip-toolchain",
+                        "title": "国产芯片工具链",
+                        "cleaned_full_text": "",
+                        "quotes": [],
+                    }
+                ],
+                "facts": ["国产芯片工具链发布新版本"],
+                "quotes": [],
+                "timeline": ["2026-05-26：版本更新"],
+                "worthiness": {},
+                "updated_at": "2026-05-26T10:10:00+08:00",
+            },
+        ]
+        store._write(state)
+
+        brief = store.create_daily_digest_brief_from_events(
+            ["evt-digest-1", "evt-digest-2", "evt-digest-3"],
+            triggered_by="scheduler",
+        )
+
+        assert brief.brief_level == "rule"
+        assert brief.event_id == "evt-digest-1"
+        assert brief.deep_dive_id == "dd-digest-1"
+        assert brief.title.startswith("今日科技速递")
+        assert "今日筛选出 3 条值得关注的科技动态" in brief.why_it_matters
+        assert "华为、OpenAI、芯片工具链" in brief.why_it_matters
+        assert "AI 基础设施" in brief.why_it_matters
+        assert "1 条处于爆发状态" in brief.why_it_matters
+        assert "这些事件分别覆盖 AI 基础设施、产品能力或产业链变化" not in brief.why_it_matters
+        assert "# 今日科技速递" in brief.wechat_markdown
+        assert "今天值得关注的科技动态有 3 条" not in brief.wechat_markdown
+        assert brief.wechat_markdown.splitlines()[2] == brief.why_it_matters
+        assert "## 1. 华为发布 AI DC 全栈方案" in brief.wechat_markdown
+        assert "## 2. OpenAI 推出新企业功能" in brief.wechat_markdown
+        assert "## 3. 国产芯片工具链更新" in brief.wechat_markdown
+        assert "https://example.com/huawei-ai-dc" in brief.wechat_markdown
+        assert "https://example.com/openai-enterprise" in brief.wechat_markdown
+        assert "https://example.com/chip-toolchain" in brief.wechat_markdown
+        assert brief.douyin_markdown
+
+        refreshed = store._upgrade_state(store._read())
+        assert len(refreshed["briefs"]) == 1
+        member_brief_ids = {item["id"]: item.get("brief_id") for item in refreshed["intel_events"]}
+        assert member_brief_ids == {
+            "evt-digest-1": brief.id,
+            "evt-digest-2": brief.id,
+            "evt-digest-3": brief.id,
+        }
+        assert all(item.get("brief_status") == "prepared" for item in refreshed["intel_events"])
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_create_daily_digest_brief_reuses_today_digest_when_member_events_overlap() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        specs = [
+            ("evt-digest-overlap-1", "华为发布 AI DC 全栈方案", "breakout", ["华为"], ["AI 基础设施"]),
+            ("evt-digest-overlap-2", "OpenAI 推出新企业功能", "rising", ["OpenAI"], ["企业 AI"]),
+            ("evt-digest-overlap-3", "国产芯片工具链更新", "rising", ["芯片工具链"], ["芯片"]),
+            ("evt-digest-overlap-4", "机器人公司发布新产品", "rising", ["机器人公司"], ["机器人"]),
+        ]
+        state["intel_events"] = []
+        state["event_deep_dives"] = []
+        for event_id, title, alert_state, entities, tags in specs:
+            state["intel_events"].append(
+                {
+                    "id": event_id,
+                    "title": title,
+                    "summary": f"{title}。",
+                    "alert_state": alert_state,
+                    "entity_names": entities,
+                    "entity_ids": [],
+                    "tags": tags,
+                    "brief_id": None,
+                    "watchlisted": False,
+                    "ignored": False,
+                    "source_count": 2,
+                }
+            )
+            state["event_deep_dives"].append(
+                {
+                    "id": f"dd-{event_id}",
+                    "event_id": event_id,
+                    "status": "ready",
+                    "sources": [
+                        {
+                            "source_name": "Example",
+                            "canonical_link": f"https://example.com/{event_id}",
+                            "original_link": f"https://example.com/{event_id}",
+                            "title": title,
+                            "cleaned_full_text": f"{title}。",
+                            "quotes": [],
+                        }
+                    ],
+                    "facts": [f"{title} 的已核验事实"],
+                    "quotes": [],
+                    "timeline": [],
+                    "worthiness": {"reason": "该事件值得纳入今日速递。"},
+                    "updated_at": "2026-05-26T10:00:00+08:00",
+                }
+            )
+        store._write(state)
+
+        first = store.create_daily_digest_brief_from_events(
+            ["evt-digest-overlap-1", "evt-digest-overlap-2", "evt-digest-overlap-3"],
+            triggered_by="dashboard",
+        )
+        second = store.create_daily_digest_brief_from_events(
+            ["evt-digest-overlap-2", "evt-digest-overlap-3", "evt-digest-overlap-4"],
+            triggered_by="dashboard",
+        )
+
+        assert second.id == first.id
+        assert second.wechat_markdown != first.wechat_markdown
+
+        refreshed = store._upgrade_state(store._read())
+        assert len(refreshed["briefs"]) == 1
+        events_by_id = {item["id"]: item for item in refreshed["intel_events"]}
+        assert events_by_id["evt-digest-overlap-1"].get("brief_id") is None
+        assert events_by_id["evt-digest-overlap-2"].get("brief_id") == first.id
+        assert events_by_id["evt-digest-overlap-3"].get("brief_id") == first.id
+        assert events_by_id["evt-digest-overlap-4"].get("brief_id") == first.id
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_create_daily_digest_brief_requires_at_least_two_qualified_events() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["intel_events"] = [
+            {
+                "id": "evt-digest-single",
+                "title": "唯一可写事件",
+                "summary": "只有一条可写事件。",
+                "alert_state": "breakout",
+                "entity_names": [],
+                "entity_ids": [],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 1,
+            },
+            {
+                "id": "evt-digest-no-source",
+                "title": "缺少来源事件",
+                "summary": "这条缺少来源链接。",
+                "alert_state": "rising",
+                "entity_names": [],
+                "entity_ids": [],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 0,
+            },
+        ]
+        state["event_deep_dives"] = [
+            {
+                "id": "dd-digest-single",
+                "event_id": "evt-digest-single",
+                "status": "ready",
+                "sources": [
+                    {
+                        "source_name": "Example",
+                        "canonical_link": "https://example.com/only-one",
+                        "original_link": "https://example.com/only-one",
+                        "title": "only one",
+                        "cleaned_full_text": "只有一条可写事件。",
+                        "quotes": [],
+                    }
+                ],
+                "facts": ["只有一条可写事件"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {},
+                "updated_at": "2026-05-26T10:00:00+08:00",
+            },
+            {
+                "id": "dd-digest-no-source",
+                "event_id": "evt-digest-no-source",
+                "status": "ready",
+                "sources": [],
+                "facts": ["缺少来源链接"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {},
+                "updated_at": "2026-05-26T10:05:00+08:00",
+            },
+        ]
+        store._write(state)
+
+        try:
+            store.create_daily_digest_brief_from_events(
+                ["evt-digest-single", "evt-digest-no-source"],
+                triggered_by="scheduler",
+            )
+        except ValueError as exc:
+            assert "至少需要 2 条合格事件" in str(exc)
+        else:
+            raise AssertionError("Expected daily digest generation to require two qualified events.")
+
+        refreshed = store._upgrade_state(store._read())
+        assert refreshed["briefs"] == []
+        assert all(not item.get("brief_id") for item in refreshed["intel_events"])
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_get_daily_digest_brief_projects_included_events() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["intel_events"] = [
+            {
+                "id": "evt-included-1",
+                "title": "华为发布 AI DC 全栈方案",
+                "summary": "华为发布 AI DC 数据基础设施全栈方案。",
+                "representative_link": "https://example.com/huawei-ai-dc",
+                "alert_state": "breakout",
+                "entity_names": ["华为"],
+                "entity_ids": [],
+                "brief_id": None,
+                "deep_dive_id": "dd-included-1",
+                "deep_dive_status": "ready",
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 3,
+            },
+            {
+                "id": "evt-included-2",
+                "title": "OpenAI 推出新企业功能",
+                "summary": "OpenAI 面向企业用户更新管理能力。",
+                "representative_link": "https://example.com/openai-enterprise",
+                "alert_state": "rising",
+                "entity_names": ["OpenAI"],
+                "entity_ids": [],
+                "brief_id": None,
+                "deep_dive_id": "dd-included-2",
+                "deep_dive_status": "ready",
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 2,
+            },
+        ]
+        state["event_deep_dives"] = [
+            {
+                "id": "dd-included-1",
+                "event_id": "evt-included-1",
+                "status": "ready",
+                "sources": [
+                    {
+                        "source_name": "Example",
+                        "canonical_link": "https://example.com/huawei-ai-dc",
+                        "original_link": "https://example.com/huawei-ai-dc",
+                        "title": "华为 AI DC",
+                    }
+                ],
+                "facts": ["华为发布 AI DC 数据基础设施全栈方案"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {"reason": "数据中心基础设施是 AI 落地的重要环节。"},
+                "updated_at": "2026-05-26T10:00:00+08:00",
+            },
+            {
+                "id": "dd-included-2",
+                "event_id": "evt-included-2",
+                "status": "ready",
+                "sources": [
+                    {
+                        "source_name": "Example",
+                        "canonical_link": "https://example.com/openai-enterprise",
+                        "original_link": "https://example.com/openai-enterprise",
+                        "title": "OpenAI enterprise",
+                    }
+                ],
+                "facts": ["OpenAI 面向企业用户更新管理能力"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {"reason": "企业 AI 管理能力正在成为产品竞争点。"},
+                "updated_at": "2026-05-26T10:05:00+08:00",
+            },
+        ]
+        store._write(state)
+
+        brief = store.create_daily_digest_brief_from_events(
+            ["evt-included-1", "evt-included-2"],
+            triggered_by="scheduler",
+        )
+        detail = store.get_brief(brief.id)
+
+        assert [item.event_id for item in detail.included_events] == ["evt-included-1", "evt-included-2"]
+        assert detail.included_events[0].title == "华为发布 AI DC 全栈方案"
+        assert detail.included_events[0].alert_state == "breakout"
+        assert detail.included_events[0].source_count == 3
+        assert detail.included_events[0].deep_dive_status == "ready"
+        assert detail.included_events[0].representative_link == "https://example.com/huawei-ai-dc"
+
+        refreshed = store._upgrade_state(store._read())
+        assert "included_events" not in refreshed["briefs"][0]
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -339,6 +919,123 @@ def test_create_agent_article_prefers_explicit_summary_payload() -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def test_create_daily_digest_brief_marks_only_qualified_members() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["intel_events"] = [
+            {
+                "id": "evt-digest-no-source-first",
+                "title": "缺少来源事件",
+                "summary": "这条缺少来源链接。",
+                "alert_state": "breakout",
+                "entity_names": [],
+                "entity_ids": [],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 0,
+            },
+            {
+                "id": "evt-digest-good-1",
+                "title": "AI 云服务降价",
+                "summary": "AI 云服务下调部分推理价格。",
+                "alert_state": "breakout",
+                "entity_names": ["云服务"],
+                "entity_ids": [],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 2,
+            },
+            {
+                "id": "evt-digest-good-2",
+                "title": "机器人公司发布新产品",
+                "summary": "机器人公司发布面向仓储场景的新产品。",
+                "alert_state": "rising",
+                "entity_names": ["机器人"],
+                "entity_ids": [],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 2,
+            },
+        ]
+        state["event_deep_dives"] = [
+            {
+                "id": "dd-digest-no-source-first",
+                "event_id": "evt-digest-no-source-first",
+                "status": "ready",
+                "sources": [],
+                "facts": ["缺少来源链接"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {},
+                "updated_at": "2026-05-26T10:00:00+08:00",
+            },
+            {
+                "id": "dd-digest-good-1",
+                "event_id": "evt-digest-good-1",
+                "status": "ready",
+                "sources": [
+                    {
+                        "source_name": "Example",
+                        "canonical_link": "https://example.com/ai-cloud-price",
+                        "original_link": "https://example.com/ai-cloud-price",
+                        "title": "AI cloud price",
+                        "cleaned_full_text": "AI 云服务下调部分推理价格。",
+                        "quotes": [],
+                    }
+                ],
+                "facts": ["AI 云服务下调部分推理价格"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {"reason": "推理价格会影响应用成本。"},
+                "updated_at": "2026-05-26T10:05:00+08:00",
+            },
+            {
+                "id": "dd-digest-good-2",
+                "event_id": "evt-digest-good-2",
+                "status": "ready",
+                "sources": [
+                    {
+                        "source_name": "Example",
+                        "canonical_link": "https://example.com/robot-product",
+                        "original_link": "https://example.com/robot-product",
+                        "title": "Robot product",
+                        "cleaned_full_text": "机器人公司发布面向仓储场景的新产品。",
+                        "quotes": [],
+                    }
+                ],
+                "facts": ["机器人公司发布面向仓储场景的新产品"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {"reason": "仓储机器人仍是工业自动化热点。"},
+                "updated_at": "2026-05-26T10:10:00+08:00",
+            },
+        ]
+        store._write(state)
+
+        brief = store.create_daily_digest_brief_from_events(
+            ["evt-digest-no-source-first", "evt-digest-good-1", "evt-digest-good-2"],
+            triggered_by="scheduler",
+        )
+
+        assert brief.event_id == "evt-digest-good-1"
+        assert brief.deep_dive_id == "dd-digest-good-1"
+        assert "缺少来源事件" not in brief.wechat_markdown
+        assert "AI 云服务降价" in brief.wechat_markdown
+        assert "机器人公司发布新产品" in brief.wechat_markdown
+
+        refreshed = store._upgrade_state(store._read())
+        by_id = {item["id"]: item for item in refreshed["intel_events"]}
+        assert by_id["evt-digest-no-source-first"].get("brief_id") is None
+        assert by_id["evt-digest-good-1"].get("brief_id") == brief.id
+        assert by_id["evt-digest-good-2"].get("brief_id") == brief.id
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def test_sync_brief_wechat_draft_refreshes_cached_wechat_html_before_revision_check() -> None:
     store, temp_root = _make_store()
     try:
@@ -377,6 +1074,79 @@ def test_sync_brief_wechat_draft_refreshes_cached_wechat_html_before_revision_ch
         assert "<strong>加粗</strong>" in result.wechat_html
         assert result.summary == "这是显式摘要"
         assert result.stage != "synced"
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_sync_brief_wechat_draft_normalizes_legacy_powershell_literal_newlines_before_upload(monkeypatch) -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["briefs"] = [
+            {
+                "id": "brief-legacy-1",
+                "event_id": "evt-legacy-1",
+                "deep_dive_id": "dd-legacy-1",
+                "brief_level": "article",
+                "stage": "prepared",
+                "title": "旧稿标题",
+                "summary": "这是显式摘要",
+                "one_line": "一句话",
+                "why_it_matters": "原因",
+                "facts": [],
+                "quotes": [],
+                "timeline": [],
+                "entity_names": [],
+                "source_links": [],
+                "risk_notes": [],
+                "prompt_package_markdown": "pkg",
+                "wechat_markdown": "# 旧稿标题`n`n第一段。`n`n## 小标题`n`n第二段。",
+                "wechat_html": "<section><p>旧缓存</p></section>",
+                "needs_resync": False,
+                "delivery_status": "idle",
+                "updated_at": "2026-05-14T10:00:00+08:00",
+            }
+        ]
+        state["intel_events"] = [
+            {
+                "id": "evt-legacy-1",
+                "title": "旧稿标题",
+                "summary": "事件摘要",
+                "alert_state": "watch",
+                "entity_names": [],
+                "entity_ids": [],
+                "brief_id": "brief-legacy-1",
+                "watchlisted": True,
+                "ignored": False,
+            }
+        ]
+        state["channels"]["wechat"]["selectors_version"] = "wechat-mp-v1"
+        captured: dict[str, object] = {}
+        store._write(state)
+
+        def _fake_run_browser_action(action, browser_payload, channel, browser):
+            captured["action"] = action
+            captured["markdown"] = browser_payload.get("markdown")
+            next_browser = {
+                **browser,
+                "logged_in": True,
+                "last_error": None,
+                "verification_status": "verified",
+                "verification_message": "ok",
+                "last_synced_editor_url": "https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&appmsgid=100000999",
+            }
+            return next_browser, [], ["ok"]
+
+        monkeypatch.setattr(store_mixins_pkg.briefs_mixin, "run_browser_action", _fake_run_browser_action)
+
+        result = store.sync_brief_wechat_draft("brief-legacy-1", triggered_by="dashboard")
+
+        assert captured["action"] == "sync_wechat_draft"
+        assert captured["markdown"] == "# 旧稿标题\n\n第一段。\n\n## 小标题\n\n第二段。"
+        assert result.wechat_markdown == "# 旧稿标题\n\n第一段。\n\n## 小标题\n\n第二段。"
+        assert "<code>n</code>" not in result.wechat_html
+        assert "<h2>小标题</h2>" in result.wechat_html
+        assert result.stage == "synced"
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 

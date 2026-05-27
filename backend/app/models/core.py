@@ -133,6 +133,8 @@ from .intel import (  # noqa: F401
 # Literal type aliases — core system types
 # ---------------------------------------------------------------------------
 AutomationMode = Literal[
+    "manual",
+    "automated",
     "radar_only",
     "radar_and_draft",
     "full_pipeline",
@@ -189,8 +191,8 @@ AgentWorkflowStep = Literal[
     "wechat_uploaded",
     "douyin_uploaded",
 ]
-DeliveryMode = Literal["immediate", "scheduled_batch"]
-AdmissionStrategy = Literal["conservative", "balanced", "aggressive"]
+DeliveryMode = Literal["collect_only", "local_digest", "immediate", "scheduled_batch"]
+AdmissionStrategy = Literal["top_scored", "conservative", "balanced", "aggressive"]
 
 # Literal types moved to domain files but also needed here for re-export
 PublishTaskStatus = Literal["pending", "running", "completed", "failed", "blocked"]
@@ -226,11 +228,11 @@ class RuntimePlan(BaseModel):
     start_at: Optional[str] = None
     interval_minutes: Optional[int] = Field(default=30, ge=5, le=360)
     timezone: str = "Asia/Shanghai"
-    effective_mode: AutomationMode = "radar_only"
+    effective_mode: AutomationMode = "manual"
     work_scope: IntelWorkScope = "collect_events_alerts"
-    delivery_mode: DeliveryMode = "immediate"
+    delivery_mode: DeliveryMode = "collect_only"
     delivery_schedule_time: Optional[str] = None
-    admission_strategy: AdmissionStrategy = "balanced"
+    admission_strategy: AdmissionStrategy = "top_scored"
     batch_limit: int = Field(default=3, ge=1, le=20)
     admission_filters: dict[str, bool | int] = Field(default_factory=dict)
 
@@ -379,6 +381,16 @@ class BriefItem(BaseModel):
     tip_amount: str = "0.00"
     reprint_count: int = 0
     metrics_fetched_at: Optional[str] = None
+    included_events: list["BriefIncludedEvent"] = Field(default_factory=list)
+
+
+class BriefIncludedEvent(BaseModel):
+    event_id: str
+    title: str
+    alert_state: IntelEventState = "new"
+    source_count: int = 0
+    deep_dive_status: Optional[DeepDiveStatus] = None
+    representative_link: str = ""
 
 
 class AgentWorkflowItem(BaseModel):
@@ -430,7 +442,7 @@ class RuntimeIssueItem(BaseModel):
 
 class RuntimeCycleSummary(BaseModel):
     run_id: Optional[str] = None
-    mode_key: AutomationMode = "radar_only"
+    mode_key: AutomationMode = "manual"
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     duration_ms: int = 0
@@ -515,15 +527,15 @@ class SchedulerStatus(BaseModel):
     running: bool = False
     control_state: RuntimeControlState = "stopped"
     launch_mode: RuntimeLaunchMode = "interval_now"
-    current_mode: AutomationMode = "radar_only"
+    current_mode: AutomationMode = "manual"
     work_scope: IntelWorkScope = "collect_events_alerts"
     last_collect_at: Optional[str] = None
     last_event_sync_at: Optional[str] = None
     last_brief_at: Optional[str] = None
     next_collect_at: Optional[str] = None
-    delivery_mode: DeliveryMode = "immediate"
+    delivery_mode: DeliveryMode = "collect_only"
     delivery_schedule_time: Optional[str] = None
-    admission_strategy: AdmissionStrategy = "balanced"
+    admission_strategy: AdmissionStrategy = "top_scored"
     batch_limit: int = 3
     current_cycle: str = "idle"
     current_cycle_progress_percent: int = 0
@@ -632,9 +644,9 @@ class RuntimePlanPayload(BaseModel):
     interval_minutes: Optional[int] = Field(default=None, ge=5, le=360)
     timezone: str = "Asia/Shanghai"
     work_scope: IntelWorkScope = "collect_events_alerts"
-    delivery_mode: DeliveryMode = "immediate"
+    delivery_mode: DeliveryMode = "collect_only"
     delivery_schedule_time: Optional[str] = None
-    admission_strategy: AdmissionStrategy = "balanced"
+    admission_strategy: AdmissionStrategy = "top_scored"
     batch_limit: int = Field(default=3, ge=1, le=20)
     admission_filters: dict[str, bool | int] = Field(default_factory=dict)
 

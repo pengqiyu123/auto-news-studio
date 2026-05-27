@@ -10,6 +10,7 @@ from uuid import uuid4
 from ..db import content_database_write_enabled, database_write_enabled, persist_content_assets, persist_ingest_chain_state
 from ..db.config import get_database_settings
 from ..db.read_models import (
+    list_intel_events_from_db,
     list_event_deep_dives_from_db,
     get_deep_dive_from_db,
     get_deep_dive_by_event_id_from_db,
@@ -20,6 +21,7 @@ from ..intel.deep_dive import fetch_and_extract_link
 from ..content.briefing import (
     build_agent_article_writing_guide,
     build_brief_summary,
+    build_daily_digest_brief_payload,
     build_douyin_article_markdown,
     build_douyin_prompt_package_markdown,
     build_douyin_summary,
@@ -29,7 +31,7 @@ from ..content.briefing import (
     optimize_wechat_article_title,
     rewrite_markdown_title,
 )
-from ..models import AgentArticlePayload, AgentWorkflowItem, BriefItem, BriefRecordCounts, BriefStageCounts, DictOkResponse, DouyinArticleFillPayload, EventDeepDive
+from ..models import AgentArticlePayload, AgentWorkflowItem, BriefIncludedEvent, BriefItem, BriefRecordCounts, BriefStageCounts, DictOkResponse, DouyinArticleFillPayload, EventDeepDive
 from ..publishers import (
     build_preview_url,
     build_wechat_target_id,
@@ -39,7 +41,7 @@ from ..publishers import (
 )
 from ..services.wechat_reconcile import project_briefs
 from ..store.base import UTC, now_iso, parse_time
-from ..content.wechat_format import markdown_to_wechat_html
+from ..content.wechat_format import markdown_to_wechat_html, normalize_markdown_newlines
 
 
 class BriefsMixin:
@@ -108,6 +110,27 @@ class BriefsMixin:
     def get_agent_workflow(self, workflow_session_id: str) -> AgentWorkflowItem:
         state = self._read_live()
         return AgentWorkflowItem(**self._find_agent_workflow(state, workflow_session_id))
+
+    def abandon_agent_workflow(self, workflow_session_id: str, *, triggered_by: str = "dashboard") -> AgentWorkflowItem:
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            workflow = self._find_agent_workflow(state, workflow_session_id)
+            status = str(workflow.get("status") or "running")
+            if status in {"completed", "abandoned"}:
+                return AgentWorkflowItem(**workflow)
+            workflow["status"] = "abandoned"
+            workflow["last_error"] = "用户已放弃该 Agent 会话"
+            workflow["updated_at"] = now_iso()
+            workflow["finished_at"] = workflow["updated_at"]
+            self._append_log(
+                state,
+                "info",
+                "agent",
+                f"已放弃 Agent 会话：{workflow.get('workflow_session_id')}",
+                actor=triggered_by,
+            )
+            self._write(state)
+            return AgentWorkflowItem(**workflow)
 
     def _ensure_agent_workflow(
         self,
@@ -283,9 +306,126 @@ class BriefsMixin:
             self._write_with_content_asset_projection(state)
             return BriefItem(**brief)
 
+    def create_daily_digest_brief_from_events(self, event_ids: list[str], *, triggered_by: str = "scheduler") -> BriefItem:
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            ordered_ids = list(dict.fromkeys([str(item or "").strip() for item in event_ids if str(item or "").strip()]))
+            events: list[dict[str, Any]] = []
+            deep_dives: list[dict[str, Any]] = []
+            for event_id in ordered_ids:
+                event = self._find_event(state, event_id)
+                deep_dive = self._find_deep_dive_for_event(state, event_id)
+                if not deep_dive:
+                    continue
+                events.append(event)
+                deep_dives.append(deep_dive)
+
+            base_payload = build_daily_digest_brief_payload(events, deep_dives)
+            included_event_ids = [
+                str(item or "").strip()
+                for item in base_payload.get("included_event_ids", [])
+                if str(item or "").strip()
+            ]
+            included_deep_dive_ids = [
+                str(item or "").strip()
+                for item in base_payload.get("included_deep_dive_ids", [])
+                if str(item or "").strip()
+            ]
+            if len(included_event_ids) < 2:
+                raise ValueError("今日短讯合集至少需要 2 条合格事件。")
+            lead_event_id = included_event_ids[0]
+            lead_event = self._find_event(state, lead_event_id)
+            lead_deep_dive = self._find_deep_dive_for_event(state, lead_event_id) or (deep_dives[0] if deep_dives else {})
+            title = str(base_payload.get("title") or "")
+            existing = self._find_daily_digest_brief_with_event_overlap(state, title, included_event_ids)
+            if not existing:
+                existing = self._find_brief_record_for_event_by_level(state, lead_event_id, brief_level="rule")
+            brief = self._build_brief_dict(
+                event_id=lead_event_id,
+                deep_dive_id=included_deep_dive_ids[0] if included_deep_dive_ids else str(lead_deep_dive.get("id") or ""),
+                brief_level="rule",
+                title=title,
+                summary=str(base_payload.get("summary") or ""),
+                one_line=str(base_payload.get("one_line") or ""),
+                why_it_matters=str(base_payload.get("why_it_matters") or ""),
+                facts=list(base_payload.get("facts", [])),
+                quotes=list(base_payload.get("quotes", [])),
+                timeline=list(base_payload.get("timeline", [])),
+                entity_names=list(base_payload.get("entity_names", [])),
+                source_links=list(base_payload.get("source_links", [])),
+                risk_notes=list(base_payload.get("risk_notes", [])),
+                prompt_package_markdown=str(base_payload.get("prompt_package_markdown") or ""),
+                douyin_prompt_package_markdown=str(base_payload.get("douyin_prompt_package_markdown") or ""),
+                wechat_markdown=str(base_payload.get("wechat_markdown") or ""),
+                douyin_title=str(base_payload.get("douyin_title") or ""),
+                douyin_summary=str(base_payload.get("douyin_summary") or ""),
+                douyin_markdown=str(base_payload.get("douyin_markdown") or ""),
+                workflow_mode="traditional",
+                driver_label=str(existing.get("driver_label") or "") if existing else "daily-digest",
+                existing=existing,
+            )
+            if existing:
+                brief["stage"] = "prepared"
+                brief["delivery_status"] = "idle"
+                brief["needs_resync"] = bool(existing.get("last_synced_revision") or existing.get("wechat_editor_url"))
+                brief["last_synced_revision"] = None
+                brief["last_successful_upload_at"] = None
+                brief["last_verified_at"] = None
+                brief["last_delivery_error_kind"] = None
+                brief["last_error"] = None
+            self._upsert_brief(state, brief, existing)
+            if existing:
+                included_event_id_set = set(included_event_ids)
+                for event in state.get("intel_events", []):
+                    if not isinstance(event, dict):
+                        continue
+                    if str(event.get("brief_id") or "").strip() != str(brief["id"]):
+                        continue
+                    if str(event.get("id") or "").strip() in included_event_id_set:
+                        continue
+                    event["brief_id"] = None
+                    event["brief_status"] = None
+            for event_id in included_event_ids:
+                try:
+                    event = self._find_event(state, event_id)
+                except ValueError:
+                    continue
+                event["brief_id"] = brief["id"]
+                event["brief_status"] = brief["stage"]
+            self._append_log(
+                state,
+                "success",
+                "brief",
+                f"已生成今日短讯合集：{brief['title']}",
+                actor=triggered_by,
+                detail=f"收录 {len(included_event_ids)} 条事件",
+            )
+            self._write_with_content_asset_projection(state)
+            return BriefItem(**brief)
+
+    def create_daily_digest_brief(self, *, triggered_by: str = "dashboard") -> BriefItem:
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            event_ids: list[str] = []
+            min_fulltext_count = max(int(self._delivery_filters(state)["min_fulltext_count"]), 0)
+            for event in self._select_delivery_events(state):
+                event_id = str(event.get("id") or "").strip()
+                if not event_id:
+                    continue
+                deep_dive = self._find_deep_dive_for_event(state, event_id)
+                if not deep_dive or str(deep_dive.get("status") or "") not in {"ready", "partial"}:
+                    continue
+                if int(deep_dive.get("success_count", 0) or 0) < min_fulltext_count:
+                    continue
+                event_ids.append(event_id)
+
+        if len(event_ids) < 2:
+            raise ValueError("今日短讯合集至少需要 2 条合格事件。")
+        return self.create_daily_digest_brief_from_events(event_ids, triggered_by=triggered_by)
+
     def create_agent_article(self, payload: AgentArticlePayload) -> BriefItem:
         raw_title = str(payload.title or "").strip()
-        article_markdown = str(payload.article_markdown or "").strip()
+        article_markdown = normalize_markdown_newlines(str(payload.article_markdown or "")).strip()
         if not raw_title:
             raise ValueError("文章标题不能为空。")
         if not article_markdown:
@@ -876,13 +1016,103 @@ class BriefsMixin:
                     "metrics_fetched_at",
                 }
                 brief_item = {k: v for k, v in brief.items() if k in LIGHT_FIELDS}
+                if self._is_daily_digest_brief(brief_item):
+                    events, _total = list_intel_events_from_db(
+                        database_url=settings.database_url,
+                        page=1,
+                        page_size=10000,
+                    )
+                    brief_item["included_events"] = [
+                        BriefIncludedEvent(
+                            event_id=item.id,
+                            title=item.title,
+                            alert_state=item.alert_state,
+                            source_count=item.source_count,
+                            deep_dive_status=item.deep_dive_status,
+                            representative_link=item.representative_link,
+                        )
+                        for item in events
+                        if str(item.brief_id or "").strip() == brief_id
+                    ]
                 return BriefItem(**brief_item)
             raise ValueError(f"未找到简报：{brief_id}")
 
         state = self._read_live()
         brief = self._find_brief(state, brief_id)
         projected = next((item for item in self._project_briefs(state) if str(item.get("id") or "") == brief_id), None)
-        return BriefItem(**(projected or brief))
+        payload = dict(projected or brief)
+        payload["included_events"] = self._included_events_for_brief(state, payload)
+        return BriefItem(**payload)
+
+    def _is_daily_digest_brief(self, brief: dict[str, Any]) -> bool:
+        return str(brief.get("workflow_mode") or "traditional") == "traditional" and "今日科技速递" in str(brief.get("title") or "")
+
+    def _find_daily_digest_brief_with_event_overlap(
+        self,
+        state: dict[str, Any],
+        title: str,
+        included_event_ids: list[str],
+    ) -> dict[str, Any] | None:
+        target_title = str(title or "").strip()
+        target_event_ids = {str(item or "").strip() for item in included_event_ids if str(item or "").strip()}
+        if not target_title or not target_event_ids:
+            return None
+
+        members_by_brief_id: dict[str, set[str]] = {}
+        for event in state.get("intel_events", []):
+            if not isinstance(event, dict):
+                continue
+            brief_id = str(event.get("brief_id") or "").strip()
+            event_id = str(event.get("id") or "").strip()
+            if brief_id and event_id:
+                members_by_brief_id.setdefault(brief_id, set()).add(event_id)
+
+        matched: dict[str, Any] | None = None
+        matched_updated = datetime.min.replace(tzinfo=UTC)
+        for brief in state.get("briefs", []):
+            if not isinstance(brief, dict):
+                continue
+            if not self._is_daily_digest_brief(brief):
+                continue
+            if str(brief.get("title") or "").strip() != target_title:
+                continue
+            brief_id = str(brief.get("id") or "").strip()
+            member_ids = set(members_by_brief_id.get(brief_id, set()))
+            lead_event_id = str(brief.get("event_id") or "").strip()
+            if lead_event_id:
+                member_ids.add(lead_event_id)
+            if not member_ids.intersection(target_event_ids):
+                continue
+            item_updated = parse_time(brief.get("updated_at")) or datetime.min.replace(tzinfo=UTC)
+            if matched is None or item_updated >= matched_updated:
+                matched = brief
+                matched_updated = item_updated
+        return matched
+
+    def _included_events_for_brief(self, state: dict[str, Any], brief: dict[str, Any]) -> list[BriefIncludedEvent]:
+        if not self._is_daily_digest_brief(brief):
+            return []
+        brief_id = str(brief.get("id") or "").strip()
+        if not brief_id:
+            return []
+        events: list[BriefIncludedEvent] = []
+        deep_dive_lookup = self._deep_dive_lookup(state)
+        for event in state.get("intel_events", []):
+            if not isinstance(event, dict) or str(event.get("brief_id") or "").strip() != brief_id:
+                continue
+            event_id = str(event.get("id") or "").strip()
+            deep_dive = deep_dive_lookup.get(event_id)
+            events.append(
+                BriefIncludedEvent(
+                    event_id=event_id,
+                    title=str(event.get("title") or event_id),
+                    alert_state=str(event.get("alert_state") or "new"),
+                    source_count=int(event.get("source_count", 0) or 0),
+                    deep_dive_status=str((deep_dive or {}).get("status") or event.get("deep_dive_status") or "") or None,
+                    representative_link=str(event.get("representative_link") or ""),
+                )
+            )
+        return events
 
     def _brief_revision(self, brief: dict[str, Any]) -> str:
         stable_payload = {
@@ -956,7 +1186,9 @@ class BriefsMixin:
             brief = self._find_brief(state, brief_id)
             if triggered_by == "agent" and str(brief.get("brief_level") or "rule") != "article":
                 raise ValueError("Agent 模式禁止上传传统简报，请使用 /api/admin/agent/articles 保存并上传长文。")
-            current_markdown = str(brief.get("wechat_markdown") or "")
+            current_markdown = normalize_markdown_newlines(str(brief.get("wechat_markdown") or ""))
+            if current_markdown != str(brief.get("wechat_markdown") or ""):
+                brief["wechat_markdown"] = current_markdown
             if current_markdown:
                 brief["wechat_html"] = markdown_to_wechat_html(current_markdown)
             current_revision = self._brief_revision(brief)
