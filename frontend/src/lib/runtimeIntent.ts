@@ -220,9 +220,12 @@ export function isRuntimeActivelyProcessing(runtime: SchedulerStatus) {
 export function getRuntimeProgressMeta(runtime: SchedulerStatus): RuntimeProgressMeta {
   const visualState = deriveRuntimeVisualState(runtime);
   const active = isRuntimeActivelyProcessing(runtime);
+  const hasCompletedOrFailed =
+    visualState === "one_shot_done" || visualState === "one_shot_failed";
   const hasProgressSignal =
     active ||
-    visualState === "maintenance_running";
+    visualState === "maintenance_running" ||
+    hasCompletedOrFailed;
   const showCounters = runtime.current_cycle_progress_total > 0;
   const stageLabel = getRuntimeStageLabel(runtime);
   let tone: RuntimeProgressMeta["tone"] = "neutral";
@@ -237,7 +240,7 @@ export function getRuntimeProgressMeta(runtime: SchedulerStatus): RuntimeProgres
   return {
     visible: hasProgressSignal,
     active,
-    meterVisible: active && runtime.current_cycle_progress_percent > 0,
+    meterVisible: (active || hasCompletedOrFailed) && runtime.current_cycle_progress_percent > 0,
     stageLabel,
     tone,
     showCounters,

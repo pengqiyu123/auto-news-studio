@@ -56,9 +56,16 @@
   .cockpit-focus-grid,
   .cockpit-main-grid,
   .logs-split-layout,
-  .intel-overview-grid,
-  .intel-summary-grid {
+  .intel-overview-grid {
     grid-template-columns: 1fr;
+  }
+
+  .intel-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .intel-summary-grid > :nth-child(3) {
+    grid-column: 1 / -1;
   }
 
   .global-control-main {

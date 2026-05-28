@@ -636,6 +636,7 @@ export default function App() {
               <OverviewPage
                 summary={summary}
                 runtime={dashboard.runtime_status}
+                freshness={dashboard.freshness}
                 entityWatchlistSummary={dashboard.entity_watchlist_summary}
                 runtimePlan={dashboard.runtime_plan}
                 savingRuntimePlan={savingRuntimePlan}
@@ -893,6 +894,11 @@ export default function App() {
                 onImportBackup={handleImportBackup}
                 onCheckUpdate={handleCheckUpdate}
                 onDismissUpdate={handleDismissUpdate}
+                runtimePlan={dashboard?.runtime_plan ?? null}
+                runtime={dashboard?.runtime_status ?? null}
+                savingRuntimePlan={savingRuntimePlan}
+                onSaveRuntimePlan={handleSaveRuntimePlan}
+                onSetAutomationMode={handleSetAutomationMode}
               />
             ) : null}
 
