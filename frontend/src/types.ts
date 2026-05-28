@@ -464,6 +464,7 @@ export interface IntelAlert {
   id: string;
   event_id: string;
   title: string;
+  summary?: string;
   level: IntelAlertLevel;
   reason: string;
   velocity_score: number;

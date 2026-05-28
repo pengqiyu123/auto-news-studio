@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { explainAlertsEmptyState } from "../../lib/runtimeIntent";
 import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import { historyStatusLabel, historyStatusTone } from "../../lib/eventUtils";
-import type { IntelAlert, IntelAlertHistoryItem, SchedulerStatus } from "../../types";
+import type { EntityWatchlistItem, IntelAlert, IntelAlertHistoryItem, SchedulerStatus } from "../../types";
 
 const PAGE_SIZE = 20;
 
@@ -18,13 +18,28 @@ const FILTER_OPTIONS: Array<{ key: FilterLevel; label: string }> = [
   { key: "cooling", label: "冷却" },
 ];
 
+const GROUPS: Array<{ level: Exclude<FilterLevel, "all">; label: string }> = [
+  { level: "breakout", label: "爆发" },
+  { level: "rising", label: "上升" },
+  { level: "watch", label: "关注" },
+  { level: "cooling", label: "冷却" },
+];
+
+function severityForHistory(status: HistoryFilter) {
+  if (status === "active") return "watch";
+  if (status === "cooled") return "cooling";
+  return "new";
+}
+
 interface AlertsPageProps {
   items: IntelAlert[];
   historyItems: IntelAlertHistoryItem[];
   runtime: SchedulerStatus;
   eventCount: number;
   selectedEntityId: string;
+  entityWatchlist?: EntityWatchlistItem[];
   onSelectedEntityChange: (entityId: string) => void;
+  onNavigateToEvent: (eventId: string) => void;
   onDeepDive: (eventId: string) => Promise<void>;
   busyEventId?: string | null;
 }
@@ -35,7 +50,9 @@ export function AlertsPage({
   runtime,
   eventCount,
   selectedEntityId,
+  entityWatchlist = [],
   onSelectedEntityChange,
+  onNavigateToEvent,
   onDeepDive,
   busyEventId,
 }: AlertsPageProps) {
@@ -43,6 +60,16 @@ export function AlertsPage({
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>("all");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [historyVisibleCount, setHistoryVisibleCount] = useState(PAGE_SIZE);
+  const [openGroups, setOpenGroups] = useState<Set<FilterLevel>>(() => new Set(["breakout", "rising"]));
+
+  function toggleGroup(level: FilterLevel) {
+    setOpenGroups((current) => {
+      const next = new Set(current);
+      if (next.has(level)) next.delete(level);
+      else next.add(level);
+      return next;
+    });
+  }
 
   const entityOptions = useMemo(() => {
     const lookup = new Map<string, { entity_id: string; entity_name: string }>();
@@ -53,8 +80,15 @@ export function AlertsPage({
         lookup.set(entityId, { entity_id: entityId, entity_name: entityName });
       });
     }
+    for (const item of entityWatchlist) {
+      if (!item.entity_id || !item.entity_name || lookup.has(item.entity_id)) continue;
+      lookup.set(item.entity_id, { entity_id: item.entity_id, entity_name: item.entity_name });
+    }
+    if (selectedEntityId !== "all" && !lookup.has(selectedEntityId)) {
+      lookup.set(selectedEntityId, { entity_id: selectedEntityId, entity_name: selectedEntityId });
+    }
     return [...lookup.values()].sort((a, b) => a.entity_name.localeCompare(b.entity_name, "zh-CN"));
-  }, [items]);
+  }, [entityWatchlist, items, selectedEntityId]);
 
   const filtered = useMemo(() => {
     return items.filter((alert) => {
@@ -79,6 +113,14 @@ export function AlertsPage({
   }, [historyFilter, historyItems, selectedEntityId]);
 
   const visible = filtered.slice(0, visibleCount);
+  const groups = useMemo(() => {
+    return GROUPS
+      .map((group) => ({
+        ...group,
+        items: visible.filter((alert) => alert.level === group.level),
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [visible]);
   const visibleHistory = filteredHistory.slice(0, historyVisibleCount);
   const hasMore = visibleCount < filtered.length;
   const hasMoreHistory = historyVisibleCount < filteredHistory.length;
@@ -93,18 +135,6 @@ export function AlertsPage({
         <span className="subtle">{filtered.length} 条</span>
       </div>
       <div className="intel-chip-filter-bar">
-        <div className="intel-chip-row">
-          {FILTER_OPTIONS.map((opt) => (
-            <button
-              key={opt.key}
-              type="button"
-              className={`filter-chip ${filter === opt.key ? "filter-chip-active" : ""}`}
-              onClick={() => { setFilter(opt.key); setVisibleCount(PAGE_SIZE); }}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
         <div className="intel-inline-filter-tools">
           <select
             value={selectedEntityId}
@@ -123,58 +153,94 @@ export function AlertsPage({
           </select>
         </div>
       </div>
-      <p style={{ marginBottom: "0.5rem", opacity: 0.7 }}>活跃预警 {items.length} 条，其中爆发 {items.filter((i) => i.level === "breakout").length} 条</p>
-      <div className="intel-list">
-        {visible.length ? visible.map((alert) => {
-          const visibleTags = alert.entity_names.slice(0, 3);
-          const hiddenTagCount = Math.max(alert.entity_names.length - visibleTags.length, 0);
+      <div className="alert-stats-row">
+        {FILTER_OPTIONS.filter((opt) => opt.key !== "all").map((opt) => {
+          const count = items.filter((item) => item.level === opt.key).length;
           return (
-          <article key={alert.id} className="intel-row-card" style={alert.level === "breakout" ? { borderLeft: "3px solid var(--color-danger, #ef4444)", background: "rgba(239,68,68,0.04)" } : undefined}>
-            <div className="intel-card-topline">
-              <span className={`status-badge status-${alert.level === "breakout" ? "danger" : alert.level === "rising" ? "warning" : alert.level === "watch" ? "success" : "neutral"}`}>
-                {alert.level}
-              </span>
-              <span>{formatRelativeTime(alert.triggered_at, "刚刚")}</span>
-            </div>
-            <strong>{alert.title}</strong>
-            <p>{alert.reason}</p>
-            {visibleTags.length ? (
-              <div className="entity-tag-row">
-                {visibleTags.map((name, index) => (
-                  <button
-                    key={`${alert.id}-${name}`}
-                    type="button"
-                    className={`entity-tag ${alert.entity_ids[index] === selectedEntityId ? "entity-tag-active" : ""}`}
-                    onClick={() => onSelectedEntityChange(alert.entity_ids[index] ?? "all")}
-                  >
-                    {name}
-                  </button>
-                ))}
-                {hiddenTagCount ? <span className="entity-tag entity-tag-muted">+{hiddenTagCount}</span> : null}
-              </div>
-            ) : null}
-            <div className="intel-score-row">
-              <span>速度 {alert.velocity_score}</span>
-              <span>覆盖 {alert.coverage_score}</span>
-              <span>新鲜 {alert.freshness_score}</span>
-              <span>{alert.platform_count} 平台</span>
-            </div>
-            <div className="intel-inline-actions">
-              <span>{formatDateTime(alert.triggered_at, { fallback: "未知" })}</span>
-              <a href={alert.representative_link} target="_blank" rel="noreferrer">查看原文</a>
-              <button
-                type="button"
-                className="primary-button compact"
-                disabled={busyEventId === alert.event_id}
-                onClick={() => void onDeepDive(alert.event_id)}
-              >
-                {busyEventId === alert.event_id ? "深挖中..." : alert.deep_dive_id ? "重新深挖" : "立即深挖"}
-              </button>
-            </div>
-            <p className={`subtle ${alert.worth_to_brief ? "" : "warning-note"}`}>{alert.worth_reason || alert.deep_dive_summary || "尚未完成正文深挖。"}</p>
-          </article>
-        );
-        }) : (
+            <button
+              key={opt.key}
+              type="button"
+              className={`alert-stat ${filter === opt.key ? "alert-stat-active" : ""} stat-${opt.key}`}
+              onClick={() => {
+                const nextFilter = filter === opt.key ? "all" : opt.key;
+                setFilter(nextFilter);
+                if (nextFilter !== "all") {
+                  setOpenGroups((current) => new Set(current).add(nextFilter));
+                }
+                setVisibleCount(PAGE_SIZE);
+              }}
+            >
+              <span className="alert-stat-value">{count}</span>
+              <span className="alert-stat-label">{opt.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="intel-list">
+        {visible.length ? groups.map((group) => (
+          <div key={group.level} className="alert-group">
+            <button type="button" className="alert-group-header" onClick={() => toggleGroup(group.level)}>
+              <span className={`alert-group-dot ${group.level}`} />
+              <span>{group.label} ({group.items.length})</span>
+              <span>{openGroups.has(group.level) ? "▼" : "▶"}</span>
+            </button>
+            {openGroups.has(group.level) ? group.items.map((alert) => {
+              const visibleTags = alert.entity_names.slice(0, 3);
+              const hiddenTagCount = Math.max(alert.entity_names.length - visibleTags.length, 0);
+              return (
+                <article key={alert.id} className={`intel-row-card severity-${alert.level}`}>
+                  <div className="intel-card-topline">
+                    <span className={`status-badge status-${alert.level === "breakout" ? "danger" : alert.level === "rising" ? "warning" : alert.level === "watch" ? "success" : "neutral"}`}>
+                      {alert.level}
+                    </span>
+                    <span>{formatRelativeTime(alert.triggered_at, "刚刚")}</span>
+                  </div>
+                  <strong>{alert.title}</strong>
+                  <p>{alert.summary || alert.reason}</p>
+                  {visibleTags.length ? (
+                    <div className="entity-tag-row">
+                      {visibleTags.map((name, index) => (
+                        <button
+                          key={`${alert.id}-${name}`}
+                          type="button"
+                          className={`entity-tag ${alert.entity_ids[index] === selectedEntityId ? "entity-tag-active" : ""}`}
+                          onClick={() => onSelectedEntityChange(alert.entity_ids[index] ?? "all")}
+                        >
+                          {name}
+                        </button>
+                      ))}
+                      {hiddenTagCount ? <span className="entity-tag entity-tag-muted">+{hiddenTagCount}</span> : null}
+                    </div>
+                  ) : null}
+                  <div className="intel-score-row">
+                    <span>速度 {alert.velocity_score}</span>
+                    <span>覆盖 {alert.coverage_score}</span>
+                    <span>新鲜 {alert.freshness_score}</span>
+                    <span>{alert.platform_count} 平台</span>
+                  </div>
+                  <div className="intel-event-actions">
+                    <div className="intel-secondary-actions">
+                      <span>{formatDateTime(alert.triggered_at, { fallback: "未知" })}</span>
+                      <button type="button" className="ghost-button compact" onClick={() => onNavigateToEvent(alert.event_id)}>
+                        查看事件
+                      </button>
+                      <a href={alert.representative_link} target="_blank" rel="noreferrer">查看原文</a>
+                    </div>
+                    <button
+                      type="button"
+                      className="primary-button compact"
+                      disabled={busyEventId === alert.event_id}
+                      onClick={() => void onDeepDive(alert.event_id)}
+                    >
+                      {busyEventId === alert.event_id ? "深挖中..." : alert.deep_dive_id ? "重新深挖" : "立即深挖"}
+                    </button>
+                  </div>
+                  <p className={`subtle ${alert.worth_to_brief ? "" : "warning-note"}`}>{alert.worth_reason || alert.deep_dive_summary || "尚未完成正文深挖。"}</p>
+                </article>
+              );
+            }) : null}
+          </div>
+        )) : (
           <p className="empty-state">
             {(items.length && (filter !== "all" || selectedEntityId !== "all"))
               ? "当前筛选条件下没有匹配的预警。"
@@ -221,7 +287,7 @@ export function AlertsPage({
           const visibleTags = alert.entity_names.slice(0, 3);
           const hiddenTagCount = Math.max(alert.entity_names.length - visibleTags.length, 0);
           return (
-            <article key={alert.history_id} className="intel-row-card">
+            <article key={alert.history_id} className={`intel-row-card severity-${severityForHistory(alert.status)}`}>
               <div className="intel-card-topline">
                 <span className={`status-badge status-${historyStatusTone(alert.status)}`}>
                   {historyStatusLabel(alert.status)}

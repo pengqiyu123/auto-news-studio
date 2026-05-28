@@ -3,6 +3,13 @@ import { useCallback, useState } from "react";
 import { api } from "../../lib/api";
 import type { EntityWatchlistItem, IntelEvent, IntelEventHistoryItem } from "../../types";
 
+export interface EventsFilters {
+  entity_id?: string;
+  event_id?: string;
+  sort_by?: string;
+  ignore_mode?: string;
+}
+
 interface UseEventsStateParams {
   initialPageSize: number;
   onToast: (message: string, tone?: "success" | "info" | "warning") => void;
@@ -27,15 +34,17 @@ export function useEventsState({
   const [eventHistory, setEventHistory] = useState<IntelEventHistoryItem[]>([]);
   const [entityWatchlist, setEntityWatchlist] = useState<EntityWatchlistItem[]>([]);
   const [selectedEntityId, setSelectedEntityId] = useState<string>("all");
+  const [eventsFilters, setEventsFilters] = useState<EventsFilters>({ sort_by: "composite_score", ignore_mode: "visible" });
 
-  const loadEventsData = useCallback(async (page = eventsPage, pageSize = eventsPageSize) => {
-    const response = await api.getIntelEvents({ page, page_size: pageSize });
+  const loadEventsData = useCallback(async (page = eventsPage, pageSize = eventsPageSize, filters = eventsFilters) => {
+    const response = await api.getIntelEvents({ page, page_size: pageSize, ...filters });
     setEvents(response.items);
     setEventsPage(response.page);
     setEventsPageSize(response.page_size);
     setEventsTotal(response.total);
     setEventHistory(response.history_items ?? []);
-  }, [eventsPage, eventsPageSize]);
+    setEventsFilters(filters);
+  }, [eventsFilters, eventsPage, eventsPageSize]);
 
   const loadEntityWatchlist = useCallback(async () => {
     const response = await api.getEntityWatchlist();
@@ -48,27 +57,27 @@ export function useEventsState({
       await api.watchlistEvent(eventId);
       await Promise.all([
         onReloadOverview(true),
-        loadEventsData(eventsPage, eventsPageSize),
+        loadEventsData(eventsPage, eventsPageSize, eventsFilters),
         onReloadWatchlist(),
       ]);
     } catch (err) {
       onError(err instanceof Error ? err.message : "加入重点观察失败");
     }
-  }, [eventsPage, eventsPageSize, loadEventsData, onError, onReloadOverview, onReloadWatchlist]);
+  }, [eventsFilters, eventsPage, eventsPageSize, loadEventsData, onError, onReloadOverview, onReloadWatchlist]);
 
   const handleIgnoreEvent = useCallback(async (eventId: string) => {
     try {
       await api.ignoreEvent(eventId);
       await Promise.all([
         onReloadOverview(true),
-        loadEventsData(eventsPage, eventsPageSize),
+        loadEventsData(eventsPage, eventsPageSize, eventsFilters),
         onReloadAlerts(),
         onReloadWatchlist(),
       ]);
     } catch (err) {
       onError(err instanceof Error ? err.message : "忽略事件失败");
     }
-  }, [eventsPage, eventsPageSize, loadEventsData, onError, onReloadAlerts, onReloadOverview, onReloadWatchlist]);
+  }, [eventsFilters, eventsPage, eventsPageSize, loadEventsData, onError, onReloadAlerts, onReloadOverview, onReloadWatchlist]);
 
   const handleUpdateEntityWatchlist = useCallback(async (items: EntityWatchlistItem[]) => {
     try {
@@ -100,6 +109,8 @@ export function useEventsState({
     setEntityWatchlist,
     selectedEntityId,
     setSelectedEntityId,
+    eventsFilters,
+    setEventsFilters,
     loadEventsData,
     loadEntityWatchlist,
     handleWatchEvent,

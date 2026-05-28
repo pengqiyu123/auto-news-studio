@@ -105,8 +105,22 @@ def build_intel_router() -> APIRouter:
         )
 
     @router.get("/api/admin/intel/events", response_model=IntelEventsResponse)
-    def get_intel_events(page: int = 1, page_size: int = 50):
-        payload = list_events_page_view(page=page, page_size=page_size)
+    def get_intel_events(
+        page: int = 1,
+        page_size: int = 50,
+        entity_id: str | None = None,
+        event_id: str | None = None,
+        sort_by: str | None = None,
+        ignore_mode: str | None = None,
+    ):
+        payload = list_events_page_view(
+            page=page,
+            page_size=page_size,
+            entity_id=entity_id,
+            event_id=event_id,
+            sort_by=sort_by,
+            ignore_mode=ignore_mode,
+        )
         return IntelEventsResponse(
             items=payload["items"],
             history_items=payload["history_items"],

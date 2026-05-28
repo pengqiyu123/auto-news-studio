@@ -5,10 +5,11 @@ from datetime import datetime, timedelta, timezone
 import json
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from .session import build_session_factory
 from .status_normalizer import normalize_fetch_status, normalize_extract_status
+from ..intel.entity_extractor import entity_match_keys
 from ..models import (
     DiscoveryItem,
     IntelAlert,
@@ -18,6 +19,44 @@ from ..models import (
     IntelAlertHistoryItem,
 )
 from ..store.base import now_iso
+
+EVENT_SORT_COLUMNS = {
+    "composite_score": "composite_score",
+    "velocity_score": "velocity_score",
+    "coverage_score": "coverage_score",
+    "freshness_score": "freshness_score",
+    "member_delta": "member_delta",
+    "platform_delta": "platform_delta",
+    "latest_seen": "coalesce(last_seen_at, latest_collected_at, first_seen_at)",
+}
+
+
+def _entity_member_clause(dialect_name: str) -> str:
+    if dialect_name == "sqlite":
+        return """
+        exists (
+            select 1
+            from json_each(events.entity_ids_json)
+            where cast(json_each.value as text) in :entity_keys
+        )
+        or exists (
+            select 1
+            from json_each(events.entity_names_json)
+            where cast(json_each.value as text) in :entity_keys
+        )
+        """
+    return """
+    exists (
+        select 1
+        from jsonb_array_elements_text(events.entity_ids_json::jsonb) as entity_value(entity_id)
+        where entity_value.entity_id in :entity_keys
+    )
+    or exists (
+        select 1
+        from jsonb_array_elements_text(events.entity_names_json::jsonb) as entity_value(entity_name)
+        where entity_value.entity_name in :entity_keys
+    )
+    """
 
 
 def _json_list(value: Any) -> list:
@@ -30,6 +69,10 @@ def _json_list(value: Any) -> list:
     return value if isinstance(value, list) else []
 
 
+def _json_str_list(value: Any) -> list[str]:
+    return [str(item) for item in _json_list(value) if item is not None]
+
+
 def _json_dict(value: Any) -> dict:
     if isinstance(value, str):
         try:
@@ -38,6 +81,20 @@ def _json_dict(value: Any) -> dict:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return value if isinstance(value, dict) else {}
+
+
+def _db_entity_filter_keys(entity_id: str | None) -> tuple[str, ...]:
+    normalized = str(entity_id or "").strip()
+    if not normalized or normalized == "all":
+        return ()
+    return tuple(sorted(entity_match_keys(normalized, None)))
+
+
+def _mapping_get(row: Any, key: str, default: Any = None) -> Any:
+    try:
+        return row[key]
+    except (KeyError, TypeError):
+        return default
 
 
 def _iso(value: Any) -> str | None:
@@ -196,26 +253,72 @@ def list_discovery_items_from_db(
     return items, total, available_platforms, available_sources
 
 
-def list_intel_events_from_db(*, database_url: str, page: int = 1, page_size: int = 50) -> tuple[list[IntelEvent], int]:
+def list_intel_events_from_db(
+    *,
+    database_url: str,
+    page: int = 1,
+    page_size: int = 50,
+    entity_id: str | None = None,
+    entity_keys: set[str] | tuple[str, ...] | list[str] | None = None,
+    event_id: str | None = None,
+    sort_by: str | None = None,
+    ignore_mode: str | None = None,
+) -> tuple[list[IntelEvent], int]:
     session_factory = build_session_factory(database_url)
     safe_page = max(1, int(page or 1))
     safe_page_size = max(1, min(int(page_size or 50), 200))
     start = (safe_page - 1) * safe_page_size
+    params: dict[str, Any] = {"offset": start, "limit": safe_page_size}
+    normalized_event_id = str(event_id or "").strip()
+    normalized_entity_id = str(entity_id or "").strip()
+    resolved_entity_keys = tuple(sorted(str(key) for key in (entity_keys or []) if str(key).strip()))
+    if not resolved_entity_keys:
+        resolved_entity_keys = _db_entity_filter_keys(normalized_entity_id)
+    order_column = EVENT_SORT_COLUMNS.get(str(sort_by or ""), EVENT_SORT_COLUMNS["composite_score"])
+    order_sql = (
+        f"order by {order_column} desc nulls last, composite_score desc nulls last, id desc"
+        if sort_by == "latest_seen"
+        else f"order by {order_column} desc nulls last, latest_collected_at desc nulls last, id desc"
+    )
     with session_factory() as session:
+        dialect_name = session.get_bind().dialect.name
+        clauses: list[str] = []
+        if normalized_event_id:
+            clauses.append("events.id = :event_id")
+            params["event_id"] = normalized_event_id
+        else:
+            if resolved_entity_keys:
+                clauses.append(f"({_entity_member_clause(dialect_name)})")
+                params["entity_keys"] = resolved_entity_keys
+            if ignore_mode == "visible":
+                clauses.append("events.ignored = :ignored")
+                params["ignored"] = False
+        where_sql = f"where {' and '.join(clauses)}" if clauses else ""
+        query = text(
+            f"""
+            select events.*
+            from intel_events_current events
+            {where_sql}
+            {order_sql}
+            limit :limit offset :offset
+            """
+        )
+        count_query = text(f"select count(*) from intel_events_current events {where_sql}")
+        if resolved_entity_keys:
+            query = query.bindparams(bindparam("entity_keys", expanding=True))
+            count_query = count_query.bindparams(bindparam("entity_keys", expanding=True))
         rows = session.execute(
-            text(
-                """
-                select *
-                from intel_events_current
-                order by composite_score desc, latest_collected_at desc nulls last, id desc
-                limit :limit offset :offset
-                """
-            ),
-            {"offset": start, "limit": safe_page_size},
+            query,
+            params,
         ).mappings().all()
-        total = int(session.execute(text("select count(*) from intel_events_current")).scalar_one())
+        total = int(
+            session.execute(
+                count_query,
+                {key: value for key, value in params.items() if key not in {"offset", "limit"}},
+            ).scalar_one()
+        )
 
-    event_ids = [str(row["id"] or "") for row in rows if row.get("id")]
+    event_ids = [str(row["id"] or "") for row in rows if _mapping_get(row, "id")]
     deep_dive_rows_by_event: dict[str, dict[str, Any]] = {}
     brief_rows_by_event: dict[str, dict[str, Any]] = {}
     if event_ids:
@@ -295,10 +398,10 @@ def list_intel_events_from_db(*, database_url: str, page: int = 1, page_size: in
                 representative_link=row["representative_link"],
                 representative_source_name=row["representative_source_name"],
                 representative_discovery_item_id=row["representative_discovery_item_id"],
-                discovery_item_ids=_json_list(row["discovery_item_ids_json"]),
-                source_keys=_json_list(row["source_keys_json"]),
-                source_names=_json_list(row["source_names_json"]),
-                platforms=_json_list(row["platforms_json"]),
+                discovery_item_ids=_json_str_list(row["discovery_item_ids_json"]),
+                source_keys=_json_str_list(row["source_keys_json"]),
+                source_names=_json_str_list(row["source_names_json"]),
+                platforms=_json_str_list(row["platforms_json"]),
                 platform_count=int(row["platform_count"] or 0),
                 source_count=int(row["source_count"] or 0),
                 member_count=int(row["member_count"] or 0),
@@ -309,8 +412,8 @@ def list_intel_events_from_db(*, database_url: str, page: int = 1, page_size: in
                 latest_collected_at=_iso(row["latest_collected_at"]),
                 first_seen_at=_iso(row["first_seen_at"]),
                 last_seen_at=_iso(row["last_seen_at"]),
-                tags=_json_list(row["tags_json"]),
-                anchor_tokens=_json_list(row["anchor_tokens_json"]),
+                tags=_json_str_list(row["tags_json"]),
+                anchor_tokens=_json_str_list(row["anchor_tokens_json"]),
                 velocity_score=float(row["velocity_score"] or 0),
                 coverage_score=float(row["coverage_score"] or 0),
                 freshness_score=float(row["freshness_score"] or 0),
@@ -320,8 +423,8 @@ def list_intel_events_from_db(*, database_url: str, page: int = 1, page_size: in
                 alert_state=row["alert_state"],
                 change_state=row["change_state"],
                 alert_reason=row["alert_reason"],
-                entity_ids=_json_list(row["entity_ids_json"]),
-                entity_names=_json_list(row["entity_names_json"]),
+                entity_ids=_json_str_list(row["entity_ids_json"]),
+                entity_names=_json_str_list(row["entity_names_json"]),
                 watchlisted=bool(row["watchlisted"]),
                 ignored=bool(row["ignored"]),
                 deep_dive_id=(deep_dive or {}).get("id") or row["deep_dive_id"],
@@ -345,9 +448,10 @@ def list_intel_alerts_from_db(*, database_url: str) -> list[IntelAlert]:
         rows = session.execute(
             text(
                 """
-                select *
-                from intel_alerts_current
-                order by triggered_at desc, composite_score desc, id desc
+                select alerts.*, events.summary as event_summary
+                from intel_alerts_current alerts
+                left join intel_events_current events on events.id = alerts.event_id
+                order by alerts.triggered_at desc, alerts.composite_score desc, alerts.id desc
                 """
             )
         ).mappings().all()
@@ -356,6 +460,7 @@ def list_intel_alerts_from_db(*, database_url: str) -> list[IntelAlert]:
             id=row["id"],
             event_id=row["event_id"],
             title=row["title"],
+            summary=str(_mapping_get(row, "event_summary") or ""),
             level=row["level"],
             reason=row["reason"],
             velocity_score=float(row["velocity_score"] or 0),
@@ -367,8 +472,8 @@ def list_intel_alerts_from_db(*, database_url: str) -> list[IntelAlert]:
             source_count=int(row["source_count"] or 0),
             representative_link=row["representative_link"],
             triggered_at=_iso(row["triggered_at"]) or "",
-            entity_ids=_json_list(row["entity_ids_json"]),
-            entity_names=_json_list(row["entity_names_json"]),
+            entity_ids=_json_str_list(row["entity_ids_json"]),
+            entity_names=_json_str_list(row["entity_names_json"]),
             deep_dive_id=row["deep_dive_id"],
             brief_id=row["brief_id"],
             deep_dive_status=row["deep_dive_status"],

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { PaginationControls } from "../../components/PaginationControls";
 import { explainEventsEmptyState } from "../../lib/runtimeIntent";
@@ -6,21 +6,40 @@ import { historyStatusLabel, historyStatusTone } from "../../lib/eventUtils";
 import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import type { EntityWatchlistItem, EntityWatchlistSummaryItem, HistoryRecordStatus, IntelEvent, IntelEventHistoryItem, SchedulerStatus } from "../../types";
 import { EntityWatchlistPanel } from "./entity_watchlist_panel";
+import type { EventsFilters } from "./state";
 
 const PAGE_SIZE = 20;
 
 type SortKey = "composite_score" | "velocity_score" | "coverage_score" | "freshness_score";
 type ExtendedSortKey = SortKey | "member_delta" | "platform_delta" | "latest_seen";
 
-const SORT_OPTIONS: Array<{ key: ExtendedSortKey; label: string }> = [
+const PRIMARY_SORT_OPTIONS: Array<{ key: SortKey; label: string }> = [
   { key: "composite_score", label: "总分" },
   { key: "velocity_score", label: "速度" },
   { key: "coverage_score", label: "覆盖" },
   { key: "freshness_score", label: "新鲜" },
+];
+
+const EXTENDED_SORT_OPTIONS: Array<{ key: ExtendedSortKey; label: string }> = [
   { key: "member_delta", label: "成员增量" },
   { key: "platform_delta", label: "平台增量" },
   { key: "latest_seen", label: "最新出现" },
 ];
+
+function eventsFiltersEqual(left: EventsFilters, right: EventsFilters) {
+  return (
+    left.entity_id === right.entity_id &&
+    left.event_id === right.event_id &&
+    left.sort_by === right.sort_by &&
+    left.ignore_mode === right.ignore_mode
+  );
+}
+
+function severityForHistory(status: HistoryRecordStatus) {
+  if (status === "active") return "watch";
+  if (status === "cooled") return "cooling";
+  return "new";
+}
 
 interface EventsPageProps {
   items: IntelEvent[];
@@ -33,11 +52,14 @@ interface EventsPageProps {
   entityWatchlistSummary: EntityWatchlistSummaryItem[];
   selectedEntityId: string;
   onSelectedEntityChange: (entityId: string) => void;
+  onFilterChange: (filters: EventsFilters) => void;
   onUpdateEntityWatchlist: (items: EntityWatchlistItem[]) => Promise<void>;
   onOpenEntity: (entityId: string) => void;
   onWatchEvent: (eventId: string) => Promise<void>;
   onIgnoreEvent: (eventId: string) => Promise<void>;
   onDeepDive: (eventId: string) => Promise<void>;
+  onNavigateToAlerts?: (eventId: string) => void;
+  highlightEventId?: string;
   busyEventId?: string | null;
   loading?: boolean;
   onPageChange: (page: number) => void;
@@ -55,11 +77,14 @@ export function EventsPage({
   entityWatchlistSummary,
   selectedEntityId,
   onSelectedEntityChange,
+  onFilterChange,
   onUpdateEntityWatchlist,
   onOpenEntity,
   onWatchEvent,
   onIgnoreEvent,
   onDeepDive,
+  onNavigateToAlerts,
+  highlightEventId,
   busyEventId,
   loading = false,
   onPageChange,
@@ -69,7 +94,27 @@ export function EventsPage({
   const [historyFilter, setHistoryFilter] = useState<HistoryRecordStatus | "all">("all");
   const [historyVisibleCount, setHistoryVisibleCount] = useState(PAGE_SIZE);
   const [expandedCards, setExpandedCards] = useState<Set<string>>(() => new Set());
+  const filters = useMemo<EventsFilters>(() => ({
+    entity_id: selectedEntityId !== "all" ? selectedEntityId : undefined,
+    sort_by: sortBy,
+    ignore_mode: "visible",
+  }), [selectedEntityId, sortBy]);
+  const [lastEmittedFilters, setLastEmittedFilters] = useState<EventsFilters>(filters);
 
+  useEffect(() => {
+    if (!highlightEventId) return;
+    setExpandedCards((prev) => {
+      const next = new Set(prev);
+      next.add(highlightEventId);
+      return next;
+    });
+  }, [highlightEventId]);
+
+  function emitFilters(nextFilters: EventsFilters) {
+    if (eventsFiltersEqual(lastEmittedFilters, nextFilters)) return;
+    setLastEmittedFilters(nextFilters);
+    onFilterChange(nextFilters);
+  }
 
   function toggleExpanded(id: string) {
     setExpandedCards((prev) => {
@@ -93,22 +138,6 @@ export function EventsPage({
     }
     return [...lookup.values()].sort((a, b) => a.entity_name.localeCompare(b.entity_name, "zh-CN"));
   }, [entityWatchlist, items]);
-
-  const filtered = useMemo(() => {
-    if (selectedEntityId === "all") return items;
-    return items.filter((item) => item.entity_ids.includes(selectedEntityId));
-  }, [items, selectedEntityId]);
-
-  const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
-      if (sortBy === "latest_seen") {
-        const left = Date.parse(a.last_seen_at ?? a.latest_collected_at ?? a.first_seen_at ?? "") || 0;
-        const right = Date.parse(b.last_seen_at ?? b.latest_collected_at ?? b.first_seen_at ?? "") || 0;
-        return right - left;
-      }
-      return (b[sortBy] ?? 0) - (a[sortBy] ?? 0);
-    });
-  }, [filtered, sortBy]);
 
   const filteredHistory = useMemo(() => {
     return historyItems
@@ -134,26 +163,58 @@ export function EventsPage({
             <p className="eyebrow">热点簇</p>
             <h2>已聚合的热点事件</h2>
           </div>
-          <span className="subtle">{sorted.length} 个事件</span>
+          <span className="subtle">{items.length} 个事件</span>
         </div>
         <div className="intel-chip-filter-bar">
           <div className="intel-chip-row">
-            {SORT_OPTIONS.map((opt) => (
+            {PRIMARY_SORT_OPTIONS.map((opt) => (
               <button
                 key={opt.key}
                 type="button"
                 className={`filter-chip ${sortBy === opt.key ? "filter-chip-active" : ""}`}
-                onClick={() => { setSortBy(opt.key); }}
+                onClick={() => {
+                  setSortBy(opt.key);
+                  emitFilters({
+                    entity_id: selectedEntityId !== "all" ? selectedEntityId : undefined,
+                    sort_by: opt.key,
+                    ignore_mode: "visible",
+                  });
+                }}
               >
-                {opt.label}
+              {opt.label}
               </button>
             ))}
+            <select
+              value={PRIMARY_SORT_OPTIONS.some((opt) => opt.key === sortBy) ? "" : sortBy}
+              onChange={(event) => {
+                if (!event.target.value) return;
+                const nextSort = event.target.value as ExtendedSortKey;
+                setSortBy(nextSort);
+                emitFilters({
+                  entity_id: selectedEntityId !== "all" ? selectedEntityId : undefined,
+                  sort_by: nextSort,
+                  ignore_mode: "visible",
+                });
+              }}
+            >
+              <option value="">更多排序</option>
+              {EXTENDED_SORT_OPTIONS.map((opt) => (
+                <option key={opt.key} value={opt.key}>{opt.label}</option>
+              ))}
+            </select>
           </div>
           <div className="intel-inline-filter-tools">
             <select
               value={selectedEntityId}
               onChange={(event) => {
-                onSelectedEntityChange(event.target.value);
+                const nextEntityId = event.target.value;
+                const nextFilters = {
+                  entity_id: nextEntityId !== "all" ? nextEntityId : undefined,
+                  sort_by: sortBy,
+                  ignore_mode: "visible",
+                };
+                onSelectedEntityChange(nextEntityId);
+                emitFilters(nextFilters);
                 setHistoryVisibleCount(PAGE_SIZE);
               }}
             >
@@ -166,24 +227,15 @@ export function EventsPage({
             </select>
           </div>
         </div>
-        <PaginationControls
-          page={page}
-          pageSize={pageSize}
-          total={total}
-          currentCount={items.length}
-          filteredCount={sorted.length}
-          itemLabel="个事件"
-          loading={loading}
-          note="热点簇筛选和排序当前按本页数据生效，翻页会继续请求后端分页结果。"
-          onPageChange={onPageChange}
-          onPageSizeChange={onPageSizeChange}
-        />
+        <div className="intel-score-row" style={{ marginBottom: 4 }}>
+          <span>共 {total} 个事件</span>
+        </div>
         <div className="intel-list">
-          {sorted.length ? sorted.map((event) => {
+          {items.length ? items.map((event) => {
             const visibleTags = event.entity_names.slice(0, 3);
             const hiddenTagCount = Math.max(event.entity_names.length - visibleTags.length, 0);
             return (
-              <article key={event.id} className="intel-row-card">
+              <article key={event.id} className={`intel-row-card severity-${event.alert_state} ${highlightEventId === event.id ? "focus-card" : ""}`}>
                 <div className="intel-card-topline">
                   <span className={`status-badge status-${event.alert_state === "breakout" ? "danger" : event.alert_state === "rising" ? "warning" : event.alert_state === "watch" ? "success" : "neutral"}`}>
                     {event.alert_state}
@@ -199,7 +251,15 @@ export function EventsPage({
                         key={`${event.id}-${name}`}
                         type="button"
                         className={`entity-tag ${event.entity_ids[index] === selectedEntityId ? "entity-tag-active" : ""}`}
-                        onClick={() => onSelectedEntityChange(event.entity_ids[index] ?? "all")}
+                        onClick={() => {
+                          const nextEntityId = event.entity_ids[index] ?? "all";
+                          onSelectedEntityChange(nextEntityId);
+                          emitFilters({
+                            entity_id: nextEntityId !== "all" ? nextEntityId : undefined,
+                            sort_by: sortBy,
+                            ignore_mode: "visible",
+                          });
+                        }}
                       >
                         {name}
                       </button>
@@ -217,10 +277,9 @@ export function EventsPage({
 
                 <button
                   type="button"
-                  className="ghost-button compact"
-                  style={{ marginBottom: 4, fontSize: 12 }}
+                  className="intel-expand-trigger"
                   onClick={() => toggleExpanded(event.id)}>
-                  {expandedCards.has(event.id) ? "收起详情" : "详情"}
+                  {expandedCards.has(event.id) ? "收起详情 ▲" : "展开详情 ▼"}
                 </button>
                 {expandedCards.has(event.id) ? (
                <div className="intel-score-row">
@@ -229,14 +288,22 @@ export function EventsPage({
                   <span>首次 {formatDateTime(event.first_seen_at, { fallback: "未知" })}</span>
                   <span>最近 {formatDateTime(event.last_seen_at, { fallback: "未知" })}</span>
                 </div>
-                ) : null}                <div className="intel-inline-actions">
-                  <a href={event.representative_link} target="_blank" rel="noreferrer">查看原文</a>
-                  <button type="button" className="ghost-button compact" disabled={event.watchlisted} onClick={() => void onWatchEvent(event.id)}>
-                    {event.watchlisted ? "已加入深挖池" : "加入深挖池"}
-                  </button>
-                  <button type="button" className="ghost-button compact" onClick={() => void onIgnoreEvent(event.id)}>
-                    忽略
-                  </button>
+                ) : null}
+                <div className="intel-event-actions">
+                  <div className="intel-secondary-actions">
+                    <a href={event.representative_link} target="_blank" rel="noreferrer">查看原文</a>
+                    {event.alert_state !== "new" ? (
+                      <button type="button" className="ghost-button compact" onClick={() => onNavigateToAlerts?.(event.id)}>
+                        查看预警
+                      </button>
+                    ) : null}
+                    <button type="button" className="ghost-button compact" disabled={event.watchlisted} onClick={() => void onWatchEvent(event.id)}>
+                      {event.watchlisted ? "已加入深挖池" : "加入深挖池"}
+                    </button>
+                    <button type="button" className="ghost-button compact" onClick={() => void onIgnoreEvent(event.id)}>
+                      忽略
+                    </button>
+                  </div>
                   <button
                     type="button"
                     className="primary-button compact"
@@ -256,7 +323,6 @@ export function EventsPage({
           pageSize={pageSize}
           total={total}
           currentCount={items.length}
-          filteredCount={sorted.length}
           itemLabel="个事件"
           loading={loading}
           onPageChange={onPageChange}
@@ -294,7 +360,7 @@ export function EventsPage({
             const visibleTags = event.entity_names.slice(0, 3);
             const hiddenTagCount = Math.max(event.entity_names.length - visibleTags.length, 0);
             return (
-              <article key={event.history_id} className="intel-row-card">
+              <article key={event.history_id} className={`intel-row-card severity-${severityForHistory(event.status)}`}>
                 <div className="intel-card-topline">
                   <span className={`status-badge status-${historyStatusTone(event.status)}`}>{historyStatusLabel(event.status)}</span>
                   <span>{event.platform_count} 平台 / {event.source_count} 来源 / {event.member_count} 条素材</span>
@@ -311,7 +377,15 @@ export function EventsPage({
                         key={`${event.history_id}-${name}`}
                         type="button"
                         className={`entity-tag ${event.entity_ids[index] === selectedEntityId ? "entity-tag-active" : ""}`}
-                        onClick={() => onSelectedEntityChange(event.entity_ids[index] ?? "all")}
+                        onClick={() => {
+                          const nextEntityId = event.entity_ids[index] ?? "all";
+                          onSelectedEntityChange(nextEntityId);
+                          emitFilters({
+                            entity_id: nextEntityId !== "all" ? nextEntityId : undefined,
+                            sort_by: sortBy,
+                            ignore_mode: "visible",
+                          });
+                        }}
                       >
                         {name}
                       </button>

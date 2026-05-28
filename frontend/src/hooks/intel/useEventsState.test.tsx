@@ -94,6 +94,44 @@ describe("useEventsState", () => {
     expect(result.current.entityWatchlist[0].entity_name).toBe("OpenAI");
   });
 
+  it("passes event filters through reloads after watchlist actions", async () => {
+    mockedApi.getIntelEvents.mockResolvedValue({
+      items: [sampleEvent],
+      history_items: [],
+      total: 1,
+      page: 1,
+      page_size: 50,
+      has_more: false,
+    });
+    mockedApi.watchlistEvent.mockResolvedValue({ item: { ...sampleEvent, watchlisted: true } });
+
+    const { result } = renderHook(() =>
+      useEventsState({
+        initialPageSize: 50,
+        onToast: vi.fn(),
+        onError: vi.fn(),
+        onReloadOverview: vi.fn().mockResolvedValue(undefined),
+        onReloadWatchlist: vi.fn().mockResolvedValue(undefined),
+        onReloadAlerts: vi.fn().mockResolvedValue(undefined),
+      }),
+    );
+
+    await act(async () => {
+      await result.current.loadEventsData(1, 50, { entity_id: "entity-1", sort_by: "velocity_score", ignore_mode: "visible" });
+    });
+    await act(async () => {
+      await result.current.handleWatchEvent("evt-1");
+    });
+
+    expect(mockedApi.getIntelEvents).toHaveBeenLastCalledWith({
+      page: 1,
+      page_size: 50,
+      entity_id: "entity-1",
+      sort_by: "velocity_score",
+      ignore_mode: "visible",
+    });
+  });
+
   it("updates entity watchlist and clears stale selected entity", async () => {
     const onReloadOverview = vi.fn().mockResolvedValue(undefined);
     const onToast = vi.fn();

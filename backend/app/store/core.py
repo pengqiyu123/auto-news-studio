@@ -667,6 +667,8 @@ class StoreCore(StoreCoreStateMixin, StoreCoreRuntimeMixin):
         brief_lookup: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         projected = dict(event)
+        projected["entity_ids"] = [str(value) for value in projected.get("entity_ids", []) if value is not None]
+        projected["entity_names"] = [str(value) for value in projected.get("entity_names", []) if value is not None]
         event_id = str(projected.get("id") or "")
         deep_dive = self._find_deep_dive_for_event(state, event_id, deep_dive_lookup=deep_dive_lookup)
         brief = self._find_brief_for_event(state, event_id, brief_lookup=brief_lookup)
@@ -693,9 +695,12 @@ class StoreCore(StoreCoreStateMixin, StoreCoreRuntimeMixin):
         brief_lookup: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         projected = dict(alert)
+        projected["entity_ids"] = [str(value) for value in projected.get("entity_ids", []) if value is not None]
+        projected["entity_names"] = [str(value) for value in projected.get("entity_names", []) if value is not None]
         event_id = str(projected.get("event_id") or "")
         event = (event_lookup or self._event_lookup(state)).get(event_id)
         if not event:
+            projected["summary"] = str(projected.get("summary") or "")
             return projected
         runtime_event = self._project_event_runtime_fields(
             state,
@@ -710,6 +715,7 @@ class StoreCore(StoreCoreStateMixin, StoreCoreRuntimeMixin):
         projected["deep_dive_summary"] = runtime_event.get("deep_dive_summary", "")
         projected["worth_to_brief"] = bool(runtime_event.get("worth_to_brief"))
         projected["worth_reason"] = str(runtime_event.get("worth_reason") or "")
+        projected["summary"] = str(projected.get("summary") or runtime_event.get("summary") or "")
         return projected
 
     def _generate_deep_dive_facts(self, event: dict[str, Any], sources: list[dict[str, Any]]) -> list[str]:

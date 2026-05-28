@@ -148,6 +148,7 @@ class SourceSyncMixin:
             previous_events=state.get("intel_events", []),
             previous_snapshots=state.get("event_snapshots", []),
             captured_at=stamp or now_iso(),
+            entity_watchlist=state.get("settings", {}).get("entity_watchlist", []),
         )
         state["discovery_items"] = intel["discovery_items"]
         if work_scope == "collect_only":

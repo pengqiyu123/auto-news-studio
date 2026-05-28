@@ -48,3 +48,43 @@ describe("api.getDiscoveryItems", () => {
     expect(url.searchParams.get("max_engagement")).toBe("99");
   });
 });
+
+describe("api.getIntelEvents", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("serializes event filters as query parameters", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          items: [],
+          history_items: [],
+          total: 0,
+          page: 1,
+          page_size: 50,
+          has_more: false,
+        }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getIntelEvents({
+      page: 2,
+      page_size: 25,
+      entity_id: "openai",
+      event_id: "evt-1",
+      sort_by: "velocity_score",
+      ignore_mode: "visible",
+    });
+
+    const url = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(url.pathname).toBe("/api/admin/intel/events");
+    expect(url.searchParams.get("page")).toBe("2");
+    expect(url.searchParams.get("page_size")).toBe("25");
+    expect(url.searchParams.get("entity_id")).toBe("openai");
+    expect(url.searchParams.get("event_id")).toBe("evt-1");
+    expect(url.searchParams.get("sort_by")).toBe("velocity_score");
+    expect(url.searchParams.get("ignore_mode")).toBe("visible");
+  });
+});

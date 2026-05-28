@@ -3,6 +3,7 @@ from __future__ import annotations
 
 CANONICAL_ENTITIES: dict[str, str] = {
     "Apple": "ORG",
+    "Samsung": "ORG",
     "Huawei": "ORG",
     "OpenAI": "ORG",
     "Anthropic": "ORG",

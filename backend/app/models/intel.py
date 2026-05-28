@@ -156,6 +156,7 @@ class IntelAlert(BaseModel):
     id: str
     event_id: str
     title: str
+    summary: str = ""
     level: IntelAlertLevel
     reason: str
     velocity_score: float = 0.0

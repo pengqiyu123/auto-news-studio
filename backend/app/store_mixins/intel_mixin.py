@@ -17,7 +17,13 @@ from ..db.read_models import (
     list_intel_events_from_db,
 )
 from ..intel.connectors import collect_from_source
-from ..intel.entity_extractor import entity_id_for_name, entity_type_for_name
+from ..intel.entity_extractor import (
+    canonical_entity_name,
+    entity_id_for_name,
+    entity_match_keys,
+    entity_type_for_name,
+    extract_entities_with_context,
+)
 from ..models import (
     AutomationModeDefinition,
     AutomationModeProfile,
@@ -88,6 +94,86 @@ def _filter_stream_items(
     if max_engagement is not None:
         filtered = [item for item in filtered if (item.engagement_score or 0) <= max_engagement]
     return filtered
+
+
+EVENT_SORT_FIELDS = {
+    "composite_score",
+    "velocity_score",
+    "coverage_score",
+    "freshness_score",
+    "member_delta",
+    "platform_delta",
+    "latest_seen",
+}
+
+
+def _normalized_values(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return [str(value) for value in values if value is not None]
+
+
+def _entity_keys_for_values(entity_ids: Any, entity_names: Any) -> set[str]:
+    ids = _normalized_values(entity_ids)
+    names = _normalized_values(entity_names)
+    keys: set[str] = set()
+    for index, entity_id in enumerate(ids):
+        entity_name = names[index] if index < len(names) else None
+        keys.update(entity_match_keys(entity_id, entity_name))
+    for name in names:
+        keys.update(entity_match_keys(None, name))
+    return keys
+
+
+def _entity_filter_keys(entity_id: str | None, watchlist: list[dict[str, Any]] | None = None) -> set[str]:
+    normalized_entity_id = str(entity_id or "").strip()
+    if not normalized_entity_id or normalized_entity_id == "all":
+        return set()
+    keys = {normalized_entity_id}
+    for item in watchlist or []:
+        if not isinstance(item, dict):
+            continue
+        watch_id = str(item.get("entity_id") or "").strip()
+        watch_name = str(item.get("entity_name") or "").strip()
+        watch_keys = entity_match_keys(watch_id, watch_name)
+        if normalized_entity_id in watch_keys:
+            keys.update(watch_keys)
+    return keys
+
+
+def _filter_events_items(
+    items: list[IntelEvent],
+    *,
+    entity_id: str | None = None,
+    entity_keys: set[str] | None = None,
+    event_id: str | None = None,
+    ignore_mode: str | None = None,
+) -> list[IntelEvent]:
+    filtered = items
+    normalized_event_id = str(event_id or "").strip()
+    if normalized_event_id:
+        return [item for item in filtered if item.id == normalized_event_id]
+    normalized_entity_id = str(entity_id or "").strip()
+    if normalized_entity_id and normalized_entity_id != "all":
+        filter_keys = entity_keys or {normalized_entity_id}
+        filtered = [
+            item for item in filtered
+            if bool(filter_keys & _entity_keys_for_values(item.entity_ids, item.entity_names))
+        ]
+    if ignore_mode == "visible":
+        filtered = [item for item in filtered if not item.ignored]
+    return filtered
+
+
+def _sort_events_items(items: list[IntelEvent], sort_by: str | None = None) -> list[IntelEvent]:
+    normalized_sort = sort_by if sort_by in EVENT_SORT_FIELDS else "composite_score"
+    if normalized_sort == "latest_seen":
+        return sorted(
+            items,
+            key=lambda item: parse_time(item.last_seen_at or item.latest_collected_at or item.first_seen_at or "") or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+    return sorted(items, key=lambda item: getattr(item, normalized_sort, 0) or 0, reverse=True)
 
 
 class IntelMixin:
@@ -307,7 +393,7 @@ class IntelMixin:
         if database_read_is_truth():
             return get_intel_summary_from_db(database_url=current_database_url())
         with self._lock:
-            state = self._read_live()
+            state = self._read_live_with_entity_repair()
             recovered_run_id = self._recover_stale_runtime_run(state, actor="intel_summary")
             runtime = self._runtime(state)
             if recovered_run_id:
@@ -442,7 +528,7 @@ class IntelMixin:
                 min_engagement=min_engagement,
                 max_engagement=max_engagement,
             )
-        state = self._read_live()
+        state = self._read_live_with_entity_repair()
         all_items = [DiscoveryItem(**item) for item in state.get("discovery_items", [])]
         available_platforms, available_sources = _stream_options(all_items)
         filtered_items = _filter_stream_items(
@@ -491,10 +577,25 @@ class IntelMixin:
         *,
         page: int = 1,
         page_size: int = 50,
+        entity_id: str | None = None,
+        event_id: str | None = None,
+        sort_by: str | None = None,
+        ignore_mode: str | None = None,
     ) -> tuple[list[IntelEvent], int]:
         if database_read_is_truth():
-            return list_intel_events_from_db(database_url=current_database_url(), page=page, page_size=page_size)
-        state = self._read_live()
+            state = self._read_live_with_entity_repair()
+            entity_keys = _entity_filter_keys(entity_id, self._entity_watchlist(state))
+            return list_intel_events_from_db(
+                database_url=current_database_url(),
+                page=page,
+                page_size=page_size,
+                entity_id=entity_id,
+                entity_keys=entity_keys,
+                event_id=event_id,
+                sort_by=sort_by,
+                ignore_mode=ignore_mode,
+            )
+        state = self._read_live_with_entity_repair()
         deep_dive_lookup = self._deep_dive_lookup(state)
         brief_lookup = self._brief_lookup(state)
         all_items = [
@@ -508,14 +609,28 @@ class IntelMixin:
             )
             for item in state.get("intel_events", [])
         ]
+        entity_keys = _entity_filter_keys(entity_id, self._entity_watchlist(state))
+        filtered_items = _sort_events_items(
+            _filter_events_items(all_items, entity_id=entity_id, entity_keys=entity_keys, event_id=event_id, ignore_mode=ignore_mode),
+            sort_by=sort_by,
+        )
         safe_page = max(1, int(page or 1))
         safe_page_size = max(1, min(int(page_size or 50), 200))
         start = (safe_page - 1) * safe_page_size
         end = start + safe_page_size
-        items = all_items[start:end]
-        total = len(all_items)
+        items = filtered_items[start:end]
+        total = len(filtered_items)
         if database_write_enabled():
-            db_items, db_total = list_intel_events_from_db(database_url=current_database_url(), page=page, page_size=page_size)
+            db_items, db_total = list_intel_events_from_db(
+                database_url=current_database_url(),
+                page=page,
+                page_size=page_size,
+                entity_id=entity_id,
+                entity_keys=entity_keys,
+                event_id=event_id,
+                sort_by=sort_by,
+                ignore_mode=ignore_mode,
+            )
             if total != db_total or self._shadow_signature([item.model_dump() for item in items]) != self._shadow_signature([item.model_dump() for item in db_items]):
                 self._log_shadow_diff(
                     "events 数据库影子读与 JSON 投影不一致。",
@@ -526,11 +641,11 @@ class IntelMixin:
     def list_intel_event_history(self) -> list[dict[str, Any]]:
         if database_read_is_truth():
             return [item.model_dump() for item in list_intel_event_history_from_db(database_url=current_database_url())]
-        state = self._read_live()
+        state = self._read_live_with_entity_repair()
         return self._prune_intel_event_history(state.get("intel_event_history", []))
 
     def get_intel_event(self, event_id: str) -> IntelEvent:
-        state = self._read_live()
+        state = self._read_live_with_entity_repair()
         return IntelEvent(
             **self._project_event_runtime_fields(
                 state,
@@ -543,7 +658,7 @@ class IntelMixin:
     def list_intel_alerts(self) -> list[IntelAlert]:
         if database_read_is_truth():
             return list_intel_alerts_from_db(database_url=current_database_url())
-        state = self._read_live()
+        state = self._read_live_with_entity_repair()
         event_lookup = self._event_lookup(state)
         deep_dive_lookup = self._deep_dive_lookup(state)
         brief_lookup = self._brief_lookup(state)
@@ -571,7 +686,7 @@ class IntelMixin:
     def list_intel_alert_history(self) -> list[dict[str, Any]]:
         if database_read_is_truth():
             return [item.model_dump() for item in list_intel_alert_history_from_db(database_url=current_database_url())]
-        state = self._read_live()
+        state = self._read_live_with_entity_repair()
         return self._prune_intel_alert_history(state.get("intel_alert_history", []))
 
     def _normalize_entity_watchlist_item(
@@ -588,11 +703,15 @@ class IntelMixin:
             return None
         if not entity_id:
             entity_id = entity_id_for_name(entity_name)
+        canonical_name = canonical_entity_name(entity_name) or entity_name
+        canonical_id = entity_id_for_name(canonical_name)
+        if entity_id == entity_id_for_name(entity_name):
+            entity_id = canonical_id
         previous = existing.get(entity_id, {})
         entity_type = str(
             item.get("entity_type")
             or previous.get("entity_type")
-            or entity_type_for_name(entity_name)
+            or entity_type_for_name(canonical_name)
             or ""
         ).strip().upper()
         if not entity_type:
@@ -614,7 +733,7 @@ class IntelMixin:
         return items
 
     def list_entity_watchlist(self) -> list[EntityWatchlistItem]:
-        state = self._read_live()
+        state = self._read_live_with_entity_repair()
         return [EntityWatchlistItem(**item) for item in self._entity_watchlist(state)]
 
     def update_entity_watchlist(self, items: list[dict[str, Any]]) -> list[EntityWatchlistItem]:
@@ -649,23 +768,166 @@ class IntelMixin:
             self._write(state)
             return [EntityWatchlistItem(**item) for item in normalized]
 
+    def _repair_entity_fields(self, state: dict[str, Any]) -> bool:
+        watchlist = self._entity_watchlist(state)
+        sources_by_key = self._sources_by_key(state)
+        changed = False
+
+        def merge_entities(target: dict[str, Any], entities: list[dict[str, str]]) -> bool:
+            target_names = _normalized_values(target.get("entity_names", []))
+            entity_names_by_id = {
+                str(entity_id).strip(): target_names[index] if index < len(target_names) else ""
+                for index, entity_id in enumerate(_normalized_values(target.get("entity_ids", [])))
+                if str(entity_id).strip()
+            }
+            before = (_normalized_values(target.get("entity_ids", [])), target_names)
+            for entity in entities:
+                entity_id = str(entity.get("entity_id") or "").strip()
+                entity_name = str(entity.get("entity_name") or "").strip()
+                if entity_id and entity_id not in entity_names_by_id:
+                    entity_names_by_id[entity_id] = entity_name
+            target["entity_ids"] = list(entity_names_by_id.keys())[:12]
+            target["entity_names"] = [
+                entity_names_by_id[entity_id]
+                for entity_id in target["entity_ids"]
+                if entity_names_by_id.get(entity_id)
+            ]
+            return before != (target["entity_ids"], target["entity_names"])
+
+        for item in state.get("discovery_items", []):
+            if not isinstance(item, dict):
+                continue
+            source_key = str(item.get("source_key") or "")
+            source = sources_by_key.get(source_key, {})
+            text = " ".join(
+                part for part in [
+                    str(item.get("title") or "").strip(),
+                    str(item.get("summary") or "").strip(),
+                    str(item.get("content") or "").strip(),
+                ]
+                if part
+            )
+            entities = extract_entities_with_context(
+                text,
+                source_name=str(item.get("source_name") or source.get("name") or ""),
+                source_key=source_key,
+                watchlist=watchlist,
+                limit=6,
+            )
+            changed = merge_entities(item, entities) or changed
+
+        discovery_by_id = {
+            str(item.get("id") or ""): item
+            for item in state.get("discovery_items", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        for event in state.get("intel_events", []):
+            if not isinstance(event, dict):
+                continue
+            inherited_entities: list[dict[str, str]] = []
+            for discovery_id in event.get("discovery_item_ids", []):
+                discovery = discovery_by_id.get(str(discovery_id or ""))
+                if not discovery:
+                    continue
+                names = _normalized_values(discovery.get("entity_names", []))
+                for index, entity_id in enumerate(_normalized_values(discovery.get("entity_ids", []))):
+                    inherited_entities.append(
+                        {
+                            "entity_id": entity_id,
+                            "entity_name": names[index] if index < len(names) else "",
+                            "entity_type": "ORG",
+                        }
+                    )
+            entities = extract_entities_with_context(
+                " ".join(
+                    part for part in [
+                        str(event.get("title") or "").strip(),
+                        str(event.get("summary") or "").strip(),
+                    ]
+                    if part
+                ),
+                source_name=" ".join(_normalized_values(event.get("source_names", [])) + [str(event.get("representative_source_name") or "")]),
+                source_key=" ".join(_normalized_values(event.get("source_keys", []))),
+                watchlist=watchlist,
+                limit=10,
+            )
+            changed = merge_entities(event, inherited_entities + entities) or changed
+
+        event_lookup = self._event_lookup(state)
+        for alert in state.get("intel_alerts", []):
+            if not isinstance(alert, dict):
+                continue
+            event = event_lookup.get(str(alert.get("event_id") or ""))
+            entities = []
+            if event:
+                names = _normalized_values(event.get("entity_names", []))
+                for index, entity_id in enumerate(_normalized_values(event.get("entity_ids", []))):
+                    entities.append(
+                        {
+                            "entity_id": entity_id,
+                            "entity_name": names[index] if index < len(names) else "",
+                            "entity_type": "ORG",
+                        }
+                    )
+                summary = str(alert.get("summary") or event.get("summary") or "")
+                if summary != alert.get("summary"):
+                    alert["summary"] = summary
+                    changed = True
+            else:
+                entities = extract_entities_with_context(
+                    " ".join(
+                        part for part in [
+                            str(alert.get("title") or "").strip(),
+                            str(alert.get("summary") or "").strip(),
+                            str(alert.get("reason") or "").strip(),
+                        ]
+                        if part
+                    ),
+                    watchlist=watchlist,
+                    limit=10,
+                )
+            changed = merge_entities(alert, entities) or changed
+
+        return changed
+
+    def _read_live_with_entity_repair(self) -> dict[str, Any]:
+        state = self._read_live()
+        if self._repair_entity_fields(state):
+            self._write(state)
+            if database_write_enabled():
+                persist_ingest_chain_state(
+                    self._upgrade_state(self._read()),
+                    source_key=None,
+                    triggered_by="entity_repair",
+                    status="completed",
+                )
+        return state
+
     def _build_entity_watchlist_summary(self, state: dict[str, Any]) -> list[dict[str, Any]]:
         watchlist = [item for item in self._entity_watchlist(state) if item.get("watchlisted")]
         if not watchlist:
             return []
         events = state.get("intel_events", [])
         alerts = state.get("intel_alerts", [])
+        visible_event_ids = {
+            str(event.get("id") or "")
+            for event in events
+            if isinstance(event, dict) and not event.get("ignored")
+        }
         summaries: list[dict[str, Any]] = []
         for item in watchlist:
             entity_id = str(item.get("entity_id") or "")
             entity_name = str(item.get("entity_name") or "")
+            watch_keys = entity_match_keys(entity_id, entity_name)
             matched_events = [
                 event for event in events
-                if entity_id in event.get("entity_ids", []) or entity_name in event.get("entity_names", [])
+                if not event.get("ignored")
+                and bool(watch_keys & _entity_keys_for_values(event.get("entity_ids", []), event.get("entity_names", [])))
             ]
             matched_alerts = [
                 alert for alert in alerts
-                if entity_id in alert.get("entity_ids", []) or entity_name in alert.get("entity_names", [])
+                if str(alert.get("event_id") or "") in visible_event_ids
+                and bool(watch_keys & _entity_keys_for_values(alert.get("entity_ids", []), alert.get("entity_names", [])))
             ]
             last_seen_candidates = [
                 event.get("last_seen_at") or event.get("latest_collected_at") or event.get("first_seen_at")
@@ -743,7 +1005,7 @@ class IntelMixin:
 
     def get_dashboard(self) -> DashboardResponse:
         with self._lock:
-            state = self._read_live()
+            state = self._read_live_with_entity_repair()
             recovered_run_id = self._recover_stale_runtime_run(state, actor="dashboard")
             if recovered_run_id:
                 self._write(state)
@@ -819,9 +1081,9 @@ class IntelMixin:
         )
 
     def get_dashboard_lite(self) -> DashboardResponse:
-        """Lightweight dashboard for polling — excludes heavy data like entity watchlist."""
+        """Lightweight dashboard for polling."""
         with self._lock:
-            state = self._read_live()
+            state = self._read_live_with_entity_repair()
             recovered_run_id = self._recover_stale_runtime_run(state, actor="dashboard")
             if recovered_run_id:
                 self._write(state)
@@ -831,6 +1093,7 @@ class IntelMixin:
         runtime = self._runtime(snapshot)
         app_version = self.get_app_version_info()
         runtime_status = self._scheduler_status_from_state(snapshot)
+        entity_watchlist_summary = self._build_entity_watchlist_summary(snapshot)
         snapshot["browser"]["wechat"] = browser
 
         return DashboardResponse(
@@ -838,7 +1101,7 @@ class IntelMixin:
             update_info=self.get_app_update_info(force=False),
             runtime_plan=self._runtime_plan_from_state(snapshot),
             runtime_status=runtime_status,
-            entity_watchlist_summary=[],  # Exclude heavy data from lite version
+            entity_watchlist_summary=[EntityWatchlistSummaryItem(**item) for item in entity_watchlist_summary],
             browser_session=BrowserSessionState(**browser),
             recent_logs=[LogItem(**item) for item in snapshot["logs"][:8]],
         )

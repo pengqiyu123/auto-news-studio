@@ -24,7 +24,7 @@ import { useBriefsState } from "./screens/briefs/state";
 import { DraftBoxPage } from "./screens/draft_box/page";
 import { useWechatState } from "./screens/draft_box/state";
 import { EventsPage } from "./screens/events/page";
-import { useEventsState } from "./screens/events/state";
+import { type EventsFilters, useEventsState } from "./screens/events/state";
 import { LogsPage } from "./screens/logs/page";
 import { useAppShellState } from "./hooks/shell/useAppShellState";
 import { useLogsState } from "./screens/logs/state";
@@ -62,6 +62,15 @@ function streamFiltersEqual(left: StreamFilters, right: StreamFilters) {
   );
 }
 
+function eventsFiltersEqual(left: EventsFilters, right: EventsFilters) {
+  return (
+    left.entity_id === right.entity_id &&
+    left.event_id === right.event_id &&
+    left.sort_by === right.sort_by &&
+    left.ignore_mode === right.ignore_mode
+  );
+}
+
 export default function App() {
   useManagedDashboardTab();
 
@@ -71,6 +80,8 @@ export default function App() {
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streamFilters, setStreamFilters] = useState<StreamFilters>({ time_range: "24h" });
+  const [eventsFilters, setEventsFilters] = useState<EventsFilters>({ sort_by: "composite_score", ignore_mode: "visible" });
+  const [highlightEventId, setHighlightEventId] = useState<string | undefined>(undefined);
 
   const visibleUpdateInfo =
     updateInfo?.update_available && updateInfo.latest_version && !updateInfo.dismissed
@@ -183,6 +194,7 @@ export default function App() {
     setEntityWatchlist: setManagedEntityWatchlist,
     selectedEntityId,
     setSelectedEntityId,
+    setEventsFilters: setEventsStateFilters,
     loadEventsData,
     loadEntityWatchlist,
     handleWatchEvent,
@@ -215,7 +227,7 @@ export default function App() {
     onError: (message) => setError(message),
     onReloadOverview: refreshOverviewData,
     onReloadStream: () => loadStreamData(streamPage, streamPageSize, streamFilters),
-    onReloadEvents: () => loadEventsData(eventsPage, eventsPageSize),
+    onReloadEvents: () => loadEventsData(eventsPage, eventsPageSize, eventsFilters),
     onReloadWatchlist: loadWatchlistData,
     onReloadAlerts: loadAlertsData,
   });
@@ -303,15 +315,57 @@ export default function App() {
     initialPageSize: DEFAULT_LOGS_PAGE_SIZE,
   });
 
+  const loadEventsWithFilters = useCallback(async (
+    page = eventsPage,
+    pageSize = eventsPageSize,
+    filters = eventsFilters,
+  ) => {
+    setEventsFilters(filters);
+    setEventsStateFilters(filters);
+    await loadEventsData(page, pageSize, filters);
+  }, [eventsFilters, eventsPage, eventsPageSize, loadEventsData, setEventsStateFilters]);
+
+  const navigateToTab = useCallback((tab: TabKey, context?: { eventId?: string; entityId?: string }) => {
+    setActiveTab(tab);
+    if (tab !== "events") return;
+    const nextEntityId = context?.entityId;
+    const nextEventId = context?.eventId;
+    if (nextEntityId) {
+      setSelectedEntityId(nextEntityId);
+    }
+    if (!nextEventId && !nextEntityId) return;
+    const filters: EventsFilters = nextEventId
+      ? {
+          event_id: nextEventId,
+          sort_by: eventsFilters.sort_by ?? "composite_score",
+          ignore_mode: "visible",
+        }
+      : {
+          entity_id: nextEntityId,
+          sort_by: eventsFilters.sort_by ?? "composite_score",
+          ignore_mode: "visible",
+        };
+    setHighlightEventId(nextEventId);
+    setEventsPage(1);
+    setTabLoading((current) => ({ ...current, events: true }));
+    void loadEventsWithFilters(1, eventsPageSize, filters)
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "热点簇加载失败");
+      })
+      .finally(() => {
+        setTabLoading((current) => ({ ...current, events: false }));
+      });
+  }, [eventsFilters.sort_by, eventsPageSize, loadEventsWithFilters, setEventsPage, setTabLoading, setSelectedEntityId]);
+
   const activateWatchlist = useCallback(() => {
-    setActiveTab("watchlist");
+    navigateToTab("watchlist");
     markTabLoaded("watchlist");
-  }, [markTabLoaded]);
+  }, [markTabLoaded, navigateToTab]);
 
   const activateBriefs = useCallback(() => {
-    setActiveTab("briefs");
+    navigateToTab("briefs");
     markTabLoaded("briefs");
-  }, [markTabLoaded]);
+  }, [markTabLoaded, navigateToTab]);
 
   const {
     briefs,
@@ -351,7 +405,7 @@ export default function App() {
     onError: (message) => setError(message),
     onToast: showToast,
     onReloadOverview: refreshOverviewData,
-    onReloadEvents: () => loadEventsData(eventsPage, eventsPageSize),
+    onReloadEvents: () => loadEventsData(eventsPage, eventsPageSize, eventsFilters),
     onReloadAlerts: loadAlertsData,
     onReloadWatchlist: loadWatchlistData,
     onReloadPublishHistory: () => loadPublishHistoryData(false),
@@ -403,7 +457,7 @@ export default function App() {
         await loadStreamData(streamPage, streamPageSize, streamFilters);
         break;
       case "events":
-        await Promise.all([loadEventsData(), loadEntityWatchlist()]);
+        await Promise.all([loadEventsWithFilters(eventsPage, eventsPageSize, eventsFilters), loadEntityWatchlist()]);
         break;
       case "alerts":
         await loadAlertsData();
@@ -509,7 +563,7 @@ export default function App() {
           key={tab.key}
           type="button"
           className={`nav-button ${activeTab === tab.key ? "nav-button-active" : ""}`}
-          onClick={() => setActiveTab(tab.key)}
+          onClick={() => navigateToTab(tab.key)}
         >
           <Icon size={16} />
           <span>{tab.label}</span>
@@ -633,7 +687,7 @@ export default function App() {
         llmConfig.profiles.length > 0 &&
         llmConfig.profiles.every((profile) => !profile.enabled || !profile.api_key) &&
         activeTab !== "settings" ? (
-          <div className="setup-banner" onClick={() => setActiveTab("settings")}>
+          <div className="setup-banner" onClick={() => navigateToTab("settings")}>
             <strong>AI 模型未配置</strong>
             <p>填入 API Key 后，增强简报才会启用；规则简报和正文深挖仍可继续运行。</p>
           </div>
@@ -664,10 +718,10 @@ export default function App() {
                 onStop={handleStopRuntime}
                 onRunIntent={handleRunRuntimeIntent}
                 onRefresh={refreshAll}
-                onNavigate={(tab: "alerts" | "events" | "source-health") => setActiveTab(tab)}
+                onNavigate={(tab: "alerts" | "events" | "source-health") => navigateToTab(tab)}
                 onOpenEntity={(entityId: string) => {
                   handleOpenEntity(entityId);
-                  setActiveTab("events");
+                  navigateToTab("events", { entityId });
                 }}
                 onWatchEvent={handleWatchEvent}
                 onIgnoreEvent={handleIgnoreEvent}
@@ -725,20 +779,40 @@ export default function App() {
                 entityWatchlist={managedEntityWatchlist}
                 entityWatchlistSummary={dashboard.entity_watchlist_summary}
                 selectedEntityId={selectedEntityId}
-                onSelectedEntityChange={setSelectedEntityId}
+                onSelectedEntityChange={(entityId) => {
+                  setHighlightEventId(undefined);
+                  setSelectedEntityId(entityId);
+                }}
+                onFilterChange={(filters) => {
+                  if (eventsFiltersEqual(eventsFilters, filters)) return;
+                  setHighlightEventId(undefined);
+                  setEventsFilters(filters);
+                  setEventsPage(1);
+                  setTabLoading((current) => ({ ...current, events: true }));
+                  void loadEventsWithFilters(1, eventsPageSize, filters).catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : "热点簇加载失败");
+                  }).finally(() => {
+                    setTabLoading((current) => ({ ...current, events: false }));
+                  });
+                }}
                 onUpdateEntityWatchlist={handleUpdateEntityWatchlist}
                 onOpenEntity={(entityId) => {
                   handleOpenEntity(entityId);
-                  setActiveTab("events");
+                  navigateToTab("events", { entityId });
                 }}
                 onWatchEvent={handleWatchEvent}
                 onIgnoreEvent={handleIgnoreEvent}
                 onDeepDive={handleDeepDiveEvent}
+                onNavigateToAlerts={(eventId) => {
+                  setHighlightEventId(eventId);
+                  navigateToTab("alerts");
+                }}
+                highlightEventId={highlightEventId}
                 busyEventId={busyEventId}
                 loading={Boolean(tabLoading.events)}
                 onPageChange={(page) => {
                   setTabLoading((current) => ({ ...current, events: true }));
-                  void loadEventsData(page, eventsPageSize).catch((err: unknown) => {
+                  void loadEventsWithFilters(page, eventsPageSize, eventsFilters).catch((err: unknown) => {
                     setError(err instanceof Error ? err.message : "热点簇加载失败");
                   }).finally(() => {
                     setTabLoading((current) => ({ ...current, events: false }));
@@ -748,7 +822,7 @@ export default function App() {
                   setEventsPageSize(pageSize);
                   setEventsPage(1);
                   setTabLoading((current) => ({ ...current, events: true }));
-                  void loadEventsData(1, pageSize).catch((err: unknown) => {
+                  void loadEventsWithFilters(1, pageSize, eventsFilters).catch((err: unknown) => {
                     setError(err instanceof Error ? err.message : "热点簇加载失败");
                   }).finally(() => {
                     setTabLoading((current) => ({ ...current, events: false }));
@@ -763,7 +837,9 @@ export default function App() {
                 runtime={dashboard.runtime_status}
                 eventCount={events.length}
                 selectedEntityId={selectedEntityId}
+                entityWatchlist={managedEntityWatchlist}
                 onSelectedEntityChange={setSelectedEntityId}
+                onNavigateToEvent={(eventId) => navigateToTab("events", { eventId })}
                 onDeepDive={handleDeepDiveEvent}
                 busyEventId={busyEventId}
               />

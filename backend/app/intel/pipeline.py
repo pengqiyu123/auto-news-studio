@@ -8,6 +8,7 @@ import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from .entity_extractor import extract_entities_with_context
 from ..store.base import now_iso
 
 UTC = timezone.utc
@@ -249,6 +250,7 @@ def build_discovery_items(
     raw_items: list[dict[str, Any]],
     sources_by_key: dict[str, dict[str, Any]],
     previous_discovery_items: list[dict[str, Any]] | None = None,
+    entity_watchlist: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     previous_index = _index_previous_discovery_items(previous_discovery_items)
     discovery: list[dict[str, Any]] = []
@@ -289,7 +291,8 @@ def build_discovery_items(
         )
         current = discovery[-1]
         try:
-            lightweight_entities = extract_keyword_entities(
+            source_name = str(raw.get("source_name") or (source or {}).get("name") or "")
+            lightweight_entities = extract_entities_with_context(
                 " ".join(
                     part
                     for part in [
@@ -298,6 +301,9 @@ def build_discovery_items(
                     ]
                     if part
                 ),
+                source_name=source_name,
+                source_key=str(raw.get("source_key") or ""),
+                watchlist=entity_watchlist,
                 limit=6,
             )
         except Exception:
@@ -844,6 +850,7 @@ def build_intel_state(
     previous_events: list[dict[str, Any]] | None = None,
     previous_snapshots: list[dict[str, Any]] | None = None,
     captured_at: str | None = None,
+    entity_watchlist: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     stamp = captured_at or now_iso()
     now = parse_time(stamp) or datetime.now(UTC)
@@ -851,7 +858,12 @@ def build_intel_state(
     previous_snapshots = previous_snapshots or []
     previous_events_by_id = {str(item.get("id")): item for item in previous_events if item.get("id")}
 
-    discovery_items = build_discovery_items(raw_items, sources_by_key, previous_discovery_items=previous_discovery_items)
+    discovery_items = build_discovery_items(
+        raw_items,
+        sources_by_key,
+        previous_discovery_items=previous_discovery_items,
+        entity_watchlist=entity_watchlist,
+    )
     clusters = cluster_discovery_items(discovery_items, sources_by_key, reference_time=now)
     events: list[dict[str, Any]] = []
 
@@ -922,20 +934,36 @@ def build_intel_state(
         event["platform_delta"] = int(event["platform_count"]) - previous_platform_count
         event["change_state"] = _event_change_state(event, previous)
         event["alert_reason"] = _rule_reason(event, velocity_details, event["alert_state"])
+        entity_names_by_id: dict[str, str] = {}
+        for item in cluster:
+            item_entity_ids = [str(value).strip() for value in item.get("entity_ids", []) if str(value).strip()]
+            item_entity_names = [str(value).strip() for value in item.get("entity_names", []) if str(value).strip()]
+            for index, entity_id in enumerate(item_entity_ids):
+                if entity_id in entity_names_by_id:
+                    continue
+                entity_names_by_id[entity_id] = item_entity_names[index] if index < len(item_entity_names) else ""
         try:
-            extracted_entities = extract_entities(
+            extracted_entities = extract_entities_with_context(
                 " ".join(
                     part for part in [
                         str(event.get("title") or "").strip(),
                         str(event.get("summary") or "").strip(),
                     ]
                     if part
-                )
+                ),
+                source_name=" ".join(source_names),
+                source_key=" ".join(source_keys),
+                watchlist=entity_watchlist,
             )
         except Exception:
             extracted_entities = []
-        event["entity_ids"] = [item["entity_id"] for item in extracted_entities if item.get("entity_id")]
-        event["entity_names"] = [item["entity_name"] for item in extracted_entities if item.get("entity_name")]
+        for item in extracted_entities:
+            entity_id = str(item.get("entity_id") or "").strip()
+            entity_name = str(item.get("entity_name") or "").strip()
+            if entity_id and entity_id not in entity_names_by_id:
+                entity_names_by_id[entity_id] = entity_name
+        event["entity_ids"] = list(entity_names_by_id.keys())[:12]
+        event["entity_names"] = [entity_names_by_id[entity_id] for entity_id in event["entity_ids"] if entity_names_by_id.get(entity_id)]
         events.append(event)
 
     active_ids = {item["id"] for item in events}
@@ -959,6 +987,7 @@ def build_intel_state(
                 "id": f"alert-{event['id']}-{level}",
                 "event_id": event["id"],
                 "title": event["title"],
+                "summary": event.get("summary") or "",
                 "level": level,
                 "reason": event["alert_reason"],
                 "velocity_score": event["velocity_score"],

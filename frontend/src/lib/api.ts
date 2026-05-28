@@ -313,10 +313,21 @@ export const api = {
     const suffix = query.size ? `?${query.toString()}` : "";
     return request<DiscoveryItemsResponse>(`/api/admin/intel/stream${suffix}`);
   },
-  getIntelEvents: (params?: { page?: number; page_size?: number }) => {
+  getIntelEvents: (params?: {
+    page?: number;
+    page_size?: number;
+    entity_id?: string;
+    event_id?: string;
+    sort_by?: string;
+    ignore_mode?: string;
+  }) => {
     const query = new URLSearchParams();
     if (params?.page) query.set("page", String(params.page));
     if (params?.page_size) query.set("page_size", String(params.page_size));
+    if (params?.entity_id) query.set("entity_id", params.entity_id);
+    if (params?.event_id) query.set("event_id", params.event_id);
+    if (params?.sort_by) query.set("sort_by", params.sort_by);
+    if (params?.ignore_mode) query.set("ignore_mode", params.ignore_mode);
     const suffix = query.size ? `?${query.toString()}` : "";
     return request<IntelEventsResponse>(`/api/admin/intel/events${suffix}`);
   },
