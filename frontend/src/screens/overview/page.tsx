@@ -246,7 +246,7 @@ export function OverviewPage({
 
   async function handleStart() {
     if (isManualMode) {
-      await onRunIntent("normal_monitoring");
+      await onRunIntent("collect_validation");
     } else {
       await onSaveRuntimePlan(planDraft);
       await onStart();
