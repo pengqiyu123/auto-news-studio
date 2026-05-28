@@ -237,8 +237,8 @@ export function OverviewPage({
   }, [displayStatus, progressMeta.active, progressMeta.stageLabel, runtime.current_cycle]);
 
   async function handleGearChange(newGear: GearMode) {
-    setGearMode(newGear);
     const { mode, plan } = applyGearMode(newGear, planDraft);
+    setGearMode(newGear);
     setPlanDraft(plan);
     await onSetAutomationMode(mode);
     await onSaveRuntimePlan(plan);
@@ -246,7 +246,7 @@ export function OverviewPage({
 
   async function handleStart() {
     if (isManualMode) {
-      await onRunIntent("collect_validation");
+      await onRunIntent("event_rebuild");
     } else {
       await onSaveRuntimePlan(planDraft);
       await onStart();
@@ -263,7 +263,7 @@ export function OverviewPage({
               {displayStatus}
             </span>
             <span className="intel-plan-inline-control">
-              <select value={gearMode} onChange={(e) => void handleGearChange(e.target.value as GearMode)}>
+              <select value={gearMode} disabled={savingRuntimePlan} onChange={(e) => void handleGearChange(e.target.value as GearMode)}>
                 <option value="manual_collect">{GEAR_MODE_LABELS.manual_collect}</option>
                 <option value="scheduled_collect">{GEAR_MODE_LABELS.scheduled_collect}</option>
                 <option value="full_auto">{GEAR_MODE_LABELS.full_auto}</option>
@@ -274,6 +274,7 @@ export function OverviewPage({
               <span className="intel-plan-inline-control">
                 <span className="subtle">频率</span>
                 <select
+                  disabled={savingRuntimePlan}
                   value={String(planDraft.interval_minutes ?? 30)}
                   onChange={(e) => setPlanDraft((c) => ({ ...c, interval_minutes: Number(e.target.value) }))}
                 >
@@ -289,6 +290,7 @@ export function OverviewPage({
               <span className="intel-plan-inline-control">
                 <span className="subtle">交付</span>
                 <select
+                  disabled={savingRuntimePlan}
                   value={planDraft.delivery_mode}
                   onChange={(e) => setPlanDraft((c) => ({
                     ...c,
@@ -317,24 +319,24 @@ export function OverviewPage({
               <button
                 type="button"
                 className="primary-button"
-                disabled={busyRuntimeAction === "start" || busyMaintenanceIntent !== null}
+                disabled={savingRuntimePlan || busyRuntimeAction === "start" || busyMaintenanceIntent !== null}
                 onClick={() => void handleStart()}
               >
                 <PlayCircle size={14} />
                 {isManualMode
-                  ? (busyMaintenanceIntent === "normal_monitoring" ? "采集中..." : "采集信息")
-                  : (busyRuntimeAction === "start" ? "启动中..." : "启动")}
+                  ? (busyMaintenanceIntent ? "执行中..." : "采集信息")
+                  : (savingRuntimePlan ? "保存中..." : busyRuntimeAction === "start" ? "启动中..." : "启动")}
               </button>
             ) : null}
             {isRunning ? (
               <button
                 type="button"
                 className="ghost-button"
-                disabled={busyRuntimeAction === "stop"}
+                disabled={savingRuntimePlan || busyRuntimeAction === "stop"}
                 onClick={() => void onStop()}
               >
                 <PauseCircle size={14} />
-                {busyRuntimeAction === "stop" ? "停止中..." : "停止"}
+                {savingRuntimePlan ? "保存中..." : busyRuntimeAction === "stop" ? "停止中..." : "停止"}
               </button>
             ) : null}
             <MoreDropdown
