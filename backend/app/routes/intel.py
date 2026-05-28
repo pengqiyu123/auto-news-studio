@@ -72,14 +72,36 @@ def build_intel_router() -> APIRouter:
         return IntelSummaryResponse(**get_intel_summary_page_view())
 
     @router.get("/api/admin/intel/stream", response_model=DiscoveryItemsResponse)
-    def get_intel_stream(page: int = 1, page_size: int = 50):
-        payload = list_stream_page_view(page=page, page_size=page_size)
+    def get_intel_stream(
+        page: int = 1,
+        page_size: int = 50,
+        q: str | None = None,
+        time_range: str | None = None,
+        platform: str | None = None,
+        source: str | None = None,
+        item_state: str | None = None,
+        min_engagement: int | None = None,
+        max_engagement: int | None = None,
+    ):
+        payload = list_stream_page_view(
+            page=page,
+            page_size=page_size,
+            q=q,
+            time_range=time_range,
+            platform=platform,
+            source=source,
+            item_state=item_state,
+            min_engagement=min_engagement,
+            max_engagement=max_engagement,
+        )
         return DiscoveryItemsResponse(
             items=payload["items"],
             total=payload["total"],
             page=payload["page"],
             page_size=payload["page_size"],
             has_more=payload["has_more"],
+            available_platforms=payload["available_platforms"],
+            available_sources=payload["available_sources"],
         )
 
     @router.get("/api/admin/intel/events", response_model=IntelEventsResponse)

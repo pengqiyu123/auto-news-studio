@@ -755,6 +755,8 @@ export interface DiscoveryItemsResponse {
   page: number;
   page_size: number;
   has_more: boolean;
+  available_platforms?: string[];
+  available_sources?: string[];
 }
 
 export interface IntelAlertsResponse {
@@ -904,7 +906,7 @@ export interface SchedulerStatus {
   last_cycle_summary?: RuntimeCycleSummary | null;
 }
 
-export type SettingsSectionKey = "ai" | "sources" | "browser" | "references" | "system";
+export type SettingsSectionKey = "ai" | "sources" | "browser" | "references" | "runtime" | "system";
 
 export interface LLMProviderConfig {
   key: string;

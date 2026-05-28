@@ -36,7 +36,7 @@ import { useSettingsState } from "./screens/settings/state";
 import { SourceHealthPage } from "./screens/source_health/page";
 import { useSourceHealthState } from "./screens/source_health/state";
 import { StreamPage } from "./screens/stream/page";
-import { useStreamState } from "./screens/stream/state";
+import { type StreamFilters, useStreamState } from "./screens/stream/state";
 import { WatchlistPage } from "./screens/watchlist/page";
 import { useWatchlistState } from "./screens/watchlist/state";
 import type { AppUpdateInfo, AppVersionInfo, BrowserSessionState, EntityWatchlistItem } from "./types";
@@ -50,6 +50,18 @@ const WATCHLIST_TAB_PAGE_SIZE = 200;
 // briefs removed from runtime-aware tabs to prevent request storm
 const RUNTIME_AWARE_TABS: TabKey[] = ["overview", "stream", "events", "alerts", "source-health", "watchlist", "logs"];
 const SETTINGS_REMINDER_TOAST = "请先在设置里完成 AI 配置和微信登录，再继续其他工作流。";
+function streamFiltersEqual(left: StreamFilters, right: StreamFilters) {
+  return (
+    left.q === right.q &&
+    left.time_range === right.time_range &&
+    left.platform === right.platform &&
+    left.source === right.source &&
+    left.item_state === right.item_state &&
+    left.min_engagement === right.min_engagement &&
+    left.max_engagement === right.max_engagement
+  );
+}
+
 export default function App() {
   useManagedDashboardTab();
 
@@ -58,6 +70,7 @@ export default function App() {
   const [appVersion, setAppVersion] = useState<AppVersionInfo | null>(null);
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [streamFilters, setStreamFilters] = useState<StreamFilters>({ time_range: "24h" });
 
   const visibleUpdateInfo =
     updateInfo?.update_available && updateInfo.latest_version && !updateInfo.dismissed
@@ -91,6 +104,8 @@ export default function App() {
     streamPageSize,
     setStreamPageSize,
     streamTotal,
+    availablePlatforms,
+    availableSources,
     loadStreamData,
   } = useStreamState({
     initialPageSize: DEFAULT_STREAM_TAB_PAGE_SIZE,
@@ -199,7 +214,7 @@ export default function App() {
     onToast: showToast,
     onError: (message) => setError(message),
     onReloadOverview: refreshOverviewData,
-    onReloadStream: () => loadStreamData(streamPage, streamPageSize),
+    onReloadStream: () => loadStreamData(streamPage, streamPageSize, streamFilters),
     onReloadEvents: () => loadEventsData(eventsPage, eventsPageSize),
     onReloadWatchlist: loadWatchlistData,
     onReloadAlerts: loadAlertsData,
@@ -385,7 +400,7 @@ export default function App() {
         await refreshOverviewData(true);
         break;
       case "stream":
-        await loadStreamData();
+        await loadStreamData(streamPage, streamPageSize, streamFilters);
         break;
       case "events":
         await Promise.all([loadEventsData(), loadEntityWatchlist()]);
@@ -665,10 +680,23 @@ export default function App() {
                 page={streamPage}
                 pageSize={streamPageSize}
                 total={streamTotal}
+                availablePlatforms={availablePlatforms}
+                availableSources={availableSources}
                 loading={Boolean(tabLoading.stream)}
+                onFilterChange={(filters) => {
+                  if (streamFiltersEqual(streamFilters, filters)) return;
+                  setStreamFilters(filters);
+                  setStreamPage(1);
+                  setTabLoading((current) => ({ ...current, stream: true }));
+                  void loadStreamData(1, streamPageSize, filters).catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : "实时流加载失败");
+                  }).finally(() => {
+                    setTabLoading((current) => ({ ...current, stream: false }));
+                  });
+                }}
                 onPageChange={(page) => {
                   setTabLoading((current) => ({ ...current, stream: true }));
-                  void loadStreamData(page, streamPageSize).catch((err: unknown) => {
+                  void loadStreamData(page, streamPageSize, streamFilters).catch((err: unknown) => {
                     setError(err instanceof Error ? err.message : "实时流加载失败");
                   }).finally(() => {
                     setTabLoading((current) => ({ ...current, stream: false }));
@@ -678,7 +706,7 @@ export default function App() {
                   setStreamPageSize(pageSize);
                   setStreamPage(1);
                   setTabLoading((current) => ({ ...current, stream: true }));
-                  void loadStreamData(1, pageSize).catch((err: unknown) => {
+                  void loadStreamData(1, pageSize, streamFilters).catch((err: unknown) => {
                     setError(err instanceof Error ? err.message : "实时流加载失败");
                   }).finally(() => {
                     setTabLoading((current) => ({ ...current, stream: false }));

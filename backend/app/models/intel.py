@@ -544,6 +544,8 @@ class DiscoveryItemsResponse(BaseModel):
     page: int = 1
     page_size: int = 50
     has_more: bool = False
+    available_platforms: list[str] = Field(default_factory=list)
+    available_sources: list[str] = Field(default_factory=list)
 
 
 class IntelEventsResponse(BaseModel):

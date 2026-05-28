@@ -221,7 +221,7 @@ def load_current_intel_state_to_memory(*, database_url: str) -> dict[str, Any]:
         Dict with raw_items, discovery_items, intel_events, intel_alerts
     """
     # Load discovery items
-    discovery_items, _ = list_discovery_items_from_db(database_url=database_url, page=1, page_size=10000)
+    discovery_items, _, _, _ = list_discovery_items_from_db(database_url=database_url, page=1, page_size=10000)
 
     # Load intel events
     intel_events, _ = list_intel_events_from_db(database_url=database_url, page=1, page_size=10000)
@@ -247,4 +247,3 @@ def load_current_intel_state_to_memory(*, database_url: str) -> dict[str, Any]:
         "intel_alerts": [item.model_dump() for item in intel_alerts],
         "event_snapshots": event_snapshots,
     }
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 import json
 from typing import Any
 
@@ -93,24 +94,76 @@ def _evaluate_worthiness_from_records(event: dict[str, Any], deep_dive: dict[str
     return False, "当前仍未进入重点观察或上升/爆发态，建议继续观察。"
 
 
-def list_discovery_items_from_db(*, database_url: str, page: int = 1, page_size: int = 50) -> tuple[list[DiscoveryItem], int]:
+def list_discovery_items_from_db(
+    *,
+    database_url: str,
+    page: int = 1,
+    page_size: int = 50,
+    q: str | None = None,
+    time_range: str | None = None,
+    platform: str | None = None,
+    source: str | None = None,
+    item_state: str | None = None,
+    min_engagement: int | None = None,
+    max_engagement: int | None = None,
+) -> tuple[list[DiscoveryItem], int, list[str], list[str]]:
     session_factory = build_session_factory(database_url)
     safe_page = max(1, int(page or 1))
     safe_page_size = max(1, min(int(page_size or 50), 200))
     start = (safe_page - 1) * safe_page_size
+    filters: list[str] = []
+    params: dict[str, Any] = {"offset": start, "limit": safe_page_size}
+    query = (q or "").strip()
+    if query:
+        filters.append(
+            "(lower(title) like :q or lower(summary) like :q or lower(source_name) like :q or lower(platform) like :q)"
+        )
+        params["q"] = f"%{query.lower()}%"
+    if time_range and time_range != "all":
+        hours = {"1h": 1, "6h": 6, "24h": 24, "72h": 72}.get(time_range, 0)
+        if hours:
+            filters.append("collected_at >= :collected_after")
+            params["collected_after"] = datetime.now(timezone.utc) - timedelta(hours=hours)
+    if platform:
+        filters.append("platform = :platform")
+        params["platform"] = platform
+    if source:
+        filters.append("source_name = :source")
+        params["source"] = source
+    if item_state:
+        filters.append("item_state = :item_state")
+        params["item_state"] = item_state
+    if min_engagement is not None:
+        filters.append("engagement_score >= :min_engagement")
+        params["min_engagement"] = min_engagement
+    if max_engagement is not None:
+        filters.append("engagement_score <= :max_engagement")
+        params["max_engagement"] = max_engagement
+    where_clause = f"where {' and '.join(filters)}" if filters else ""
     with session_factory() as session:
         rows = session.execute(
             text(
-                """
+                f"""
                 select *
                 from discovery_items_current
+                {where_clause}
                 order by collected_at desc, id desc
                 limit :limit offset :offset
                 """
             ),
-            {"offset": start, "limit": safe_page_size},
+            params,
         ).mappings().all()
-        total = int(session.execute(text("select count(*) from discovery_items_current")).scalar_one())
+        total = int(session.execute(text(f"select count(*) from discovery_items_current {where_clause}"), params).scalar_one())
+        options_rows = session.execute(
+            text(
+                """
+                select distinct platform, source_name
+                from discovery_items_current
+                """
+            )
+        ).mappings().all()
+        available_platforms = sorted({str(row["platform"]) for row in options_rows if row["platform"]}, key=lambda value: value.lower())
+        available_sources = sorted({str(row["source_name"]) for row in options_rows if row["source_name"]}, key=lambda value: value.lower())
 
     items = [
         DiscoveryItem(
@@ -140,7 +193,7 @@ def list_discovery_items_from_db(*, database_url: str, page: int = 1, page_size:
         )
         for row in rows
     ]
-    return items, total
+    return items, total, available_platforms, available_sources
 
 
 def list_intel_events_from_db(*, database_url: str, page: int = 1, page_size: int = 50) -> tuple[list[IntelEvent], int]:
@@ -392,7 +445,7 @@ def list_intel_alert_history_from_db(*, database_url: str) -> list[IntelAlertHis
 
 
 def get_intel_summary_from_db(*, database_url: str) -> IntelOverviewSummary:
-    discovery_items, discovery_total = list_discovery_items_from_db(database_url=database_url, page=1, page_size=500)
+    discovery_items, discovery_total, _, _ = list_discovery_items_from_db(database_url=database_url, page=1, page_size=500)
     events, event_total = list_intel_events_from_db(database_url=database_url, page=1, page_size=500)
     alerts = list_intel_alerts_from_db(database_url=database_url)
     event_history = list_intel_event_history_from_db(database_url=database_url)

@@ -289,10 +289,27 @@ export const api = {
   getDashboard: async () => normalizeDashboard(await request<DashboardResponse>("/api/admin/dashboard")),
   getDashboardLite: async () => normalizeDashboard(await request<DashboardResponse>("/api/admin/dashboard/lite")),
   getIntelSummary: () => request<{ item: IntelOverviewSummary }>("/api/admin/intel/summary"),
-  getDiscoveryItems: (params?: { page?: number; page_size?: number }) => {
+  getDiscoveryItems: (params?: {
+    page?: number;
+    page_size?: number;
+    q?: string;
+    time_range?: string;
+    platform?: string;
+    source?: string;
+    item_state?: string;
+    min_engagement?: number;
+    max_engagement?: number;
+  }) => {
     const query = new URLSearchParams();
     if (params?.page) query.set("page", String(params.page));
     if (params?.page_size) query.set("page_size", String(params.page_size));
+    if (params?.q?.trim()) query.set("q", params.q.trim());
+    if (params?.time_range) query.set("time_range", params.time_range);
+    if (params?.platform) query.set("platform", params.platform);
+    if (params?.source) query.set("source", params.source);
+    if (params?.item_state) query.set("item_state", params.item_state);
+    if (params?.min_engagement != null) query.set("min_engagement", String(params.min_engagement));
+    if (params?.max_engagement != null) query.set("max_engagement", String(params.max_engagement));
     const suffix = query.size ? `?${query.toString()}` : "";
     return request<DiscoveryItemsResponse>(`/api/admin/intel/stream${suffix}`);
   },

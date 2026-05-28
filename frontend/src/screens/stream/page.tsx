@@ -1,9 +1,10 @@
 import { RotateCcw, Search } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { PaginationControls } from "../../components/PaginationControls";
 import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import type { DiscoveryItem } from "../../types";
+import type { StreamFilters } from "./state";
 type TimeFilter = "all" | "1h" | "6h" | "24h" | "72h";
 type ChangeFilter = "all" | "new_item" | "updated_item" | "seen_item";
 type HeatFilter = "all" | "none" | "low" | "mid" | "high";
@@ -21,7 +22,10 @@ interface StreamPageProps {
   page: number;
   pageSize: number;
   total: number;
+  availablePlatforms?: string[];
+  availableSources?: string[];
   loading?: boolean;
+  onFilterChange: (filters: StreamFilters) => void;
   onPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: number) => void;
 }
@@ -49,16 +53,20 @@ function StreamCard({ item }: { item: DiscoveryItem }) {
   return (
     <>
       <div className="intel-card-topline">
-        <span>{item.source_name}</span>
+        <span>
+          {item.item_state === "new_item" ? (
+            <span className="status-badge status-success status-badge-compact">新</span>
+          ) : item.item_state === "updated_item" ? (
+            <span className="status-badge status-warning status-badge-compact">更</span>
+          ) : null}
+          {" "}{item.source_name}
+        </span>
         <span>{formatRelativeTime(item.collected_at, "刚刚")}</span>
       </div>
       <strong>{item.title}</strong>
       <p>{item.summary}</p>
       <div className="intel-score-row">
         <span>{item.platform}</span>
-        <span>
-          {item.item_state === "new_item" ? "本轮新增" : item.item_state === "updated_item" ? "内容更新" : "重复出现"}
-        </span>
         <span>{formatDateTime(item.published_at, { fallback: "发布时间未知" })}</span>
         <span>热度 {item.engagement_score}</span>
       </div>
@@ -70,6 +78,13 @@ function StreamCard({ item }: { item: DiscoveryItem }) {
           {gh.starsToday > 0 ? <span>今日 +{gh.starsToday}</span> : null}
         </div>
       ) : null}
+      {item.entity_names && item.entity_names.length > 0 ? (
+        <div className="entity-tag-row entity-tag-row-compact">
+          {item.entity_names.slice(0, 3).map((name) => (
+            <span key={name} className="entity-tag entity-tag-muted">{name}</span>
+          ))}
+        </div>
+      ) : null}
       <a href={item.link} target="_blank" rel="noreferrer">查看原文</a>
     </>
   );
@@ -79,7 +94,10 @@ export function StreamPage({
   page,
   pageSize,
   total,
+  availablePlatforms,
+  availableSources,
   loading = false,
+  onFilterChange,
   onPageChange,
   onPageSizeChange,
 }: StreamPageProps) {
@@ -90,57 +108,47 @@ export function StreamPage({
   const [changeFilter, setChangeFilter] = useState<ChangeFilter>("all");
   const [heatFilter, setHeatFilter] = useState<HeatFilter>("all");
   const [sortBy, setSortBy] = useState<SortKey>("collected_at");
-  const platformOptions = useMemo(
-    () => Array.from(new Set(items.map((item) => item.platform).filter(Boolean))).sort((a, b) => a.localeCompare(b, "zh-CN")),
-    [items],
-  );
 
-  const sourceOptions = useMemo(
-    () => Array.from(new Set(items.map((item) => item.source_name).filter(Boolean))).sort((a, b) => a.localeCompare(b, "zh-CN")),
-    [items],
-  );
+  const platformOptions = useMemo(() => {
+    const options = (availablePlatforms?.length ? availablePlatforms : items.map((item) => item.platform)).filter(Boolean);
+    if (platformFilter !== "all") options.push(platformFilter);
+    return Array.from(new Set(options)).sort((a, b) => a.localeCompare(b, "zh-CN"));
+  }, [availablePlatforms, items, platformFilter]);
 
-  const filtered = useMemo(() => {
-    const now = Date.now();
-    const q = query.toLowerCase();
+  const sourceOptions = useMemo(() => {
+    const options = (availableSources?.length ? availableSources : items.map((item) => item.source_name)).filter(Boolean);
+    if (sourceFilter !== "all") options.push(sourceFilter);
+    return Array.from(new Set(options)).sort((a, b) => a.localeCompare(b, "zh-CN"));
+  }, [availableSources, items, sourceFilter]);
 
-    return items.filter((item) => {
-      const matchesQuery =
-        !q.trim() ||
-        (item.title ?? "").toLowerCase().includes(q) ||
-        (item.summary ?? "").toLowerCase().includes(q) ||
-        (item.source_name ?? "").toLowerCase().includes(q) ||
-        (item.platform ?? "").toLowerCase().includes(q);
+  const filters = useMemo<StreamFilters>(() => {
+    const next: StreamFilters = {};
+    if (query.trim()) next.q = query.trim();
+    if (timeFilter !== "all") next.time_range = timeFilter;
+    if (platformFilter !== "all") next.platform = platformFilter;
+    if (sourceFilter !== "all") next.source = sourceFilter;
+    if (changeFilter !== "all") next.item_state = changeFilter;
+    if (heatFilter === "none") {
+      next.min_engagement = 0;
+      next.max_engagement = 0;
+    } else if (heatFilter === "low") {
+      next.min_engagement = 1;
+      next.max_engagement = 9;
+    } else if (heatFilter === "mid") {
+      next.min_engagement = 10;
+      next.max_engagement = 99;
+    } else if (heatFilter === "high") {
+      next.min_engagement = 100;
+    }
+    return next;
+  }, [query, timeFilter, platformFilter, sourceFilter, changeFilter, heatFilter]);
 
-      const matchesPlatform = platformFilter === "all" || item.platform === platformFilter;
-      const matchesSource = sourceFilter === "all" || item.source_name === sourceFilter;
-      const matchesChange = changeFilter === "all" || item.item_state === changeFilter;
-      const engagement = Number(item.engagement_score ?? 0);
-      const matchesHeat =
-        heatFilter === "all" ||
-        (heatFilter === "none" && engagement <= 0) ||
-        (heatFilter === "low" && engagement > 0 && engagement < 10) ||
-        (heatFilter === "mid" && engagement >= 10 && engagement < 100) ||
-        (heatFilter === "high" && engagement >= 100);
-
-      let matchesTime = true;
-      if (timeFilter !== "all") {
-        const collectedAt = item.collected_at ? new Date(item.collected_at).getTime() : 0;
-        const ageMs = now - collectedAt;
-        const limitMs =
-          timeFilter === "1h" ? 3600_000 :
-          timeFilter === "6h" ? 6 * 3600_000 :
-          timeFilter === "24h" ? 24 * 3600_000 :
-          72 * 3600_000;
-        matchesTime = collectedAt > 0 && ageMs <= limitMs;
-      }
-
-      return matchesQuery && matchesPlatform && matchesSource && matchesChange && matchesHeat && matchesTime;
-    });
-  }, [items, query, timeFilter, platformFilter, sourceFilter, changeFilter, heatFilter]);
+  useEffect(() => {
+    onFilterChange(filters);
+  }, [filters, onFilterChange]);
 
   const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
+    return [...items].sort((a, b) => {
       if (sortBy === "collected_at") {
         return (Date.parse(b.collected_at ?? "") || 0) - (Date.parse(a.collected_at ?? "") || 0);
       }
@@ -149,7 +157,7 @@ export function StreamPage({
       }
       return (a[sortBy] ?? "").toString().localeCompare((b[sortBy] ?? "").toString(), "zh-CN");
     });
-  }, [filtered, sortBy]);
+  }, [items, sortBy]);
 
   function resetFilters() {
     setQuery("");
@@ -160,14 +168,14 @@ export function StreamPage({
     setHeatFilter("all");
   }
 
- return (
+  return (
     <section className="panel">
       <div className="panel-header compact">
         <div>
           <p className="eyebrow">实时流</p>
           <h2>进入聚类前的原始素材</h2>
         </div>
-        <span className="subtle">{filtered.length} 条</span>
+        <span className="subtle">共 {total} 条素材</span>
       </div>
       <div className="intel-filter-bar">
         <Search size={14} />
@@ -209,45 +217,24 @@ export function StreamPage({
           <option value="mid">10-99</option>
           <option value="high">100+</option>
         </select>
+        <span className="intel-sort-separator" aria-hidden="true">|</span>
+        {SORT_OPTIONS.map((opt) => (
+          <button
+            key={opt.key}
+            type="button"
+            className={`filter-chip compact ${sortBy === opt.key ? "filter-chip-active" : ""}`}
+            onClick={() => setSortBy(opt.key)}
+          >
+            {opt.label}
+          </button>
+        ))}
         <button type="button" className="ghost-button compact intel-filter-reset" onClick={resetFilters} title="清空筛选">
           <RotateCcw size={14} />
         </button>
       </div>
-      <div className="intel-chip-filter-bar">
-        <div className="intel-chip-row">
-          {SORT_OPTIONS.map((opt) => (
-            <button
-              key={opt.key}
-              type="button"
-              className={`filter-chip ${sortBy === opt.key ? "filter-chip-active" : ""}`}
-              onClick={() => setSortBy(opt.key)}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="intel-score-row">
-        <span>当前页 {items.length} 条</span>
-        <span>筛后 {sorted.length} 条</span>
-        <span>总素材 {total} 条</span>
-        <span>排序 {SORT_OPTIONS.find((o) => o.key === sortBy)?.label}</span>
-      </div>
-      <PaginationControls
-        page={page}
-        pageSize={pageSize}
-        total={total}
-        currentCount={items.length}
-        filteredCount={sorted.length}
-        itemLabel="条素材"
-        loading={loading}
-        note="筛选和排序当前按本页数据生效，翻页后会继续加载后端真实分页结果。"
-        onPageChange={onPageChange}
-        onPageSizeChange={onPageSizeChange}
-      />
       <div className="intel-list">
         {!items.length ? (
-          <div className="skeleton-list">
+          loading ? <div className="skeleton-list">
             {Array.from({ length: 5 }).map((_, i) => (
               <div key={i} className="skeleton-card">
                 <div className="skeleton-line skeleton-short" />
@@ -255,15 +242,13 @@ export function StreamPage({
                 <div className="skeleton-line skeleton-long" />
               </div>
             ))}
-          </div>
+          </div> : <p className="empty-state">当前筛选条件下没有匹配的素材。</p>
         ) : sorted.length ? sorted.map((item) => (
           <article key={item.id} className="intel-row-card">
             <StreamCard item={item} />
           </article>
         )) : (
-          <p className="empty-state">
-            {items.length && filtered.length === 0 ? "当前筛选条件下没有匹配的素材。" : "本轮还没有抓到新的素材。"}
-          </p>
+          <p className="empty-state">本轮还没有抓到新的素材。</p>
         )}
       </div>
       <PaginationControls

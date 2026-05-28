@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
 from typing import Any
@@ -40,6 +40,54 @@ from ..models import (
     SourceSyncResponse,
 )
 from ..store.base import MAX_RAW_ITEMS, UTC, deepcopy_json, now_iso, parse_time
+
+
+def _stream_options(items: list[DiscoveryItem]) -> tuple[list[str], list[str]]:
+    platforms = sorted({item.platform for item in items if item.platform}, key=lambda value: value.lower())
+    sources = sorted({item.source_name for item in items if item.source_name}, key=lambda value: value.lower())
+    return platforms, sources
+
+
+def _filter_stream_items(
+    items: list[DiscoveryItem],
+    *,
+    q: str | None = None,
+    time_range: str | None = None,
+    platform: str | None = None,
+    source: str | None = None,
+    item_state: str | None = None,
+    min_engagement: int | None = None,
+    max_engagement: int | None = None,
+) -> list[DiscoveryItem]:
+    filtered = items
+    query = (q or "").strip().lower()
+    if query:
+        filtered = [
+            item
+            for item in filtered
+            if query in (item.title or "").lower()
+            or query in (item.summary or "").lower()
+            or query in (item.source_name or "").lower()
+            or query in (item.platform or "").lower()
+        ]
+
+    if time_range and time_range != "all":
+        hours = {"1h": 1, "6h": 6, "24h": 24, "72h": 72}.get(time_range, 0)
+        if hours:
+            cutoff = datetime.now(UTC) - timedelta(hours=hours)
+            filtered = [item for item in filtered if (parse_time(item.collected_at) or datetime.min.replace(tzinfo=UTC)) >= cutoff]
+
+    if platform:
+        filtered = [item for item in filtered if item.platform == platform]
+    if source:
+        filtered = [item for item in filtered if item.source_name == source]
+    if item_state:
+        filtered = [item for item in filtered if item.item_state == item_state]
+    if min_engagement is not None:
+        filtered = [item for item in filtered if (item.engagement_score or 0) >= min_engagement]
+    if max_engagement is not None:
+        filtered = [item for item in filtered if (item.engagement_score or 0) <= max_engagement]
+    return filtered
 
 
 class IntelMixin:
@@ -373,25 +421,70 @@ class IntelMixin:
         *,
         page: int = 1,
         page_size: int = 50,
-    ) -> tuple[list[DiscoveryItem], int]:
+        q: str | None = None,
+        time_range: str | None = None,
+        platform: str | None = None,
+        source: str | None = None,
+        item_state: str | None = None,
+        min_engagement: int | None = None,
+        max_engagement: int | None = None,
+    ) -> tuple[list[DiscoveryItem], int, list[str], list[str]]:
         if database_read_is_truth():
-            return list_discovery_items_from_db(database_url=current_database_url(), page=page, page_size=page_size)
+            return list_discovery_items_from_db(
+                database_url=current_database_url(),
+                page=page,
+                page_size=page_size,
+                q=q,
+                time_range=time_range,
+                platform=platform,
+                source=source,
+                item_state=item_state,
+                min_engagement=min_engagement,
+                max_engagement=max_engagement,
+            )
         state = self._read_live()
         all_items = [DiscoveryItem(**item) for item in state.get("discovery_items", [])]
+        available_platforms, available_sources = _stream_options(all_items)
+        filtered_items = _filter_stream_items(
+            all_items,
+            q=q,
+            time_range=time_range,
+            platform=platform,
+            source=source,
+            item_state=item_state,
+            min_engagement=min_engagement,
+            max_engagement=max_engagement,
+        )
         safe_page = max(1, int(page or 1))
         safe_page_size = max(1, min(int(page_size or 50), 200))
         start = (safe_page - 1) * safe_page_size
         end = start + safe_page_size
-        items = all_items[start:end]
-        total = len(all_items)
+        items = filtered_items[start:end]
+        total = len(filtered_items)
         if database_write_enabled():
-            db_items, db_total = list_discovery_items_from_db(database_url=current_database_url(), page=page, page_size=page_size)
-            if total != db_total or self._shadow_signature([item.model_dump() for item in items]) != self._shadow_signature([item.model_dump() for item in db_items]):
+            db_items, db_total, db_platforms, db_sources = list_discovery_items_from_db(
+                database_url=current_database_url(),
+                page=page,
+                page_size=page_size,
+                q=q,
+                time_range=time_range,
+                platform=platform,
+                source=source,
+                item_state=item_state,
+                min_engagement=min_engagement,
+                max_engagement=max_engagement,
+            )
+            if (
+                total != db_total
+                or available_platforms != db_platforms
+                or available_sources != db_sources
+                or self._shadow_signature([item.model_dump() for item in items]) != self._shadow_signature([item.model_dump() for item in db_items])
+            ):
                 self._log_shadow_diff(
                     "stream 数据库影子读与 JSON 投影不一致。",
                     detail=f"json_total={total} | db_total={db_total}",
                 )
-        return items, total
+        return items, total, available_platforms, available_sources
 
     def list_intel_events(
         self,
