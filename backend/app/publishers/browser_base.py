@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import ctypes
-from pathlib import Path
-import re
 import webbrowser
+from pathlib import Path
 from uuid import uuid4
 
 from ..store.base import PROJECT_ROOT, RUNTIME_TEMP_DIR, now_iso
+
 # WechatBrowserManager is imported lazily to avoid circular imports
 # (browser_manager.py imports from browser_base.py at module level)
 
@@ -122,10 +122,103 @@ SELECTOR_PROFILES: dict[str, dict[str, list[str] | str]] = {
             ".reward__setting-group.js_reward_open_cell",
             ".reward__setting-group",
         ],
+        "collection_setting": [
+            "div.js_article_tags_label",
+            "#js_article_tags_area .allow_click_opr",
+            "#js_article_tags_area .js_article_tags_content",
+            "#js_article_tags_area .lbl_content_desc",
+        ],
+        "collection_picker_input": [
+            "span.weui-desktop-form__input-wrp:has(input.weui-desktop-form__input[placeholder='请选择合集'])",
+            "span.weui-desktop-form__input-wrp:has(input[placeholder*='请选择合集'])",
+            "input.weui-desktop-form__input[placeholder='请选择合集']",
+            "input.weui-desktop-form__input[placeholder*='请选择合集']",
+            ".weui-desktop-form__input-wrp input[placeholder*='合集']",
+        ],
+        "collection_ai_news_option": [
+            "li.select-opt-li:has-text('AI新闻')",
+            ".select-opt-li:has-text('AI新闻')",
+            "li:has-text('AI新闻')",
+        ],
+        "claim_source_setting": [
+            "div.js_claim_source_desc",
+            "div.allow_click_opr.js_claim_source_desc",
+            "label.claim_source_label_wrapper",
+        ],
+        "claim_source_personal_option": [
+            "label.weui-desktop-form__check-label:has-text('个人观点，仅供参考')",
+            ".weui-desktop-form__check-label:has-text('个人观点')",
+        ],
         "primary_confirm_button": [
             "button.weui-desktop-btn.weui-desktop-btn_primary:has-text('确定')",
             "button.weui-desktop-btn_primary:has-text('确定')",
             "button:has-text('确定')",
+        ],
+        "option_confirm_button": [
+            "button.weui-desktop-btn.weui-desktop-btn_primary:has-text('确认')",
+            "button.weui-desktop-btn_primary:has-text('确认')",
+            ".weui-desktop-btn_wrp button.weui-desktop-btn_primary:has-text('确认')",
+            "button:has-text('确认')",
+            "button.weui-desktop-btn.weui-desktop-btn_primary:has-text('确定')",
+            "button.weui-desktop-btn_primary:has-text('确定')",
+            "button:has-text('确定')",
+        ],
+        "cover_button": [
+            "div.select-cover__btn.js_cover_btn_area.select-cover__mask",
+            ".js_cover_btn_area.select-cover__mask",
+            ".js_cover_btn_area",
+            "span.js_share_type_none_image:has-text('拖拽或选择封面')",
+        ],
+        "ai_image_button": [
+            "a.pop-opr__button.js_aiImage:has-text('AI 配图')",
+            "a.js_aiImage",
+            ".js_aiImage",
+            "text=AI 配图",
+        ],
+        "ai_image_prompt": [
+            "textarea#ai-image-prompt",
+            "textarea[name='ai-image-prompt']",
+            "textarea[placeholder*='请描述你想要创作的内容']",
+        ],
+        "ai_image_send_button": [
+            "button.send-btn",
+            ".send-btn",
+        ],
+        "ai_image_generated_tip": [
+            "p.ai-image__tips:has-text('已为你生成图片')",
+            ".ai-image__tips:has-text('已为你生成图片')",
+        ],
+        "ai_image_use_button": [
+            ".ai-image-operation-group .ai-image-op-btn:has-text('使用')",
+            ".ai-image-op-btn:has-text('使用')",
+            "div:has-text('使用')",
+        ],
+        "cover_confirm_button": [
+            ".weui-desktop-btn_wrp button.weui-desktop-btn_primary:has-text('确认')",
+            "button.weui-desktop-btn_primary:has-text('确认')",
+            "button:has-text('确认')",
+        ],
+        "article_publish_button": [
+            "#js_send button.mass_send:has-text('发表')",
+            "#js_send .send_wording:has-text('发表')",
+            "#js_send button.mass_send",
+            "button.mass_send:has-text('发表')",
+        ],
+        "publish_modal_button": [
+            ".weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')",
+            "button.weui-desktop-btn_primary:has-text('发表')",
+            "button:has-text('发表')",
+        ],
+        "continue_publish_button": [
+            "button.weui-desktop-btn_primary:has-text('继续发表')",
+            ".weui-desktop-btn_wrp button:has-text('继续发表')",
+            "button:has-text('继续发表')",
+        ],
+        "wechat_verify_qrcode": [
+            ".dialog:has-text('微信验证') img.js_qrcode",
+            ".safe_check img.js_qrcode",
+            "img.js_qrcode[alt='微信二维码']",
+            "img.js_qrcode",
         ],
         "publish_button": [
             "button:has-text('发表')",
@@ -604,9 +697,6 @@ __all__ = [
     "DEFAULT_BACKGROUND_POLL_INTERVAL_SECONDS",
     "WINDOWS_BROWSER_PATHS",
     "SELECTOR_PROFILES",
-    "WechatBrowserManager",
-    "WECHAT_BROWSER_MANAGER",
-    "DOUYIN_BROWSER_MANAGER",
     "now_iso",
     "normalize_browser_name",
     "default_browser_profile_path",

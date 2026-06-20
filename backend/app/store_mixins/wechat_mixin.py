@@ -10,13 +10,13 @@ from ..models import (
     DictOkResponse,
     PublishBackendStatus,
     PublishTask,
+    WeChatAnalyticsDomSnapshot,
+    WeChatAnalyticsOverview,
     WeChatChannelConfig,
     WeChatDraftSyncCheckResult,
-    WeChatAnalyticsOverview,
+    WeChatEditorDomSnapshot,
     WeChatMappingRow,
     WeChatMappingSnapshot,
-    WeChatEditorDomSnapshot,
-    WeChatAnalyticsDomSnapshot,
     WeChatPublishHistorySnapshot,
     WeChatPublishRecordItem,
     WeChatRemoteDraftItem,
@@ -26,21 +26,30 @@ from ..publishers import (
     create_publish_task,
     delete_wechat_remote_draft,
     ensure_channel_defaults,
-    inspect_wechat_editor_dom,
+    fill_wechat_author_only,
     inspect_wechat_analytics_dom,
     inspect_wechat_draft_box,
+    inspect_wechat_editor_dom,
+    inspect_wechat_publish_settings_dom,
     inspect_wechat_publish_history_with_overview,
-    inspect_wechat_publish_history,
     inspect_wechat_session,
     launch_wechat_dashboard,
-    fill_wechat_author_only,
     open_wechat_editor_debug,
+    open_wechat_remote_draft_by_title,
+    eval_wechat_editor_js,
+    test_claim_source_click,
+    test_collection_click,
+    test_wechat_cover_only,
     test_wechat_publish_settings_only,
 )
 from ..services.wechat_reconcile import (
     apply_publish_history_matches,
     build_wechat_mapping_snapshot,
+)
+from ..services.wechat_reconcile import (
     normalize_wechat_title as _normalize_wechat_title,
+)
+from ..services.wechat_reconcile import (
     wechat_title_matches as _wechat_title_matches,
 )
 from ..store.base import deepcopy_json, now_iso
@@ -331,6 +340,108 @@ class WeChatMixin:
         )
         self._write(state)
         return WeChatAnalyticsDomSnapshot(**snapshot)
+
+    def inspect_wechat_publish_settings_dom(self) -> WeChatEditorDomSnapshot:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_browser_session(state)
+        browser, snapshot, artifacts, step_logs = inspect_wechat_publish_settings_dom(state["channels"]["wechat"], browser)
+        state["browser"]["wechat"] = browser
+        self._append_log(
+            state,
+            "success" if not browser.get("last_error") else "warning",
+            "browser",
+            "已导出发布设置区域 DOM。" if not browser.get("last_error") else "导出发布设置区域 DOM 失败。",
+            stream="business_event",
+            actor="dashboard",
+            detail=" | ".join(step_logs[-2:]),
+        )
+        state["publish_tasks"].insert(
+            0,
+            create_publish_task(
+                "session-wechat",
+                "inspect_wechat_publish_settings_dom",
+                "completed" if not browser.get("last_error") else "failed",
+                "已导出发布设置区域 DOM。",
+                "dashboard",
+                str(state["channels"]["wechat"]["selectors_version"]),
+                artifacts=artifacts,
+                step_logs=step_logs,
+            ),
+        )
+        self._write(state)
+        return WeChatEditorDomSnapshot(**snapshot)
+
+    def test_collection_click(self) -> dict:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_browser_session(state)
+        browser, snapshot, artifacts, step_logs = test_collection_click(state["channels"]["wechat"], browser)
+        state["browser"]["wechat"] = browser
+        self._write(state)
+        return snapshot
+
+    def test_claim_source_click(self) -> dict:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_browser_session(state)
+        browser, snapshot, artifacts, step_logs = test_claim_source_click(state["channels"]["wechat"], browser)
+        state["browser"]["wechat"] = browser
+        self._write(state)
+        return snapshot
+
+    def eval_wechat_editor_js(self, script: str) -> dict:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_browser_session(state)
+        browser, snapshot, artifacts, step_logs = eval_wechat_editor_js(
+            state["channels"]["wechat"], browser, script
+        )
+        state["browser"]["wechat"] = browser
+        self._write(state)
+        return snapshot
+
+    def open_wechat_remote_draft_by_title(self, title: str) -> dict:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_browser_session(state)
+        browser, snapshot, artifacts, step_logs = open_wechat_remote_draft_by_title(
+            state["channels"]["wechat"], browser, title
+        )
+        state["browser"]["wechat"] = browser
+        state["publish_tasks"].insert(
+            0,
+            create_publish_task(
+                "session-wechat",
+                "open_wechat_remote_draft",
+                "completed" if not browser.get("last_error") else "failed",
+                "已打开指定微信草稿编辑页。" if not browser.get("last_error") else "打开指定微信草稿失败。",
+                "dashboard",
+                str(state["channels"]["wechat"]["selectors_version"]),
+                artifacts=artifacts,
+                step_logs=step_logs,
+            ),
+        )
+        self._write(state)
+        return snapshot
+
+    def test_wechat_cover_only(self, title: str, summary: str = "", markdown: str = "") -> dict:
+        state = self._upgrade_state(self._read())
+        browser = self._refresh_browser_session(state)
+        browser, snapshot, artifacts, step_logs = test_wechat_cover_only(
+            state["channels"]["wechat"], browser, title, summary=summary, markdown=markdown
+        )
+        state["browser"]["wechat"] = browser
+        state["publish_tasks"].insert(
+            0,
+            create_publish_task(
+                "session-wechat",
+                "test_wechat_cover_only",
+                "completed" if not browser.get("last_error") else "failed",
+                "微信封面流程测试完成。" if not browser.get("last_error") else "微信封面流程测试失败。",
+                "dashboard",
+                str(state["channels"]["wechat"]["selectors_version"]),
+                artifacts=artifacts,
+                step_logs=step_logs,
+            ),
+        )
+        self._write(state)
+        return snapshot
 
     def open_wechat_editor_debug(self) -> BrowserSessionState:
         state = self._upgrade_state(self._read())
