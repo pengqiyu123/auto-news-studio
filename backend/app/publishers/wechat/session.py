@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from pathlib import Path
-import time
 
 from ...store.base import UTC
 from ..browser_base import (
     ARTIFACT_ROOT,
-    _can_interact_with_page,
     _count_context_pages,
     _is_page_closed,
     _list_live_context_pages,
@@ -19,6 +18,7 @@ from ..browser_base import (
 )
 from ..browser_manager import WECHAT_BROWSER_MANAGER
 from .dom import _validate_wechat_page_identity
+
 
 def _retry_once(step_name: str, step_logs: list[str], fn):
     try:
@@ -79,7 +79,11 @@ def _locate_editor_page(context, fallback_page, timeout_ms: int = 12000):
         for page in pages:
             if _is_page_closed(page):
                 continue
-            if "appmsg" in _page_url(page) or "media/appmsg_edit" in _page_url(page):
+            page_url = _page_url(page)
+            if "action=list_card" in page_url:
+                candidate = page
+                continue
+            if "action=edit" in page_url or "media/appmsg_edit" in page_url:
                 try:
                     page.wait_for_load_state("domcontentloaded", timeout=1500)
                 except Exception:
@@ -94,9 +98,14 @@ def _locate_editor_page(context, fallback_page, timeout_ms: int = 12000):
 
 def _locate_editor_page_with_retry(context, fallback_page, selector_profile: dict[str, list[str] | str], step_logs: list[str]):
     def _locate_once():
+        live_pages = _list_live_context_pages(context)
+        for page in live_pages:
+            if _is_page_closed(page):
+                continue
+            if _validate_wechat_page_identity(page, selector_profile, expected="editor"):
+                return page
         candidate = _locate_editor_page(context, fallback_page)
         if not _validate_wechat_page_identity(candidate, selector_profile, expected="editor"):
-            live_pages = _list_live_context_pages(context)
             page_urls = ", ".join(_page_url(page) or "<empty>" for page in live_pages) or "<none>"
             if candidate is fallback_page:
                 raise RuntimeError(f"未找到新开的编辑页。当前页集合：{page_urls}")

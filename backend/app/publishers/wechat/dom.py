@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
-import re
 from urllib.parse import parse_qs, urlparse
 
+from ...content.wechat_format import markdown_to_plain_text, strip_markdown_title
 from ...store.base import UTC
-from ...content.wechat_format import markdown_to_plain_text, markdown_to_wechat_html, strip_markdown_title
 from ..browser_base import _page_url, _pick_visible_locator, _write_debug_artifact
+
 
 def _plain_text_from_markdown(markdown: str) -> str:
     return markdown_to_plain_text(markdown, limit=12000)
@@ -365,7 +366,9 @@ def _validate_wechat_page_identity(page, selector_profile: dict[str, list[str] |
                 continue
         return False
     if expected == "editor":
-        if "appmsg" not in current_url and "media/appmsg_edit" not in current_url:
+        if "action=list_card" in current_url:
+            return False
+        if "action=edit" not in current_url and "media/appmsg_edit" not in current_url:
             return False
         selectors = [
             *[str(item) for item in selector_profile.get("title_input", []) if isinstance(item, str)],

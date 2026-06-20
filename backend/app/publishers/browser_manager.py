@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import ctypes
+import threading
 from pathlib import Path
 from queue import Queue
-import threading
 from threading import Lock, Thread
 
 from .browser_base import (
+    DEFAULT_BROWSER_LOCK_TIMEOUT_SECONDS,
     _can_interact_with_page,
-    _is_page_closed,
     _list_live_context_pages,
     browser_channel_name,
     ensure_channel_defaults,
     resolve_profile_path,
-    DEFAULT_BROWSER_LOCK_TIMEOUT_SECONDS,
 )
 
 try:
@@ -285,6 +284,7 @@ class WechatBrowserManager:
             str(resolve_profile_path(normalized.get("browser_profile_path"), normalized.get("browser_name"))),
             headless=False,
             channel=browser_channel_name(str(normalized.get("browser_name"))),
+            args=["--remote-debugging-port=9223"],
         )
         self._context = context
         self._page = None
