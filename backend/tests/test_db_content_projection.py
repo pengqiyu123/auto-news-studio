@@ -287,11 +287,19 @@ def test_content_asset_migration_accepts_existing_equivalent_indexes() -> None:
             version = conn.execute(text("select version_num from alembic_version")).scalar_one()
             deep_dive_documents = conn.execute(text("select name from sqlite_master where type='table' and name='deep_dive_documents'")).scalar_one()
             brief_records = conn.execute(text("select name from sqlite_master where type='table' and name='brief_records'")).scalar_one()
+            topic_models = conn.execute(text("select name from sqlite_master where type='table' and name='topic_models'")).scalar_one()
+            event_relations = conn.execute(text("select name from sqlite_master where type='table' and name='event_relations'")).scalar_one()
+            analysis_feedback = conn.execute(text("select name from sqlite_master where type='table' and name='analysis_feedback'")).scalar_one()
+            analysis_reports = conn.execute(text("select name from sqlite_master where type='table' and name='analysis_reports'")).scalar_one()
         engine.dispose()
 
-        assert version == "20260524_0002"
+        assert version == "20260524_0005"
         assert deep_dive_documents == "deep_dive_documents"
         assert brief_records == "brief_records"
+        assert topic_models == "topic_models"
+        assert event_relations == "event_relations"
+        assert analysis_feedback == "analysis_feedback"
+        assert analysis_reports == "analysis_reports"
     finally:
         engine.dispose()
         shutil.rmtree(temp_dir, ignore_errors=True)

@@ -72,6 +72,7 @@ export function useAppShellState({
     events: false,
     alerts: false,
     "source-health": false,
+    analysis: false,
     watchlist: false,
     briefs: false,
     "publish-history": false,

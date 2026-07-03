@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from html import escape, unescape
 import re
+from html import escape, unescape
 
 WECHAT_WRAPPER_STYLE = "font-size:15px;line-height:1.8;color:#222;"
 

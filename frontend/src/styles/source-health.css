@@ -1,0 +1,220 @@
+.source-health-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.source-health-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 72px;
+  padding: 8px 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f8fafc;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.source-health-stat:hover {
+  background: #f1f5f9;
+}
+
+.source-health-stat-active.stat-healthy {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.source-health-stat-active.stat-warning {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.source-health-stat-active.stat-error {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.source-health-stat-active.stat-idle {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+.source-health-stat-value {
+  color: #111827;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.source-health-stat-label {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.source-health-filter-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.source-health-filter-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.source-health-filter-tools select,
+.source-health-filter-tools input {
+  min-height: 32px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #111827;
+  font-size: 13px;
+}
+
+.source-health-filter-tools select {
+  padding: 5px 28px 5px 10px;
+}
+
+.source-health-filter-tools input {
+  min-width: 220px;
+  padding: 6px 10px;
+}
+
+.source-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.source-health-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-left: 4px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.source-health-card.severity-healthy {
+  border-left-color: #22c55e;
+}
+
+.source-health-card.severity-warning {
+  border-left-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.04);
+}
+
+.source-health-card.severity-error {
+  border-left-color: #ef4444;
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.source-health-card.severity-idle {
+  border-left-color: #94a3b8;
+}
+
+.source-health-card strong {
+  color: #111827;
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.source-health-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.source-health-failure-count {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #fffbeb;
+  color: #92400e;
+  font-weight: 600;
+}
+
+.source-health-failure-count.critical {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.source-health-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.source-health-expand {
+  align-self: flex-start;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: #6366f1;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.source-health-expand:hover {
+  color: #4f46e5;
+  text-decoration: underline;
+}
+
+.source-health-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.source-health-error-text {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 768px) {
+  .source-health-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .source-health-filter-bar {
+    align-items: stretch;
+  }
+
+  .source-health-filter-tools,
+  .source-health-filter-tools label,
+  .source-health-filter-tools select,
+  .source-health-filter-tools input {
+    width: 100%;
+  }
+}

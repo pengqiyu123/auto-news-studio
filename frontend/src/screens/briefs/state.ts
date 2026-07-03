@@ -220,7 +220,7 @@ export function useBriefsState({
     }
   }, [loadBriefsData, onError, onReloadOverview, onToast]);
 
-  const handleBriefAction = useCallback(async (kind: "sync" | "copy" | "copyPackage" | "refresh", brief: BriefItem) => {
+  const handleBriefAction = useCallback(async (kind: "sync" | "publish" | "copy" | "copyPackage" | "refresh", brief: BriefItem) => {
     setBusyBriefId(brief.id);
     try {
       if (kind === "sync") {
@@ -239,6 +239,21 @@ export function useBriefsState({
           onToast("当前版本已同步，无需重复上传", "info");
         } else {
           onToast("已处理微信草稿箱同步", "success");
+        }
+        return;
+      }
+      if (kind === "publish") {
+        const response = await api.publishBriefWeChatArticle(brief.id);
+        await Promise.all([
+          onReloadOverview(false),
+          loadBriefsData(),
+          onReloadPublishHistory(),
+          onReloadDraftBox(),
+        ]);
+        if (response.item.record_exception === "pending_confirmation") {
+          onToast("已到微信验证二维码，请扫码确认", "warning");
+        } else {
+          onToast("已执行微信发表路径", "success");
         }
         return;
       }

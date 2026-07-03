@@ -95,6 +95,7 @@ def _seed_radar_and_draft_ready_events(store: StudioStore) -> list[str]:
         "OpenAI 推出企业管理更新",
         "国产芯片工具链更新",
         "月之暗面升级长上下文能力",
+        "三星 PCIe Gen6 固态硬盘上线官网",
     ]
     event_ids: list[str] = []
     state["briefs"] = []
@@ -221,6 +222,7 @@ def test_radar_and_draft_delivery_generates_one_daily_digest_not_single_event_br
         assert "## 2." in brief["wechat_markdown"]
         assert "## 3." in brief["wechat_markdown"]
         assert "## 4." in brief["wechat_markdown"]
+        assert "## 5." in brief["wechat_markdown"]
 
         events_by_id = {str(item["id"]): item for item in refreshed["intel_events"]}
         assert set(events_by_id) == set(event_ids)

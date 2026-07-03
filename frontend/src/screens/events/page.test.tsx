@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import { api } from "../../lib/api";
 import type { EntityWatchlistItem, EntityWatchlistSummaryItem, IntelEvent, SchedulerStatus } from "../../types";
 import { EventsPage } from "./page";
 
@@ -113,5 +114,60 @@ describe("EventsPage", () => {
     expect(container.querySelector(".intel-row-card.severity-rising")).toBeTruthy();
     expect(screen.getByRole("button", { name: "总分" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "成员增量" })).toBeInTheDocument();
+  });
+
+  it("shows trend indicators in the watchlist panel", () => {
+    renderEventsPage({
+      entityWatchlistSummary: [
+        {
+          entity_id: "openai",
+          entity_name: "OpenAI",
+          entity_type: "COMPANY",
+          watchlisted: true,
+          event_count: 2,
+          alert_count: 1,
+          rising_count: 1,
+          breakout_count: 0,
+          last_seen_at: "2026-05-12T09:10:00+08:00",
+        } as EntityWatchlistSummaryItem,
+      ],
+      trends: [
+        {
+          entity_id: "openai",
+          entity_name: "OpenAI",
+          trend: "hot",
+          trend_label: "近7天持续上升",
+          sma_7d: 10,
+          sma_14d: 6,
+          signals: [],
+        },
+      ],
+    });
+
+    expect(screen.getByLabelText("OpenAI 趋势 升温")).toBeInTheDocument();
+  });
+
+  it("loads related events inside expanded details", async () => {
+    vi.spyOn(api, "fetchRelatedEvents").mockResolvedValue({
+      items: [
+        {
+          event_id: "evt-related",
+          title: "Supplier response follows launch",
+          relation_type: "entity_shared",
+          weight: 0.78,
+          evidence: {},
+        },
+      ],
+    });
+
+    renderEventsPage();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "展开详情 ▼" })[0]);
+
+    expect(await screen.findByText("关联事件")).toBeInTheDocument();
+    expect(api.fetchRelatedEvents).toHaveBeenCalledWith("evt-openai");
+    expect(await screen.findByText("Supplier response follows launch")).toBeInTheDocument();
+    expect(screen.getByText("实体重合")).toBeInTheDocument();
+    expect(screen.getByText("78%")).toBeInTheDocument();
   });
 });

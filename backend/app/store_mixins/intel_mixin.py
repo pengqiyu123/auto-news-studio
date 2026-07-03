@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timedelta
-import hashlib
-import json
 from typing import Any
 
 from ..db import current_database_url, database_read_is_truth, database_write_enabled, persist_ingest_chain_state
@@ -28,6 +28,7 @@ from ..models import (
     AutomationModeDefinition,
     AutomationModeProfile,
     BrowserSessionState,
+    CreateSourcePayload,
     DashboardResponse,
     DashboardStats,
     DiscoveryItem,
@@ -42,7 +43,6 @@ from ..models import (
     RuntimeCycleSummary,
     SourceConnector,
     SourceConnectorPayload,
-    CreateSourcePayload,
     SourceSyncResponse,
 )
 from ..store.base import MAX_RAW_ITEMS, UTC, deepcopy_json, now_iso, parse_time
@@ -1090,7 +1090,6 @@ class IntelMixin:
             snapshot = deepcopy(state)
 
         browser = self._refresh_browser_session(snapshot)
-        runtime = self._runtime(snapshot)
         app_version = self.get_app_version_info()
         runtime_status = self._scheduler_status_from_state(snapshot)
         entity_watchlist_summary = self._build_entity_watchlist_summary(snapshot)

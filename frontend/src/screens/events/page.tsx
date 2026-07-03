@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { PaginationControls } from "../../components/PaginationControls";
+import { api } from "../../lib/api";
 import { explainEventsEmptyState } from "../../lib/runtimeIntent";
 import { historyStatusLabel, historyStatusTone } from "../../lib/eventUtils";
 import { formatDateTime, formatRelativeTime } from "../../lib/time";
-import type { EntityWatchlistItem, EntityWatchlistSummaryItem, HistoryRecordStatus, IntelEvent, IntelEventHistoryItem, SchedulerStatus } from "../../types";
+import type { EntityWatchlistItem, EntityWatchlistSummaryItem, EventRelationInfo, HistoryRecordStatus, IntelEvent, IntelEventHistoryItem, SchedulerStatus, TrendSignalInfo } from "../../types";
 import { EntityWatchlistPanel } from "./entity_watchlist_panel";
 import type { EventsFilters } from "./state";
 
@@ -41,6 +42,14 @@ function severityForHistory(status: HistoryRecordStatus) {
   return "new";
 }
 
+function relationTypeLabel(relationType: string) {
+  if (relationType === "entity_shared") return "实体重合";
+  if (relationType === "topic_shared") return "主题同类";
+  if (relationType === "temporal_proximity") return "时间接近";
+  if (relationType === "anchor_overlap") return "锚点重合";
+  return relationType || "关联";
+}
+
 interface EventsPageProps {
   items: IntelEvent[];
   page: number;
@@ -50,6 +59,7 @@ interface EventsPageProps {
   runtime: SchedulerStatus;
   entityWatchlist: EntityWatchlistItem[];
   entityWatchlistSummary: EntityWatchlistSummaryItem[];
+  trends?: TrendSignalInfo[];
   selectedEntityId: string;
   onSelectedEntityChange: (entityId: string) => void;
   onFilterChange: (filters: EventsFilters) => void;
@@ -75,6 +85,7 @@ export function EventsPage({
   runtime,
   entityWatchlist,
   entityWatchlistSummary,
+  trends = [],
   selectedEntityId,
   onSelectedEntityChange,
   onFilterChange,
@@ -94,6 +105,9 @@ export function EventsPage({
   const [historyFilter, setHistoryFilter] = useState<HistoryRecordStatus | "all">("all");
   const [historyVisibleCount, setHistoryVisibleCount] = useState(PAGE_SIZE);
   const [expandedCards, setExpandedCards] = useState<Set<string>>(() => new Set());
+  const [relatedByEventId, setRelatedByEventId] = useState<Record<string, EventRelationInfo[]>>({});
+  const [relatedErrors, setRelatedErrors] = useState<Record<string, string>>({});
+  const [loadingRelatedIds, setLoadingRelatedIds] = useState<Set<string>>(() => new Set());
   const filters = useMemo<EventsFilters>(() => ({
     entity_id: selectedEntityId !== "all" ? selectedEntityId : undefined,
     sort_by: sortBy,
@@ -108,6 +122,7 @@ export function EventsPage({
       next.add(highlightEventId);
       return next;
     });
+    void ensureRelatedLoaded(highlightEventId);
   }, [highlightEventId]);
 
   function emitFilters(nextFilters: EventsFilters) {
@@ -119,9 +134,41 @@ export function EventsPage({
   function toggleExpanded(id: string) {
     setExpandedCards((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+        void ensureRelatedLoaded(id);
+      }
       return next;
     });
+  }
+
+  async function ensureRelatedLoaded(eventId: string) {
+    if (relatedByEventId[eventId] || loadingRelatedIds.has(eventId)) {
+      return;
+    }
+    setLoadingRelatedIds((prev) => new Set(prev).add(eventId));
+    setRelatedErrors((prev) => {
+      const next = { ...prev };
+      delete next[eventId];
+      return next;
+    });
+    try {
+      const response = await api.fetchRelatedEvents(eventId);
+      setRelatedByEventId((prev) => ({ ...prev, [eventId]: response.items ?? [] }));
+    } catch (err) {
+      setRelatedErrors((prev) => ({
+        ...prev,
+        [eventId]: err instanceof Error ? err.message : "关联事件加载失败",
+      }));
+    } finally {
+      setLoadingRelatedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(eventId);
+        return next;
+      });
+    }
   }
   const entityOptions = useMemo(() => {
     const lookup = new Map<string, { entity_id: string; entity_name: string }>();
@@ -282,12 +329,45 @@ export function EventsPage({
                   {expandedCards.has(event.id) ? "收起详情 ▲" : "展开详情 ▼"}
                 </button>
                 {expandedCards.has(event.id) ? (
-               <div className="intel-score-row">
-                  <span>成员增量 {event.member_delta >= 0 ? `+${event.member_delta}` : event.member_delta}</span>
-                  <span>平台增量 {event.platform_delta >= 0 ? `+${event.platform_delta}` : event.platform_delta}</span>
-                  <span>首次 {formatDateTime(event.first_seen_at, { fallback: "未知" })}</span>
-                  <span>最近 {formatDateTime(event.last_seen_at, { fallback: "未知" })}</span>
-                </div>
+                  <div className="intel-event-detail">
+                    <div className="intel-score-row">
+                      <span>成员增量 {event.member_delta >= 0 ? `+${event.member_delta}` : event.member_delta}</span>
+                      <span>平台增量 {event.platform_delta >= 0 ? `+${event.platform_delta}` : event.platform_delta}</span>
+                      <span>首次 {formatDateTime(event.first_seen_at, { fallback: "未知" })}</span>
+                      <span>最近 {formatDateTime(event.last_seen_at, { fallback: "未知" })}</span>
+                    </div>
+                    <div className="related-events-section">
+                      <div className="related-events-head">
+                        <span>关联事件</span>
+                        {relatedByEventId[event.id] ? <span className="subtle">{relatedByEventId[event.id].length} 条</span> : null}
+                      </div>
+                      {loadingRelatedIds.has(event.id) ? (
+                        <p className="subtle">正在加载关联事件...</p>
+                      ) : relatedErrors[event.id] ? (
+                        <p className="warning-note">{relatedErrors[event.id]}</p>
+                      ) : (relatedByEventId[event.id] ?? []).length ? (
+                        <div className="related-events-list">
+                          {(relatedByEventId[event.id] ?? []).map((relation) => {
+                            const percentage = Math.max(0, Math.min(100, Math.round((relation.weight || 0) * 100)));
+                            return (
+                              <div key={`${event.id}-${relation.event_id}`} className="related-event-item">
+                                <div className="related-event-topline">
+                                  <strong>{relation.title || relation.event_id}</strong>
+                                  <span className="entity-tag entity-tag-muted">{relationTypeLabel(relation.relation_type)}</span>
+                                  <span className="subtle">{percentage}%</span>
+                                </div>
+                                <div className="related-event-meter" aria-hidden="true">
+                                  <span style={{ width: `${percentage}%` }} />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="subtle">暂无关联事件。</p>
+                      )}
+                    </div>
+                  </div>
                 ) : null}
                 <div className="intel-event-actions">
                   <div className="intel-secondary-actions">
@@ -425,6 +505,7 @@ export function EventsPage({
       <EntityWatchlistPanel
         items={entityWatchlist}
         summary={entityWatchlistSummary}
+        trends={trends}
         availableEntities={entityOptions}
         selectedEntityId={selectedEntityId}
         onSelectEntity={onSelectedEntityChange}

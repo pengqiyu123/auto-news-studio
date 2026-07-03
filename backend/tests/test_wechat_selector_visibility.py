@@ -5,6 +5,7 @@ from backend.app.publishers import (
     _click_wechat_publish_until_qrcode,
     _clamp_author,
     _converge_context_to_target,
+    _ensure_wechat_author_before_publish_settings,
     _ensure_wechat_ai_cover,
     _enforce_single_tab,
     _fill_wechat_editor,
@@ -20,13 +21,23 @@ from backend.app.publishers import (
 
 
 class _FakeNode:
-    def __init__(self, visible: bool, *, fail_first_click: bool = False) -> None:
+    def __init__(
+        self,
+        visible: bool,
+        *,
+        fail_first_click: bool = False,
+        read_only: bool = False,
+        disabled: bool = False,
+    ) -> None:
         self._visible = visible
         self.clicked = False
         self.value = ""
         self.text_content = ""
         self.click_count = 0
         self.fail_first_click = fail_first_click
+        self.readOnly = read_only
+        self.disabled = disabled
+        self.background_image = ""
 
     def wait_for(self, *, state=None, timeout=None):
         if state == "visible" and not self._visible:
@@ -44,10 +55,14 @@ class _FakeNode:
         return 1
 
     def fill(self, value: str):
+        if self.readOnly or self.disabled:
+            return None
         self.value = value
         self.text_content = value
 
     def type(self, value: str, delay: int = 0):
+        if self.readOnly or self.disabled:
+            return None
         self.value = value
         self.text_content = value
 
@@ -183,6 +198,8 @@ class _FakePage:
 
     def goto(self, url: str, wait_until: str | None = None, timeout: int | None = None):
         self.url = url
+        if "/s/preview" in url or "action=preview" in url:
+            self._preview_url_opened = True
         if "appmsg" in url:
             editor_page = getattr(self, "_existing_editor_page", None)
             context = getattr(self, "_context", None)
@@ -194,6 +211,23 @@ class _FakePage:
         script_text = str(script)
         if "document.querySelectorAll(" in script_text and "publish_card_container" in script_text and "results.slice" in script_text:
             return list(getattr(self, "_remote_draft_items", []))
+        if "clickRemoteDraftEditButton" in script_text:
+            title = str((payload or {}).get("title") or "").strip().lower()
+            for item in getattr(self, "_remote_draft_items", []):
+                item_title = str(item.get("title") or "").strip().lower()
+                if title and item_title and (title == item_title or title in item_title or item_title in title):
+                    self._remote_edit_button_clicked = True
+                    editor_page = getattr(self, "_existing_editor_page", None)
+                    context = getattr(self, "_context", None)
+                    if editor_page is not None and context is not None and editor_page not in context.pages:
+                        context.pages.append(editor_page)
+                    return {
+                        "ok": True,
+                        "reason": "clicked",
+                        "title": item.get("title"),
+                        "buttonCount": 1,
+                    }
+            return {"ok": False, "reason": "not_found", "title": ""}
         if "clickable.dispatchEvent" in script_text:
             title = str((payload or {}).get("title") or "").strip().lower()
             for item in getattr(self, "_remote_draft_items", []):
@@ -213,6 +247,33 @@ class _FakePage:
             if payload.get("richText"):
                 return node.text_content
             return node.value or node.text_content
+        if "document.querySelector(selector)" in script_text and "readOnly" in script_text:
+            selector = payload["selector"]
+            node = self._mapping.get(selector, [None])[0]
+            if node is None:
+                return None
+            return {
+                "value": (node.value or node.text_content or "").strip(),
+                "readOnly": bool(getattr(node, "readOnly", False)),
+                "disabled": bool(getattr(node, "disabled", False)),
+                "visible": bool(getattr(node, "_visible", False)),
+            }
+        if ".js_cover_preview_new" in script_text and "backgroundImage" in script_text:
+            for selector, nodes in self._mapping.items():
+                if not any(marker in selector for marker in [".js_cover_preview_new", ".select-cover__preview", ".first_appmsg_cover"]):
+                    continue
+                for node in nodes:
+                    if getattr(node, "_visible", False) and getattr(node, "background_image", ""):
+                        return True
+            return False
+        if ".weui-desktop-popover__wrp, .weui-desktop-dialog__wrp" in script_text and "hasPublish && hasCancel" in script_text:
+            return bool(getattr(self, "_publish_confirm_layer_visible", False))
+        if ".weui-desktop-popover__wrp, .weui-desktop-dialog__wrp" in script_text and "confirm_layer_not_found" in script_text:
+            if getattr(self, "_publish_confirm_layer_visible", False):
+                self._publish_confirm_layer_visible = False
+                self._publish_confirm_layer_dom_clicked = True
+                return {"ok": True, "text": "发表"}
+            return {"ok": False, "reason": "confirm_layer_not_found"}
         if "node.innerHTML = html" in script_text:
             selector = payload["selector"]
             node = self._mapping.get(selector, [None])[0]
@@ -557,6 +618,58 @@ def test_fill_wechat_editor_supports_new_prosemirror_title_and_body_selectors():
     assert "正文最终长度=" in "\n".join(step_logs)
 
 
+def test_fill_wechat_editor_keeps_existing_readonly_author():
+    profile = get_selector_profile("wechat-mp-v1")
+    title_node = _FakeNode(visible=True)
+    author_node = _FakeNode(visible=True, read_only=True)
+    author_node.value = "煜的奇思妙想"
+    body_node = _FakeNode(visible=True)
+    page = _FakePage(
+        {
+            "div.ProseMirror[data-placeholder*='请在这里输入标题']": [title_node],
+            "input.js_author": [author_node],
+            "#edui1_iframeholder .mock-iframe-body .rich_media_content > div.ProseMirror[contenteditable='true']": [body_node],
+        },
+        url="https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit",
+    )
+    step_logs: list[str] = []
+
+    _fill_wechat_editor(
+        page,
+        {"title": "已有草稿标题", "summary": "", "markdown": "# 已有草稿标题\n\n这里是已有草稿正文内容，而且长度足够通过校验。"},
+        {"author": "AutoNews"},
+        profile,
+        step_logs,
+    )
+
+    assert author_node.value == "煜的奇思妙想"
+    assert any("作者字段只读，沿用微信现有作者" in log for log in step_logs)
+
+
+def test_ensure_wechat_author_before_publish_settings_keeps_readonly_existing_author():
+    profile = get_selector_profile("wechat-mp-v1")
+    author_node = _FakeNode(visible=True, read_only=True)
+    author_node.value = "煜的奇思妙想"
+    page = _FakePage(
+        {
+            "input.js_author": [author_node],
+        },
+        url="https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit",
+    )
+    step_logs: list[str] = []
+
+    author = _ensure_wechat_author_before_publish_settings(
+        page,
+        {"author": "AutoNews"},
+        profile,
+        step_logs,
+    )
+
+    assert author == "煜的奇思妙想"
+    assert author_node.value == "煜的奇思妙想"
+    assert any("声明前作者字段只读，沿用微信现有作者" in log for log in step_logs)
+
+
 def test_fill_wechat_editor_prefers_appmsg_editor_body_and_strips_markdown_heading():
     profile = get_selector_profile("wechat-mp-v1")
     title_node = _FakeNode(visible=True)
@@ -776,6 +889,32 @@ def test_ensure_wechat_ai_cover_clicks_cover_generation_flow_in_order():
     assert "AI 封面已生成 selector=p.ai-image__tips:has-text('已为你生成图片')" in step_logs
 
 
+def test_ensure_wechat_ai_cover_skips_generation_when_cover_preview_exists():
+    profile = get_selector_profile("wechat-mp-v1")
+    cover_preview = _FakeNode(visible=True)
+    cover_preview.background_image = "url(https://mmbiz.qpic.cn/example.jpg)"
+    cover_button = _FakeNode(visible=True)
+    page = _FakePage(
+        {
+            ".js_cover_preview_new": [cover_preview],
+            "div.select-cover__btn.js_cover_btn_area.select-cover__mask": [cover_button],
+        },
+        url="https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit",
+    )
+    step_logs: list[str] = []
+
+    prompt = _ensure_wechat_ai_cover(
+        page,
+        profile,
+        {"title": "已有封面", "summary": "封面已经存在", "markdown": "# 已有封面"},
+        step_logs,
+    )
+
+    assert prompt.startswith("公众号封面，")
+    assert cover_button.click_count == 0
+    assert "已检测到现有封面，跳过 AI 封面生成。" in step_logs
+
+
 def test_click_wechat_publish_until_qrcode_stops_with_scan_required_status():
     profile = get_selector_profile("wechat-mp-v1")
     publish_node = _FakeNode(visible=True)
@@ -785,7 +924,7 @@ def test_click_wechat_publish_until_qrcode_stops_with_scan_required_status():
     page = _FakePage(
         {
             "#js_send button.mass_send:has-text('发表')": [publish_node],
-            ".weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')": [modal_publish_node],
+            ".weui-desktop-popover__wrp .weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')": [modal_publish_node],
             "button.weui-desktop-btn_primary:has-text('继续发表')": [continue_node],
             ".dialog:has-text('微信验证') img.js_qrcode": [qrcode_node],
         },
@@ -811,12 +950,49 @@ def test_click_wechat_publish_until_qrcode_stops_with_scan_required_status():
     assert page._screenshots == [str(screenshot_path)]
     assert page._click_history == [
         "#js_send button.mass_send:has-text('发表')",
-        ".weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')",
+        ".weui-desktop-popover__wrp .weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')",
         "button.weui-desktop-btn_primary:has-text('继续发表')",
         "button.weui-desktop-btn_primary:has-text('继续发表')",
         "button.weui-desktop-btn_primary:has-text('继续发表')",
     ]
     assert "已到微信验证二维码 selector=.dialog:has-text('微信验证') img.js_qrcode" in step_logs
+
+
+def test_click_wechat_publish_until_qrcode_uses_popover_confirm_button():
+    profile = get_selector_profile("wechat-mp-v1")
+    publish_node = _FakeNode(visible=True)
+    popover_publish_node = _FakeNode(visible=True)
+    qrcode_node = _FakeNode(visible=True)
+    page = _FakePage(
+        {
+            "#js_send button.mass_send:has-text('发表')": [publish_node],
+            ".weui-desktop-popover__wrp .weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')": [
+                popover_publish_node
+            ],
+            ".dialog:has-text('微信验证') img.js_qrcode": [qrcode_node],
+        },
+        url="https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit",
+    )
+    step_logs: list[str] = []
+    screenshot_path = "runtime/test-artifacts/wechat-qrcode-popover.png"
+
+    delta, artifacts = _click_wechat_publish_until_qrcode(
+        page,
+        profile,
+        step_logs,
+        screenshot_path,
+        max_continue_clicks=0,
+        qrcode_retry_wait_ms=0,
+        max_qrcode_checks=1,
+    )
+
+    assert delta["verification_status"] == "wechat_qrcode_required"
+    assert artifacts == [str(screenshot_path)]
+    assert page._click_history == [
+        "#js_send button.mass_send:has-text('发表')",
+        ".weui-desktop-popover__wrp .weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')",
+    ]
+    assert "confirm_publish_modal 已点击 selector=.weui-desktop-popover__wrp .weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')" in step_logs
 
 
 def test_run_publish_to_qrcode_uses_existing_editor_path_without_saving_draft():
@@ -859,7 +1035,7 @@ def test_run_publish_to_qrcode_uses_existing_editor_path_without_saving_draft():
             "p.ai-image__tips:has-text('已为你生成图片')": [_FakeNode(visible=True)],
             ".ai-image-operation-group .ai-image-op-btn:has-text('使用')": [_FakeNode(visible=True)],
             "#js_send button.mass_send:has-text('发表')": [_FakeNode(visible=True)],
-            ".weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')": [_FakeNode(visible=True)],
+            ".weui-desktop-popover__wrp .weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')": [_FakeNode(visible=True)],
             "button.weui-desktop-btn_primary:has-text('继续发表')": [_FakeNode(visible=True)],
             ".dialog:has-text('微信验证') img.js_qrcode": [_FakeNode(visible=True)],
         },
@@ -910,6 +1086,90 @@ def test_run_publish_to_qrcode_uses_existing_editor_path_without_saving_draft():
     assert any("目标编辑页已确认，继续执行" in log for log in step_logs)
 
 
+def test_run_publish_to_qrcode_ignores_preview_url_and_clicks_remote_edit_button():
+    profile = get_selector_profile("wechat-mp-v1")
+    home = _FakePage(
+        {
+            ".new-creation__menu-item:has(.new-creation__menu-title:text-is('文章'))": [_FakeNode(visible=True)],
+            ".weui-desktop-account__thumb": [_FakeNode(visible=True)],
+            "a#menu_10125[href*='action=list_card']": [_FakeNode(visible=True)],
+            ".publish_card_container": [_FakeNode(visible=True)],
+        },
+        url="https://mp.weixin.qq.com/",
+    )
+    editor = _FakePage(
+        {
+            "textarea.js_article_title": [_FakeNode(visible=True)],
+            "input.js_author": [_FakeNode(visible=True)],
+            "textarea.js_desc": [_FakeNode(visible=True)],
+            "#edui1_iframeholder .mock-iframe-body .rich_media_content > div.ProseMirror[contenteditable='true']": [_FakeNode(visible=True)],
+            "#js_original": [_FakeNode(visible=True)],
+            "#js_reward_setting_area": [_FakeNode(visible=True)],
+            "div.js_article_tags_label": [_FakeNode(visible=True)],
+            "input.weui-desktop-form__input[placeholder='请选择合集']": [_FakeNode(visible=True)],
+            "li.select-opt-li:has-text('AI新闻')": [_FakeNode(visible=True)],
+            "div.js_claim_source_desc": [_FakeNode(visible=True)],
+            "label.weui-desktop-form__check-label:has-text('个人观点，仅供参考')": [_FakeNode(visible=True)],
+            "button.weui-desktop-btn.weui-desktop-btn_primary:has-text('确定')": [_FakeNode(visible=True)],
+            "button.weui-desktop-btn.weui-desktop-btn_primary:has-text('确认')": [
+                _FakeNode(visible=True),
+                _FakeNode(visible=True),
+                _FakeNode(visible=True),
+            ],
+            ".weui-desktop-btn_wrp button.weui-desktop-btn_primary:has-text('确认')": [_FakeNode(visible=True)],
+            "div.select-cover__btn.js_cover_btn_area.select-cover__mask": [_FakeNode(visible=True)],
+            "a.pop-opr__button.js_aiImage:has-text('AI 配图')": [_FakeNode(visible=True)],
+            "textarea#ai-image-prompt": [_FakeNode(visible=True)],
+            "button.send-btn": [_FakeNode(visible=True)],
+            "p.ai-image__tips:has-text('已为你生成图片')": [_FakeNode(visible=True)],
+            ".ai-image-operation-group .ai-image-op-btn:has-text('使用')": [_FakeNode(visible=True)],
+            "#js_send button.mass_send:has-text('发表')": [_FakeNode(visible=True)],
+            ".weui-desktop-popover__wrp .weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')": [_FakeNode(visible=True)],
+            "button.weui-desktop-btn_primary:has-text('继续发表')": [_FakeNode(visible=True)],
+            ".dialog:has-text('微信验证') img.js_qrcode": [_FakeNode(visible=True)],
+        },
+        url="https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit",
+    )
+    context = _FakeContext([home])
+    home._context = context
+    home._existing_editor_page = editor
+    home._close_fails = True
+    home._remote_draft_items = [
+        {
+            "title": "今日5条科技要闻｜字节AI四命题曝光 Anthropic研究AI意识 国芯芯片流",
+            "url": "https://mp.weixin.qq.com/s/preview-target",
+            "appmsg_id": None,
+            "updated_at": "2026-06-20",
+            "remote_key": "url:https://mp.weixin.qq.com/s/preview-target",
+        }
+    ]
+    step_logs: list[str] = []
+
+    delta, _, _, final_page = _run_publish_to_qrcode(
+        context,
+        home,
+        {
+            "id": "brief-preview-url-test",
+            "title": "今日5条科技要闻｜字节AI四命题曝光 Anthropic研究AI意识 国芯芯片流",
+            "summary": "科技要闻摘要。",
+            "markdown": "# 今日5条科技要闻\n\n这里是足够长的正文内容，用于验证打开已有草稿后的发布前路径。",
+        },
+        {"author": "AutoNews"},
+        "https://mp.weixin.qq.com/",
+        profile,
+        {},
+        step_logs,
+        "runtime/test-artifacts/wechat-publish-preview-url.png",
+    )
+
+    assert final_page is editor
+    assert delta["verification_status"] == "wechat_qrcode_required"
+    assert getattr(home, "_remote_edit_button_clicked", False) is True
+    assert getattr(home, "_preview_url_opened", False) is False
+    assert any("忽略草稿卡片非编辑链接" in log for log in step_logs)
+    assert any("已点击目标草稿编辑按钮" in log for log in step_logs)
+
+
 def test_run_browser_action_publish_wechat_article_returns_qrcode_required(monkeypatch):
     home = _FakePage(
         {
@@ -947,7 +1207,7 @@ def test_run_browser_action_publish_wechat_article_returns_qrcode_required(monke
             "p.ai-image__tips:has-text('已为你生成图片')": [_FakeNode(visible=True)],
             ".ai-image-operation-group .ai-image-op-btn:has-text('使用')": [_FakeNode(visible=True)],
             "#js_send button.mass_send:has-text('发表')": [_FakeNode(visible=True)],
-            ".weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')": [_FakeNode(visible=True)],
+            ".weui-desktop-popover__wrp .weui-desktop-btn_wrp[slot='target'] button.weui-desktop-btn_primary:has-text('发表')": [_FakeNode(visible=True)],
             "button.weui-desktop-btn_primary:has-text('继续发表')": [_FakeNode(visible=True)],
             ".dialog:has-text('微信验证') img.js_qrcode": [_FakeNode(visible=True)],
         },
@@ -967,7 +1227,7 @@ def test_run_browser_action_publish_wechat_article_returns_qrcode_required(monke
         ]
 
     class _FakeManager:
-        def with_session(self, _channel, restore_window, action_fn):
+        def with_session(self, _channel, restore_window, action_fn, **_kwargs):
             action_fn(context, home)
 
         def manager_state(self):
@@ -1086,4 +1346,28 @@ def test_browser_manager_reuses_live_page_when_cached_page_is_stale():
 
     assert selected is live_page
     assert manager._page is live_page
+    assert manager._last_action_phase == "page_recovered"
+
+
+def test_browser_manager_preserves_existing_editor_page_when_cached_page_is_missing():
+    manager = WechatBrowserManager()
+    home_page = _FakePage({}, url="https://mp.weixin.qq.com/cgi-bin/home?t=home/index")
+    editor_page = _FakePage(
+        {
+            "textarea.js_article_title": [_FakeNode(visible=True)],
+            ".ProseMirror": [_FakeNode(visible=True)],
+        },
+        url="https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=77",
+    )
+    context = _FakeContext([home_page, editor_page])
+
+    manager._page = None
+    manager.ensure_context = lambda _channel: context  # type: ignore[assignment]
+
+    selected = manager.ensure_page({}, "https://mp.weixin.qq.com/")
+
+    assert selected is editor_page
+    assert manager._page is editor_page
+    assert editor_page.url.endswith("action=edit&type=77")
+    assert home_page.closed is True
     assert manager._last_action_phase == "page_recovered"

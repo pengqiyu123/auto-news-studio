@@ -72,10 +72,14 @@ Copy-FileSafe (Join-Path $appRoot "stop.bat") (Join-Path $stageDir "stop.bat")
 Copy-FileSafe (Join-Path $appRoot "install.bat") (Join-Path $stageDir "install.bat")
 Copy-FileSafe (Join-Path $appRoot "doctor.bat") (Join-Path $stageDir "doctor.bat")
 Copy-FileSafe (Join-Path $appRoot ".env.example") (Join-Path $stageDir ".env.example")
+Copy-FileSafe (Join-Path $appRoot "AGENT.md") (Join-Path $stageDir "AGENT.md")
 Copy-FileSafe (Join-Path $appRoot "version.json") (Join-Path $stageDir "version.json")
 Copy-FileSafe (Join-Path $appRoot "README.md") (Join-Path $stageDir "README.md")
 Copy-FileSafe (Join-Path $appRoot "LICENSE") (Join-Path $stageDir "LICENSE")
 Copy-FileSafe (Join-Path $appRoot "docs\DISTRIBUTION.md") (Join-Path $stageDir "DISTRIBUTION.md")
+
+$docsTarget = Join-Path $stageDir "docs"
+Copy-DirFiltered (Join-Path $appRoot "docs\release") (Join-Path $docsTarget "release") @() @("*.tmp", "*.log")
 
 Ensure-Dir (Join-Path $stageDir "config")
 Ensure-Dir (Join-Path $stageDir "data\state")

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
-from threading import Thread
 import time
 import traceback
+from datetime import datetime
+from threading import Thread
 from typing import Any
 
 from ..db import database_write_enabled, persist_ingest_chain_state

@@ -19,6 +19,8 @@ import { draftTabs, intelTabs, systemTabs, type TabKey } from "./navigation/tabs
 const RUNTIME_POLL_INTERVALS = { active: 2000, running: 10000, idle: 10000 } as const;
 import { AlertsPage } from "./screens/alerts/page";
 import { useAlertsState } from "./screens/alerts/state";
+import { AnalysisPage } from "./screens/analysis/page";
+import { useAnalysisState } from "./screens/analysis/state";
 import { BriefsPage } from "./screens/briefs/page";
 import { useBriefsState } from "./screens/briefs/state";
 import { DraftBoxPage } from "./screens/draft_box/page";
@@ -100,6 +102,8 @@ export default function App() {
     setDashboard,
     summary,
     setSummary,
+    trends,
+    loadTrends,
     refreshOverviewData,
   } = useOverviewState({
     onBrowserSessionChange: setBrowserSession,
@@ -127,6 +131,33 @@ export default function App() {
     alertHistory,
     loadAlertsData,
   } = useAlertsState();
+
+  const {
+    topics: analysisTopics,
+    trends: analysisTrends,
+    signals: analysisSignals,
+    relatedEvents: analysisRelatedEvents,
+    topicsPeriodicity: analysisTopicsPeriodicity,
+    temporalRules: analysisTemporalRules,
+    batchStatus: analysisBatchStatus,
+    topicEventsByTopicId: analysisTopicEventsByTopicId,
+    loadingTopicIds: analysisLoadingTopicIds,
+    reports: analysisReports,
+    currentReport: analysisCurrentReport,
+    reportDetailsById: analysisReportDetailsById,
+    feedbackStats: analysisFeedbackStats,
+    generatingReport: analysisGeneratingReport,
+    timeRange: analysisTimeRange,
+    setTimeRange: setAnalysisTimeRange,
+    loading: analysisLoading,
+    loadAnalysisData,
+    loadTopicEvents: loadAnalysisTopicEvents,
+    submitFeedback: submitAnalysisFeedback,
+    generateReport: generateAnalysisReport,
+    loadReportDetail: loadAnalysisReportDetail,
+  } = useAnalysisState({
+    onError: (message) => setError(message),
+  });
 
   const {
     watchlistEvents,
@@ -457,10 +488,13 @@ export default function App() {
         await loadStreamData(streamPage, streamPageSize, streamFilters);
         break;
       case "events":
-        await Promise.all([loadEventsWithFilters(eventsPage, eventsPageSize, eventsFilters), loadEntityWatchlist()]);
+        await Promise.all([loadEventsWithFilters(eventsPage, eventsPageSize, eventsFilters), loadEntityWatchlist(), loadTrends()]);
         break;
       case "alerts":
         await loadAlertsData();
+        break;
+      case "analysis":
+        await loadAnalysisData();
         break;
       case "source-health":
         await loadSourceHealthData();
@@ -707,6 +741,7 @@ export default function App() {
                 runtime={dashboard.runtime_status}
                 freshness={dashboard.freshness}
                 entityWatchlistSummary={dashboard.entity_watchlist_summary}
+                trends={trends}
                 runtimePlan={dashboard.runtime_plan}
                 savingRuntimePlan={savingRuntimePlan}
                 busyRuntimeAction={busyRuntimeAction}
@@ -778,6 +813,7 @@ export default function App() {
                 runtime={dashboard.runtime_status}
                 entityWatchlist={managedEntityWatchlist}
                 entityWatchlistSummary={dashboard.entity_watchlist_summary}
+                trends={trends}
                 selectedEntityId={selectedEntityId}
                 onSelectedEntityChange={(entityId) => {
                   setHighlightEventId(undefined);
@@ -856,11 +892,47 @@ export default function App() {
               />
             ) : null}
 
+            {activeTab === "analysis" ? (
+              <AnalysisPage
+                topics={analysisTopics}
+                trends={analysisTrends}
+                signals={analysisSignals}
+                relatedEvents={analysisRelatedEvents}
+                topicsPeriodicity={analysisTopicsPeriodicity}
+                temporalRules={analysisTemporalRules}
+                batchStatus={analysisBatchStatus}
+                topicEventsByTopicId={analysisTopicEventsByTopicId}
+                loadingTopicIds={analysisLoadingTopicIds}
+                reports={analysisReports}
+                currentReport={analysisCurrentReport}
+                reportDetailsById={analysisReportDetailsById}
+                feedbackStats={analysisFeedbackStats}
+                generatingReport={analysisGeneratingReport}
+                loading={Boolean(tabLoading.analysis) || analysisLoading}
+                timeRange={analysisTimeRange}
+                onTimeRangeChange={setAnalysisTimeRange}
+                onRefresh={async () => {
+                  setTabLoading((current) => ({ ...current, analysis: true }));
+                  try {
+                    await loadAnalysisData();
+                  } finally {
+                    setTabLoading((current) => ({ ...current, analysis: false }));
+                  }
+                }}
+                onLoadTopicEvents={loadAnalysisTopicEvents}
+                onNavigate={(tab, context) => navigateToTab(tab, context)}
+                onSubmitFeedback={submitAnalysisFeedback}
+                onGenerateReport={generateAnalysisReport}
+                onLoadReportDetail={loadAnalysisReportDetail}
+              />
+            ) : null}
+
             {activeTab === "watchlist" ? (
               <WatchlistPage
                 items={watchlistEvents.filter((event) => (event.watchlisted || event.deep_dive_id || event.brief_id) && !event.ignored)}
                 selectedDeepDive={selectedDeepDive}
                 busyEventId={busyEventId}
+                loading={Boolean(tabLoading.watchlist)}
                 onDeepDive={handleDeepDiveEvent}
                 onCreateBrief={handleCreateBrief}
                 onOpenDeepDive={handleOpenDeepDive}
@@ -913,6 +985,7 @@ export default function App() {
                 onCopyBrief={handleCopyBrief}
                 onCopyPackage={handleCopyBriefPackage}
                 onSyncBrief={(brief) => handleBriefAction("sync", brief)}
+                onPublishBrief={(brief) => handleBriefAction("publish", brief)}
                 onDeleteBrief={handleDeleteBrief}
                 onAbandonAgentWorkflow={handleAbandonAgentWorkflow}
               />
@@ -922,6 +995,7 @@ export default function App() {
               <PublishHistoryPage
                 history={wechatPublishHistory}
                 refreshing={refreshingPublishHistory}
+                loading={Boolean(tabLoading["publish-history"])}
                 onRefresh={handleRefreshWeChatPublishHistory}
               />
             ) : null}
@@ -938,6 +1012,7 @@ export default function App() {
                 publishTasksPageSize={publishTasksPageSize}
                 publishTasksTotal={publishTasksTotal}
                 refreshing={refreshingMapping}
+                loading={Boolean(tabLoading["draft-box"])}
                 deletingRemoteId={deletingRemoteId}
                 loadingBriefDetailId={loadingBriefDetailId}
                 onRefresh={handleRefreshWeChatMapping}
@@ -1003,6 +1078,7 @@ export default function App() {
                 savingRuntimePlan={savingRuntimePlan}
                 onSaveRuntimePlan={handleSaveRuntimePlan}
                 onSetAutomationMode={handleSetAutomationMode}
+                loading={Boolean(tabLoading.settings)}
               />
             ) : null}
 

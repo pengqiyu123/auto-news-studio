@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .wechat_format import strip_markdown_title
-
 
 WECHAT_TITLE_LIMIT = 64
 WECHAT_TITLE_HOOK_LIMIT = 28
@@ -110,6 +109,24 @@ _DOUYIN_DROP_SECTION_TITLES = {
     "引用来源",
     "消息来源",
 }
+_DOUYIN_DAILY_NEWS_INTERNAL_PATTERNS = (
+    r"\d+\s*个\s*平台\s*同时出现",
+    r"\d+\s*分钟\s*新增\s*\d+\s*条",
+    r"事件覆盖\s*\d+\s*个\s*平台",
+    r"\d+\s*个\s*来源",
+    r"成员数\s*\d+",
+    r"事件已进入深挖池",
+    r"可继续生成简报",
+    r"更贴近公众号",
+    r"来源仍偏少",
+    r"当前来源仍偏少",
+    r"还不确定",
+    r"不确定项",
+    r"正文深挖",
+    r"brief",
+    r"deep[_\s-]?dive",
+)
+_DOUYIN_DAILY_NEWS_ORDINALS = ("首先是", "第二条，", "第三条，", "第四条，", "最后一条，")
 
 
 def _contains_cjk(value: str) -> bool:
@@ -753,7 +770,9 @@ def build_prompt_package_markdown(
     guide = str(article_writing_guide or build_agent_article_writing_guide()).strip()
     lines = [
         "## 写作任务",
-        "基于以下已核验素材，写一篇 800-1000 字的公众号文章。",
+        "基于以下已核验素材，写一篇 800-1000 字的微信公众号发布稿。",
+        "目标不是新闻简报，而是让普通读者愿意点开、读完、转发给朋友；不要输出后台素材稿或结构化审阅稿。",
+        "标题要有冲突感、利益关系或悬念，开头 80 字内说清这件事和普通人、开发者、消费者、公司账单或未来设备有什么关系。",
         "同时生成一段 40-60 字的摘要，摘要与标题互补（标题说了 What，摘要说 Why 或 How），推送时显示在标题下方。",
         "",
     ]
@@ -1117,6 +1136,229 @@ def _daily_digest_date_label() -> str:
     return datetime.now(timezone(timedelta(hours=8))).date().isoformat()
 
 
+def _daily_digest_chinese_date_label() -> str:
+    now = datetime.now(timezone(timedelta(hours=8)))
+    return f"{now.year}年{now.month}月{now.day}日"
+
+
+def _is_douyin_daily_news_internal_text(value: str) -> bool:
+    compact = _normalize_compact_text(_remove_inline_markdown(value))
+    if not compact:
+        return True
+    if _is_url_only(compact):
+        return True
+    return any(re.search(pattern, compact, flags=re.IGNORECASE) for pattern in _DOUYIN_DAILY_NEWS_INTERNAL_PATTERNS)
+
+
+def _clean_douyin_daily_news_sentence(value: str, *, limit: int = 120) -> str:
+    compact = _normalize_compact_text(_remove_inline_markdown(value))
+    compact = re.sub(r"https?://\S+", "", compact).strip()
+    compact = re.sub(r"^[\u4e00-\u9fffA-Za-z0-9·（）()《》]{2,18}(?:提到|报道|称|消息|获悉)[:：]\s*", "", compact)
+    compact = compact.strip(" \t\r\n-—_|｜/\\:：;；，,。")
+    if not compact or _is_douyin_daily_news_internal_text(compact):
+        return ""
+    sentence = _pick_first_sentence(compact) or compact
+    sentence = sentence.strip(" \t\r\n-—_|｜/\\:：;；，,。")
+    if not sentence or _is_douyin_daily_news_internal_text(sentence):
+        return ""
+    return _trim_to_limit(sentence, limit)
+
+
+def _douyin_daily_news_display_title(value: str, *, limit: int = 80) -> str:
+    title = _normalize_compact_text(_remove_inline_markdown(value))
+    title = re.sub(r"https?://\S+", "", title).strip(" \t\r\n-—_|｜/\\:：;；，,。")
+    if len(title) <= limit:
+        return title
+    for marker in ("。", "！", "？", "；", "，", "、"):
+        prefix = title[:limit].rsplit(marker, 1)[0].strip(" ，,、:：;；-")
+        if len(prefix) >= 18:
+            return prefix
+    return _trim_to_limit(title, limit)
+
+
+def _douyin_daily_news_focus_title(value: str, *, limit: int = 28) -> str:
+    title = _normalize_compact_text(value)
+    if len(title) <= limit:
+        return title
+    for marker in ("：", ":", "｜", "|", "，", "、", " "):
+        prefix = title.split(marker, 1)[0].strip(" ，,、:：;；-")
+        if 4 <= len(prefix) <= limit:
+            return prefix
+    for marker in ("。", "！", "？", "；", "，", "、"):
+        prefix = title[:limit].rsplit(marker, 1)[0].strip(" ，,、:：;；-")
+        if len(prefix) >= 8:
+            return prefix
+    return _trim_to_limit(title, limit)
+
+
+def _douyin_daily_news_source_texts(deep_dive: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for source in deep_dive.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        for key in ("cleaned_full_text", "summary", "title"):
+            text = str(source.get(key) or "").strip()
+            if text:
+                texts.append(text)
+    return texts
+
+
+def _extract_douyin_daily_news_codes(value: str) -> set[str]:
+    compact = _normalize_compact_text(value).upper()
+    return set(re.findall(r"\b[A-Z]{1,8}\d{2,8}[A-Z0-9-]*\b", compact))
+
+
+def _conflicts_with_douyin_daily_news_title(candidate: str, event_title: str) -> bool:
+    title_codes = _extract_douyin_daily_news_codes(event_title)
+    if not title_codes:
+        return False
+    candidate_codes = _extract_douyin_daily_news_codes(candidate)
+    return bool(candidate_codes - title_codes)
+
+
+def _pick_douyin_daily_news_detail(
+    event: dict[str, Any],
+    deep_dive: dict[str, Any],
+    event_facts: list[str],
+    event_title: str,
+) -> str:
+    candidates: list[str] = []
+    candidates.extend(event_facts)
+    candidates.extend(_douyin_daily_news_source_texts(deep_dive))
+    candidates.extend([str(event.get("summary") or ""), str(deep_dive.get("summary") or "")])
+
+    normalized_title = _normalize_compact_text(event_title)
+    for candidate in candidates:
+        sentence = _clean_douyin_daily_news_sentence(candidate)
+        if not sentence:
+            continue
+        if _conflicts_with_douyin_daily_news_title(sentence, normalized_title):
+            continue
+        if normalized_title and sentence == normalized_title:
+            continue
+        if normalized_title and sentence.startswith(normalized_title):
+            tail = sentence[len(normalized_title) :].strip(" ，,、:：;；-")
+            if tail and not _is_douyin_daily_news_internal_text(tail):
+                return _trim_to_limit(tail, 120)
+        return sentence
+    return "这条消息已经进入今日信息池，但关键细节还要等更多来源补齐。"
+
+
+def _pick_douyin_daily_news_details(
+    event: dict[str, Any],
+    deep_dive: dict[str, Any],
+    event_facts: list[str],
+    event_title: str,
+    *,
+    limit: int = 2,
+) -> list[str]:
+    details: list[str] = []
+    candidates: list[str] = []
+    candidates.extend(event_facts)
+    candidates.extend(_douyin_daily_news_source_texts(deep_dive))
+    candidates.extend([str(event.get("summary") or ""), str(deep_dive.get("summary") or "")])
+    normalized_title = _normalize_compact_text(event_title)
+    seen: set[str] = set()
+    for candidate in candidates:
+        sentence = _clean_douyin_daily_news_sentence(candidate)
+        if not sentence:
+            continue
+        if _conflicts_with_douyin_daily_news_title(sentence, normalized_title):
+            continue
+        if normalized_title and sentence == normalized_title:
+            continue
+        if normalized_title and sentence.startswith(normalized_title):
+            tail = sentence[len(normalized_title) :].strip(" ，,、:：;；-")
+            if tail and not _is_douyin_daily_news_internal_text(tail):
+                sentence = _trim_to_limit(tail, 120)
+        key = _normalize_compact_text(sentence)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        details.append(sentence)
+        if len(details) >= limit:
+            break
+    if details:
+        return details
+    return [_pick_douyin_daily_news_detail(event, deep_dive, event_facts, event_title)]
+
+
+def _douyin_daily_news_watch_phrase(event: dict[str, Any]) -> str:
+    tags = [str(item).strip() for item in event.get("tags", []) if str(item).strip()]
+    title = str(event.get("title") or "")
+    text = " ".join([title, *tags]).lower()
+    if any(keyword in text for keyword in ("芯片", "半导体", "gpu", "pcie", "固态", "存储")):
+        return "这背后最该看的是供应链、性能和量产节奏会不会真的跟上。"
+    if any(keyword in text for keyword in ("ai", "大模型", "token", "agent", "gemini", "openai")):
+        return "这背后最该看的是 AI 能力会不会真正变成用户和企业能用上的产品。"
+    if any(keyword in text for keyword in ("机器人", "自动驾驶", "无人", "具身")):
+        return "这背后最该看的是它能不能从演示走到真实场景里稳定干活。"
+    if any(keyword in text for keyword in ("航天", "火箭", "spacex", "星舰", "卫星")):
+        return "这背后最该看的是下一次验证能不能把商业化和规模化再往前推一步。"
+    return "这件事后续最该看的是它能不能真正落到产品、价格或产业链变化上。"
+
+
+def _build_douyin_daily_news_paragraph(index: int, event_title: str, detail: str) -> str:
+    ordinal = _DOUYIN_DAILY_NEWS_ORDINALS[index - 1] if index <= len(_DOUYIN_DAILY_NEWS_ORDINALS) else f"第{index}条，"
+    title_text = _normalize_compact_text(event_title)
+    detail_text = _normalize_compact_text(detail)
+    if detail_text and title_text and detail_text not in title_text:
+        return f"{ordinal}{title_text}！{detail_text}，这件事后续最该看的是它能不能真正落到产品、价格或产业链变化上。"
+    return f"{ordinal}{title_text}！这件事后续最该看的是它能不能真正落到产品、价格或产业链变化上。"
+
+
+def _build_douyin_daily_news_story_paragraph(
+    index: int,
+    event: dict[str, Any],
+    deep_dive: dict[str, Any],
+    event_facts: list[str],
+    event_title: str,
+) -> str:
+    ordinal = _DOUYIN_DAILY_NEWS_ORDINALS[index - 1] if index <= len(_DOUYIN_DAILY_NEWS_ORDINALS) else f"第{index}条，"
+    title_text = _normalize_compact_text(event_title)
+    details = _pick_douyin_daily_news_details(event, deep_dive, event_facts, event_title)
+    proof = "；".join(details)
+    watch_phrase = _douyin_daily_news_watch_phrase(event)
+    if proof and title_text and proof not in title_text:
+        return f"{ordinal}{title_text}！{proof}，{watch_phrase}"
+    return f"{ordinal}{title_text}！{watch_phrase}"
+
+
+def _normalize_douyin_daily_news_body(lines: list[str]) -> str:
+    body = "\n\n".join(line.strip() for line in lines if str(line or "").strip()).strip()
+    return re.sub(r"\n{3,}", "\n\n", body)
+
+
+def build_douyin_daily_news_markdown(
+    qualified: list[tuple[dict[str, Any], dict[str, Any], list[str], list[str]]],
+    *,
+    title: str = "今日5条科技要闻",
+    max_items: int = 5,
+) -> tuple[str, str, str]:
+    """Build a Douyin-first daily tech-news roundup from verified events."""
+    selected = qualified[:max_items]
+    count = len(selected)
+    douyin_title = _trim_to_limit(title, DOUYIN_TITLE_LIMIT)
+    douyin_summary = _trim_to_limit(f"整理今日最值得关注的 {count} 条科技要闻", DOUYIN_SUMMARY_LIMIT)
+    date_label = _daily_digest_chinese_date_label()
+    lines = [
+        f"朋友们，今天咱们来盘一盘{date_label}最值得关注的{count}条科技要闻，每一条都可能影响接下来的科技走向！",
+    ]
+
+    closing_titles: list[str] = []
+    for index, (event, deep_dive, event_facts, _event_links) in enumerate(selected, start=1):
+        event_title = _douyin_daily_news_display_title(str(event.get("title") or deep_dive.get("title") or f"科技要闻 {index}"))
+        lines.append(_build_douyin_daily_news_story_paragraph(index, event, deep_dive, event_facts, event_title))
+        closing_titles.append(event_title)
+
+    if closing_titles:
+        focus_titles = "，".join(_douyin_daily_news_focus_title(item) for item in closing_titles[:2])
+        lines.append(f"朋友们，这{count}条新闻里，你最关心哪一个？是{focus_titles}，还是后面这些新变化？评论区聊聊你的看法呀！")
+
+    body = _normalize_douyin_daily_news_body(lines)
+    return douyin_title, douyin_summary, ensure_markdown_title(body, douyin_title)
+
+
 def build_daily_digest_brief_payload(events: list[dict[str, Any]], deep_dives: list[dict[str, Any]]) -> dict[str, Any]:
     """Build one rule-only WeChat digest from multiple already-verified events."""
     def _clean_values(value: Any) -> list[str]:
@@ -1146,8 +1388,8 @@ def build_daily_digest_brief_payload(events: list[dict[str, Any]], deep_dives: l
         if len(qualified) >= 5:
             break
 
-    if len(qualified) < 2:
-        raise ValueError("今日短讯合集至少需要 2 条合格事件。")
+    if len(qualified) < 5:
+        raise ValueError("今日短讯合集必须由 5 条合格事件组成。")
 
     date_label = _daily_digest_date_label()
     title = f"今日科技速递｜{date_label}"
@@ -1194,7 +1436,7 @@ def build_daily_digest_brief_payload(events: list[dict[str, Any]], deep_dives: l
     unique_entities = list(dict.fromkeys(entity_names))[:12]
     unique_tags = list(dict.fromkeys(tags))[:8]
     unique_risks = list(dict.fromkeys(risk_notes))[:5]
-    summary = f"今日筛选出 {len(qualified)} 条值得关注的科技动态。"
+    summary = "今日筛选出 5 条值得关注的科技动态。"
     one_line = summary
     why_parts = [summary.rstrip("。")]
     if len(unique_entities) >= 3:
@@ -1213,7 +1455,7 @@ def build_daily_digest_brief_payload(events: list[dict[str, Any]], deep_dives: l
         status_parts.append(f"{rising_count} 条处于上升状态")
     if status_parts:
         why_parts.append("其中 " + "、".join(status_parts))
-    why_it_matters = "，".join(why_parts) + "，适合短讯快速扫读。"
+    why_it_matters = "，".join(why_parts) + "，组成一篇完整短讯合集。"
     wechat_markdown = "\n".join(
         [
             f"# {title}",
@@ -1225,18 +1467,7 @@ def build_daily_digest_brief_payload(events: list[dict[str, Any]], deep_dives: l
             *list(dict.fromkeys(source_lines))[:10],
         ]
     ).strip()
-    douyin_title = build_douyin_title(title)
-    douyin_summary = build_douyin_summary(summary, douyin_title or title)
-    douyin_markdown = build_douyin_article_markdown(
-        title=douyin_title or title,
-        summary=douyin_summary,
-        article_markdown=wechat_markdown,
-        one_line=one_line,
-        why_it_matters=why_it_matters,
-        facts=facts[:6],
-        timeline=timeline[:6],
-        source_links=unique_links,
-    )
+    douyin_title, douyin_summary, douyin_markdown = build_douyin_daily_news_markdown(qualified)
     prompt_package_markdown = build_prompt_package_markdown(
         title=title,
         one_line=one_line,
@@ -1342,52 +1573,126 @@ def build_agent_article_writing_guide() -> str:
 你是一位在科技媒体行业深耕多年的资深记者，为微信公众号撰写深度科技分析文章。
 你的写作不是汇报材料、不是论文，也不是为了凑字数的长文。你需要先判断当前事件适合短讯、长文，还是不写。
 
+### 核心写作目标
+- 目标是有事实纪律的强表达：事实准确是底线，表达要有点击理由、观点锋芒和普通人能感到的利益关系。
+- 标题必须优先制造点击理由，而不是概括栏目名；读者一眼要知道为什么这和自己有关。
+- 开头 80 字内必须回答：这件事和普通人、开发者、消费者、公司账单或未来设备有什么关系。
+- 正文每个信息点都要用大白话解释“这是什么概念”“可能影响谁”“现在还不能确定什么”。
+- 允许有冲突感、利益关系、悬念和口语表达，也可以写“开始让人付账”“谁会被迫改规则”“下一代入口正在抢位”这类判断句。
+- 强表达的边界：不能把推测写成确定事实，不能把个体案例写成普遍结论，不能承诺素材没有证明的未来结果。
+- 对泄露、传闻、媒体转述、个体反馈、测试中产品，必须保留“据报道”“有消息称”“还要等官方确认”“个体反馈不代表所有用户”等限定词。
+
 ### 先判断内容形态
 不要默认写长文。先根据事件热度、来源数量、事实完整度和读者价值选择形态：
 
 1. 不写
    - 来源不足、时间过旧、只是重复消息、没有明确读者价值，或者关键事实无法确认。
-2. 短讯
-   - 适合多数日常事件。
-   - 事件有一个清楚的信息点，来源和事实足够支撑发布，但不需要展开成长文。
-   - 多个小事件可以分别写成多条短讯，不要硬塞进一篇长文。
+2. 短讯合集
+   - 适合多数日常信息流。
+   - 必须由 5 条相互衔接的科技要闻组成一篇完整文章，每条 2-3 句。
+   - 单个事件不能叫短讯；单个事件只能写成长文、单事件快讯素材，或不写。
 3. 长文
    - 只适合重大事件、复杂政策/产品变化、多来源冲突、需要对比分析或读者确实需要一次性搞懂的话题。
 4. 混合
-   - 当天有一个主事件和几个小事件时，可以写一篇长文加几条短讯。
+   - 当天有一个主事件和多个小事件时，可以写一篇长文加一篇 5 条短讯合集。
 
 ### 字数要求
-- 短讯：300-600 字，不含来源链接。
+- 短讯合集：由 5 条科技要闻组成，整体约 600-1000 字，不含来源链接。
 - 长文：800-1000 字，不含标题、摘要和来源链接。
 
-### 短讯结构
-短讯不需要角度规划，不要扩写成小长文。只回答三个问题：
+### 短讯合集结构
+短讯不是单事件小长文。它必须像“今日5条科技要闻”一样，把 5 个信息点连成一篇完整速递。每条只回答三个问题：
 
 1. 发生了什么？
 2. 为什么值得看？
 3. 现在还不能下什么结论？
 
-短讯推荐结构：
+本地审阅稿可以使用下面这种结构，方便核对事实和来源：
 
 ```markdown
-# 标题
+# 今日科技速递｜YYYY-MM-DD
 
-一句话：50 字以内说清发生了什么。
+今天整理 5 条最值得关注的科技要闻，每条只说发生了什么、为什么该看、还要等什么确认。
 
-## 核心事实
-用 1-3 个短段落或少量列表写清可核验事实。
+## 1. 事件标题
+2-3 句：发生了什么 + 为什么值得看 + 还不确定什么。
 
-## 这意味着什么
-用 1 段说明读者为什么需要知道，不要夸大。
+## 2. 事件标题
+2-3 句。
 
-## 还不确定什么
-写明未披露、未确认、来源不足、仍需观察的部分。
+## 3. 事件标题
+2-3 句。
+
+## 4. 事件标题
+2-3 句。
+
+## 5. 事件标题
+2-3 句。
 
 ## 来源链接
 - https://example.com
 ```
 
-短讯禁止事项：
+但发到微信、抖音或其他平台前，必须再润色成自然连贯的发布稿。发布稿不是后台素材卡，也不是 Markdown 目录；它应该像编辑直接讲给读者听：
+
+```markdown
+# 今日科技速递｜YYYY-MM-DD
+
+朋友们，今天咱们不聊长篇大论，直接盘 5 条最近最值得关注的科技小新闻，全是干货。
+
+首先是[事件1]——[发生了什么]。[为什么值得看]，不过[还不确定什么]。
+
+然后是[事件2]——[发生了什么]。[为什么值得看]，但[还不确定什么]。
+
+接下来是[事件3]——[发生了什么]。[为什么值得看]，还要等[不确定项]确认。
+
+再说[事件4]——[发生了什么]。[为什么值得看]，风险在于[不确定项]。
+
+最后是[事件5]——[发生了什么]。[为什么值得看]，后续还要观察[不确定项]。
+
+这 5 条其实都指向同一个趋势：[用一句话收束共同趋势]。
+```
+
+平台发布稿要求：
+- 不要保留 `## 1.`、`## 来源链接`、裸 URL 列表。
+- 不要出现“核心事实”“这意味着什么”“还不确定什么”这类后台字段名。
+- 5 条之间要用“首先 / 然后 / 接下来 / 再说 / 最后”自然衔接。
+- 每条仍然必须包含事实、意义和不确定项，不能为了口语化丢掉事实纪律。
+- 如果只完成了结构化素材稿，还不能上传，只能保存到本地。
+
+可直接交给 AI 的短讯润色提示词：
+
+```text
+你会收到一份“本地短讯素材稿”，里面有 5 条科技新闻、事实、不确定项和来源。请把它改写成适合平台发布的一篇完整短讯合集。
+
+目标风格：
+- 像编辑在直接讲给读者听，口语自然，有冲突感和利益关系，但不要假确定。
+- 不要写成长文分析，也不要写成机械列表。
+- 一篇文章必须正好包含 5 条信息，不能少于 5 条，也不能把单条新闻写成短讯。
+
+结构要求：
+1. 开头用 1-2 句话直接抛出共同钩子，例如“AI 正从聊天框钻进电脑、账单、出行和随身设备里”。
+2. 正文用“首先 / 然后 / 接下来 / 再说 / 最后”自然串联 5 条。
+3. 每条用 2-4 句说清：发生了什么、普通人怎么理解、可能影响谁、还不确定什么。
+4. 结尾用 1 段收束 5 条新闻共同指向的趋势。
+
+禁止事项：
+- 不要保留 `## 1.`、`## 来源链接`、裸 URL、素材包字段名。
+- 不要出现“核心事实”“这意味着什么”“还不确定什么”这种后台栏目名。
+- 不要新增素材里没有的数字、日期、价格、人名、产品能力。
+- 不要把“可能”“预计”“测试中”写成已经确定发生。
+- 不要把单个开发者反馈、单份研报、单地价格变化写成所有人都会立刻遇到的结果。
+
+输入：
+{{本地短讯素材稿}}
+
+输出：
+只输出平台发布稿 Markdown。标题用 `#`，正文只保留自然段，不要附来源链接列表。
+```
+
+短讯合集禁止事项：
+- 不要把单个事件写成一篇短讯上传。
+- 不要少于 5 条；如果不足 5 条合格事件，宁可不生成短讯合集。
 - 不要为了凑字数写行业大背景。
 - 不要把单一事实包装成趋势判断。
 - 不要编造未来影响。
@@ -1395,8 +1700,10 @@ def build_agent_article_writing_guide() -> str:
 
 ### 标题策略（决定打开率）
 - 字数 14-25 字，前 14 字必须放最关键的信息点，避免折叠后失真
+- 标题不要写成“今日科技速递”“5条科技小新闻”这类栏目名，除非后半句已经给出强钩子。
 - 标题至少包含一个具体信息点：公司名、人名、数字、产品名
 - 标题中的每个信息点必须在正文或素材中找到对应事实，不做标题党
+- 标题优先选择“谁要付账”“谁被迫改规则”“普通人会感到什么变化”“旧格局哪里被挑战”这类利益或冲突角度
 - 禁止使用”重磅””震惊””值得关注””引发热议”等空洞词汇
 - 从以下公式中选择最适合当前事件的 1 种，生成 2-3 个备选标题：
   1. 数字冲击型：[公司] + [具体数字] + [事件后果]
@@ -1411,6 +1718,10 @@ def build_agent_article_writing_guide() -> str:
      例：”实测 20 个场景：Claude 4 和 GPT-5 谁更强？”
   6. 直述事实型：刚刚/确认 + [核心事实]
      例：”确认：谷歌发布 Gemini 2.0，多模态能力翻倍”
+  7. 付账/代价型：[变化] + [谁开始付账/承压]
+     例：”AI 账单变贵了，开发者先感受到压力”
+  8. 入口争夺型：[公司/产品] + [正在抢的入口]
+     例：”Meta 想把 AI 入口挂到你身上”
 
 ### 摘要（推送时显示在标题下方，约 50 字）
 - 摘要与标题互补，不重复标题
@@ -1422,7 +1733,8 @@ def build_agent_article_writing_guide() -> str:
 
 **第一部分：导语（50-80 字，2-3 句）**
 - 第一句必须是具体事实、数字或时间点，不要以宏大背景开头
-- 第二句说明这件事意味着什么，为什么与读者有关
+- 第二句说明这件事意味着什么，为什么与读者有关；优先写普通人能感到的入口、账单、设备、工作流、出行、隐私或安全变化
+- 导语不能只是“今天整理几条新闻”，必须给出一个共同钩子或冲突
 
 **第二部分：背景与冲突（80-120 字）**
 - 交代技术、商业或政策背景
@@ -1502,6 +1814,8 @@ def build_agent_article_writing_guide() -> str:
 - 禁止每段结构完全一致（是什么->为什么->怎么做的三段式重复）
 - 禁止出现”本文将从以下几个方面展开”之类的元描述
 - 禁止过度使用”然而”、”与此同时”、”值得注意的是”等过渡词
+- 禁止虚假确定：不能写“马上普及”“彻底改变”“再也不会卡顿”“不用担心安全问题”等素材没有证明的承诺
+- 禁止把局部现象放大全局：例如个体账单、单地价格、测试城市、传闻产品，不能写成所有用户已经受到同等影响
 
 **禁止出现这些高频 AI 味词或近义表达：{banned_phrases}
 - 如果一个词在政府工作报告中经常出现，不要用在科技新闻正文中

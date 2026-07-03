@@ -5,7 +5,6 @@ import pkgutil
 from pathlib import Path
 from typing import Any
 
-
 SOURCES_ROOT = Path(__file__).resolve().parent
 DISCOVERY_FOLDERS = ("hotlists", "rss", "monitors")
 

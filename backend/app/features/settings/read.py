@@ -1,5 +1,5 @@
-from ...routes.common import get_store
 from ...llm.cc_switch import get_cc_switch_db_path, read_cc_switch_providers
+from ...routes.common import get_store
 
 
 def get_wechat_channel():

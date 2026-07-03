@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timedelta
-import re
 from typing import Any
 from uuid import uuid4
 
@@ -15,7 +15,6 @@ from .base import (
     RUN_STALE_SECONDS,
     UTC,
     local_now,
-    now_iso,
     parse_clock_time,
     parse_time,
     schedule_to_minutes,

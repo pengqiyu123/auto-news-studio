@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from html import unescape
-from http.client import IncompleteRead
 import json
 import os
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from html import unescape
+from http.client import IncompleteRead
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -19,7 +20,7 @@ except Exception:  # pragma: no cover - optional dependency
     feedparser = None
 
 
-UTC = timezone.utc
+UTC = UTC
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AutoNewsStudio/1.0"
 SOURCE_TIMEOUT_SECONDS = 12
 

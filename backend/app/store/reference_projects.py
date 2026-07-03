@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import subprocess
+from pathlib import Path
 from typing import Any
-
 
 PROJECT_ROOT = Path(r"D:\python\Auto-news2\projects")
 REFERENCES_ROOT = Path(r"D:\python\Auto-news2\auto-news-studio\references")

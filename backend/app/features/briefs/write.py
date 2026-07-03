@@ -25,6 +25,10 @@ def sync_brief_wechat_draft(brief_id: str, triggered_by: str):
     return get_store().sync_brief_wechat_draft(brief_id, triggered_by=triggered_by)
 
 
+def publish_brief_wechat_article(brief_id: str, triggered_by: str):
+    return get_store().publish_brief_wechat_article(brief_id, triggered_by=triggered_by)
+
+
 def delete_brief(brief_id: str, remote: str):
     return get_store().delete_brief(brief_id, remote=remote)
 
@@ -51,6 +55,10 @@ def abandon_agent_workflow_page(workflow_session_id: str, triggered_by: str):
 
 def sync_brief_wechat_draft_page(brief_id: str, triggered_by: str):
     return {"item": sync_brief_wechat_draft(brief_id, triggered_by=triggered_by)}
+
+
+def publish_brief_wechat_article_page(brief_id: str, triggered_by: str):
+    return {"item": publish_brief_wechat_article(brief_id, triggered_by=triggered_by)}
 
 
 def delete_brief_page(brief_id: str, remote: str):

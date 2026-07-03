@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager, suppress
 import os
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -9,9 +9,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .api.admin.agent_analytics import router as agent_analytics_router
+from .features.analysis.scheduler import register_analysis_batch_jobs
 from .publishers import WECHAT_BROWSER_MANAGER
 from .routes import (
     build_agent_html_router,
+    build_analysis_router,
     build_base_router,
     build_browser_router,
     build_content_router,
@@ -21,9 +24,9 @@ from .routes import (
     build_wechat_router,
 )
 from .routes.common import set_store
+from .services.incremental_analysis import run_incremental_analysis_job
 from .store import StudioStore
 from .store.base import load_version_manifest
-
 
 store = StudioStore()
 set_store(store)
@@ -90,6 +93,17 @@ async def lifespan(_app: FastAPI):
             coalesce=True,
             replace_existing=True,
         )
+        scheduler.add_job(
+            run_incremental_analysis_job,
+            "cron",
+            hour=int(os.environ.get("INCREMENTAL_ANALYSIS_CRON_HOUR", "3")),
+            minute=int(os.environ.get("INCREMENTAL_ANALYSIS_CRON_MINUTE", "10")),
+            id="incremental-analysis",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+        register_analysis_batch_jobs(scheduler)
         scheduler.start()
         store.reset_runtime_on_boot(message="服务启动后自动运行保持关闭，需要在驾驶舱手动启动。")
     try:
@@ -122,6 +136,7 @@ if FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="frontend-assets")
 
 app.include_router(build_base_router(FRONTEND_DIST))
+app.include_router(build_analysis_router())
 app.include_router(build_intel_router())
 app.include_router(build_runtime_router())
 app.include_router(build_content_router())
@@ -129,7 +144,4 @@ app.include_router(build_agent_html_router())
 app.include_router(build_browser_router())
 app.include_router(build_wechat_router())
 app.include_router(build_settings_router())
-
-# Agent analytics endpoints
-from .api.admin.agent_analytics import router as agent_analytics_router
 app.include_router(agent_analytics_router)

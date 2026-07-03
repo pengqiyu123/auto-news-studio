@@ -1,5 +1,8 @@
+import { EntityTrendIndicator } from "../../components/EntityTrendIndicator";
+import { buildTrendLookup, getTrendForEntity } from "../../lib/trends";
 import { formatDateTime } from "../../lib/time";
-import type { EntityWatchlistItem, EntityWatchlistSummaryItem } from "../../types";
+import type { EntityWatchlistItem, EntityWatchlistSummaryItem, TrendSignalInfo } from "../../types";
+import { useMemo } from "react";
 
 interface EntityOption {
   entity_id: string;
@@ -9,6 +12,7 @@ interface EntityOption {
 interface EntityWatchlistPanelProps {
   items: EntityWatchlistItem[];
   summary: EntityWatchlistSummaryItem[];
+  trends?: TrendSignalInfo[];
   availableEntities: EntityOption[];
   selectedEntityId: string;
   onSelectEntity: (entityId: string) => void;
@@ -19,6 +23,7 @@ interface EntityWatchlistPanelProps {
 export function EntityWatchlistPanel({
   items,
   summary,
+  trends = [],
   availableEntities,
   selectedEntityId,
   onSelectEntity,
@@ -26,6 +31,7 @@ export function EntityWatchlistPanel({
   onOpenEntity,
 }: EntityWatchlistPanelProps) {
   const watchlistedIds = new Set(items.map((item) => item.entity_id));
+  const trendLookup = useMemo(() => buildTrendLookup(trends), [trends]);
   const selectedOption = availableEntities.find((item) => item.entity_id === selectedEntityId) ?? null;
   const canAdd = Boolean(selectedOption && !watchlistedIds.has(selectedOption.entity_id));
   const canRemove = Boolean(selectedOption && watchlistedIds.has(selectedOption.entity_id));
@@ -88,7 +94,13 @@ export function EntityWatchlistPanel({
           <article key={item.entity_id} className="entity-watchlist-card">
             <div className="entity-watchlist-head">
               <div>
-                <strong>{item.entity_name}</strong>
+                <div className="entity-watchlist-name-row">
+                  <strong>{item.entity_name}</strong>
+                  <EntityTrendIndicator
+                    entityName={item.entity_name}
+                    trend={getTrendForEntity(trendLookup, item.entity_id, item.entity_name)}
+                  />
+                </div>
                 <p>{item.entity_type}</p>
               </div>
               <div className="entity-watchlist-actions">

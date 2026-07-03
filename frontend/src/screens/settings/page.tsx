@@ -8,6 +8,8 @@ import type {
   BrowserSessionState,
   LLMConfig,
   ReferenceProject,
+  RuntimePlan,
+  SchedulerStatus,
   SettingsSectionKey,
   SourceConnector,
   SystemDoctorResult,
@@ -17,6 +19,7 @@ import { SourceHealthBadge } from "../../components/StatusBadge";
 import { BrowserWizardSection } from "./browser_section";
 import { LLMSettingsPanel } from "./llm_panel";
 import { ReferenceProjectsPanel } from "./reference_panel";
+import { RuntimePlanPanel } from "./runtime_plan_panel";
 import { SourcesPanel } from "./sources_panel";
 
 interface SettingsPageProps {
@@ -62,6 +65,22 @@ interface SettingsPageProps {
   onImportBackup: (file: File) => Promise<void>;
   onCheckUpdate: () => Promise<void>;
   onDismissUpdate: (version: string) => Promise<void>;
+  runtimePlan?: RuntimePlan | null;
+  runtime?: SchedulerStatus | null;
+  savingRuntimePlan?: boolean;
+  onSaveRuntimePlan?: (payload: Omit<RuntimePlan, "effective_mode">) => Promise<void>;
+  onSetAutomationMode?: (mode: import("../../types").AutomationMode) => Promise<void>;
+  loading?: boolean;
+}
+
+function SettingsSkeleton() {
+  return (
+    <div className="skeleton-list settings-skeleton" aria-label="设置加载中">
+      <div className="skeleton-card settings-skeleton-card settings-skeleton-card-tall" />
+      <div className="skeleton-card settings-skeleton-card" />
+      <div className="skeleton-card settings-skeleton-card settings-skeleton-card-large" />
+    </div>
+  );
 }
 
 export function SettingsPage({
@@ -96,6 +115,12 @@ export function SettingsPage({
   onImportBackup,
   onCheckUpdate,
   onDismissUpdate,
+  runtimePlan,
+  runtime,
+  savingRuntimePlan,
+  onSaveRuntimePlan,
+  onSetAutomationMode,
+  loading = false,
 }: SettingsPageProps) {
   const [maxWorkers, setMaxWorkers] = useState(Number(settings?.max_workers ?? 8));
   const [savingSettings, setSavingSettings] = useState(false);
@@ -118,7 +143,7 @@ export function SettingsPage({
           </div>
         </div>
 
-        <div className="segmented-control settings-sections" style={{ gridTemplateColumns: "repeat(5, minmax(0, 1fr))" }}>
+        <div className="segmented-control settings-sections">
           <button type="button" className={section === "ai" ? "segment-active" : ""} onClick={() => setSection("ai")}>
             AI 模型
           </button>
@@ -131,12 +156,19 @@ export function SettingsPage({
           <button type="button" className={section === "references" ? "segment-active" : ""} onClick={() => setSection("references")}>
             参考映射
           </button>
+          <button type="button" className={section === "runtime" ? "segment-active" : ""} onClick={() => setSection("runtime")}>
+            运行计划
+          </button>
           <button type="button" className={section === "system" ? "segment-active" : ""} onClick={() => setSection("system")}>
             系统偏好
           </button>
         </div>
       </section>
 
+      {loading ? (
+        <SettingsSkeleton />
+      ) : (
+        <>
       {section === "ai" && llmConfig ? (
         <LLMSettingsPanel
           config={llmConfig}
@@ -173,6 +205,16 @@ export function SettingsPage({
 
       {section === "references" ? <ReferenceProjectsPanel items={referenceProjects} /> : null}
 
+      {section === "runtime" && runtimePlan && runtime && onSaveRuntimePlan && onSetAutomationMode ? (
+        <RuntimePlanPanel
+          runtimePlan={runtimePlan}
+          runtime={runtime}
+          savingRuntimePlan={savingRuntimePlan ?? false}
+          onSaveRuntimePlan={onSaveRuntimePlan}
+          onSetAutomationMode={onSetAutomationMode}
+        />
+      ) : null}
+
       {section === "system" ? (
         <section className="panel">
           <div className="panel-header">
@@ -195,12 +237,12 @@ export function SettingsPage({
             </label>
             <label>
               <span>说明</span>
-              <p className="subtle" style={{ marginTop: 4 }}>
+              <p className="subtle settings-inline-note">
                 并发数越高采集越快，但过高可能触发目标服务器限流。基准测试显示 52 个来源在 8 并发时约 12.6 秒完成，10 并发时约 12.3 秒（瓶颈在慢源本身）。
               </p>
             </label>
           </div>
-          <div className="panel" style={{ marginTop: 16 }}>
+          <div className="panel settings-subpanel">
             <div className="panel-header">
               <div>
                 <p className="eyebrow">版本更新</p>
@@ -237,7 +279,7 @@ export function SettingsPage({
                 {updateInfo?.update_available && !updateInfo.dismissed ? <p className="update-dot-note">有可用新版本</p> : null}
               </article>
             </div>
-            <div className="intel-plan-actions" style={{ marginTop: 12, justifyContent: "flex-start" }}>
+            <div className="intel-plan-actions settings-inline-actions">
               <button type="button" className="ghost-button compact" onClick={() => void onCheckUpdate()}>
                 立即检查
               </button>
@@ -253,7 +295,7 @@ export function SettingsPage({
               ) : null}
             </div>
           </div>
-          <div className="panel" style={{ marginTop: 16 }}>
+          <div className="panel settings-subpanel">
             <div className="panel-header">
               <div>
                 <p className="eyebrow">恢复与自检</p>
@@ -275,19 +317,19 @@ export function SettingsPage({
                 </article>
               ))}
             </div>
-            <div className="intel-plan-actions" style={{ marginTop: 12, justifyContent: "flex-start" }}>
+            <div className="intel-plan-actions settings-inline-actions">
               <button type="button" className="ghost-button compact" onClick={() => void onExportConfig()}>
                 导出配置
               </button>
               <button type="button" className="ghost-button compact" onClick={() => void onExportBackup()}>
                 导出备份
               </button>
-              <label className="ghost-button compact" style={{ cursor: "pointer" }}>
+              <label className="ghost-button compact settings-file-trigger">
                 导入备份
                 <input
                   type="file"
                   accept=".zip,.json"
-                  style={{ display: "none" }}
+                  className="settings-hidden-input"
                   onChange={(event) => {
                     const file = event.target.files?.[0];
                     if (file) {
@@ -324,6 +366,8 @@ export function SettingsPage({
           </div>
         </section>
       ) : null}
+        </>
+      )}
     </section>
   );
 }

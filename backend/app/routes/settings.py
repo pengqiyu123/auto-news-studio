@@ -6,22 +6,47 @@ from fastapi.responses import FileResponse
 from ..features.logs.read import list_logs_page
 from ..features.settings.read import (
     export_system_backup as export_system_backup_view,
+)
+from ..features.settings.read import (
     export_system_config as export_system_config_view,
+)
+from ..features.settings.read import (
     get_llm_config as get_llm_config_view,
+)
+from ..features.settings.read import (
     get_llm_usage as get_llm_usage_view,
+)
+from ..features.settings.read import (
     get_settings as get_settings_view,
-    list_cc_switch_providers as list_cc_switch_providers_view,
+)
+from ..features.settings.read import (
     get_system_doctor as get_system_doctor_view,
+)
+from ..features.settings.read import (
     get_system_update as get_system_update_view,
+)
+from ..features.settings.read import (
+    list_cc_switch_providers as list_cc_switch_providers_view,
+)
+from ..features.settings.read import (
     list_reference_projects as list_reference_projects_view,
 )
 from ..features.settings.write import (
     dismiss_system_update as dismiss_system_update_action,
-    import_cc_switch_profiles as import_cc_switch_profiles_action,
+)
+from ..features.settings.write import (
     import_cc_switch_provider_ids as import_cc_switch_provider_ids_action,
+)
+from ..features.settings.write import (
     open_cc_switch as open_cc_switch_action,
+)
+from ..features.settings.write import (
     test_llm_provider as test_llm_provider_action,
+)
+from ..features.settings.write import (
     update_llm_config as update_llm_config_action,
+)
+from ..features.settings.write import (
     update_settings as update_settings_action,
 )
 from ..models import (

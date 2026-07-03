@@ -32,6 +32,39 @@ const brief: BriefItem = {
 };
 
 describe("BriefTable", () => {
+  it("shows skeleton cards while loading an empty briefs page", () => {
+    const { container } = render(
+      <BriefTable
+        briefs={[]}
+        page={1}
+        pageSize={20}
+        total={0}
+        view="all"
+        workflowView="all"
+        searchTerm=""
+        recordCounts={{ all: 0, local_only: 0, draft_synced: 0, published: 0, exceptions: 0 }}
+        agentWorkflows={[]}
+        loading
+        onViewChange={() => {}}
+        onWorkflowViewChange={() => {}}
+        onSearchChange={() => {}}
+        onPageChange={() => {}}
+        onPageSizeChange={() => {}}
+        onRefreshBrief={async () => {}}
+        onCopyBrief={async () => {}}
+        onCopyPackage={async () => {}}
+        onSyncBrief={async () => {}}
+        onDeleteBrief={async () => {}}
+        onAbandonAgentWorkflow={async () => {}}
+        onCreateDailyDigest={async () => {}}
+        onLoadBriefDetail={async () => null}
+      />,
+    );
+
+    expect(container.querySelectorAll(".skeleton-card")).toHaveLength(4);
+    expect(screen.queryByText("当前筛选条件下没有简报。")).not.toBeInTheDocument();
+  });
+
   it("wires stage filter, search, and pagination controls to parent callbacks", () => {
     const onViewChange = vi.fn();
     const onWorkflowViewChange = vi.fn();
@@ -66,10 +99,10 @@ describe("BriefTable", () => {
       />,
     );
 
-    fireEvent.click(screen.getAllByRole("button", { name: /仅本地/ })[0]);
+    fireEvent.change(screen.getByLabelText("状态筛选"), { target: { value: "local_only" } });
     expect(onViewChange).toHaveBeenCalledWith("local_only");
 
-    fireEvent.click(screen.getAllByRole("button", { name: /Agent/ })[0]);
+    fireEvent.change(screen.getByLabelText("来源筛选"), { target: { value: "agent" } });
     expect(onWorkflowViewChange).toHaveBeenCalledWith("agent");
 
     fireEvent.change(screen.getByPlaceholderText("搜索标题、结论、价值判断"), { target: { value: "OpenAI" } });
@@ -201,6 +234,7 @@ describe("BriefTable", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "查看详情 ▼" }));
     expect(screen.queryByText("收录事件")).not.toBeInTheDocument();
 
     rerender(
@@ -230,6 +264,7 @@ describe("BriefTable", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: "查看详情 ▼" }));
     expect(screen.getByText("收录事件")).toBeInTheDocument();
     expect(screen.getByText("华为发布 AI DC 全栈方案")).toBeInTheDocument();
     expect(screen.getByText("breakout")).toBeInTheDocument();

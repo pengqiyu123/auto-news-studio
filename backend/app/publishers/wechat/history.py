@@ -8,6 +8,7 @@ from ..browser_manager import WECHAT_BROWSER_MANAGER
 from .dom import _extract_wechat_analytics_overview
 from .session import _browser_session_error_kind, _safe_return_home
 
+
 def _open_wechat_publish_history(page, selector_profile: dict[str, list[str] | str], step_logs: list[str]) -> bool:
     content_manage_selector = _pick_selector(page, selector_profile.get("content_manage", []), timeout=2500)
     if content_manage_selector:

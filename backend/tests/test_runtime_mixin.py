@@ -83,11 +83,15 @@ def _seed_digest_delivery_state(store: StudioStore, *, event_count: int = 3) -> 
         "华为发布 AI DC 全栈方案",
         "OpenAI 推出企业管理更新",
         "国产芯片工具链更新",
+        "三星 PCIe Gen6 固态硬盘上线官网",
+        "雷鸟发布 V4 AI 拍摄眼镜",
     ]
     facts = [
         "华为发布 AI DC 数据基础设施全栈方案",
         "OpenAI 面向企业用户更新管理能力",
         "国产芯片工具链发布新版本",
+        "三星首款 PCIe Gen6 固态硬盘 PM1743 上线官网",
+        "雷鸟发布 V4 AI 拍摄眼镜",
     ]
     state["intel_events"] = []
     state["event_deep_dives"] = []
@@ -250,7 +254,7 @@ def test_set_scheduler_running_false_resets_stopped_runtime_state() -> None:
 def test_delivery_pipeline_generates_one_daily_digest_without_wechat_upload(monkeypatch) -> None:
     store, temp_root = _make_store()
     try:
-        _seed_digest_delivery_state(store, event_count=3)
+        _seed_digest_delivery_state(store, event_count=5)
 
         def _fail_if_wechat_upload_called(*args, **kwargs):
             raise AssertionError("传统每日短讯 MVP 不应自动上传微信草稿箱。")
@@ -265,8 +269,8 @@ def test_delivery_pipeline_generates_one_daily_digest_without_wechat_upload(monk
         refreshed_runtime = store._runtime(refreshed)
         metrics = refreshed_runtime["current_cycle_metrics"]
 
-        assert metrics["selected_event_count"] == 3
-        assert metrics["deep_dive_count"] == 3
+        assert metrics["selected_event_count"] == 5
+        assert metrics["deep_dive_count"] == 5
         assert metrics["brief_count"] == 1
         assert metrics["wechat_sync_count"] == 0
         assert metrics["wechat_verify_count"] == 0
@@ -277,6 +281,8 @@ def test_delivery_pipeline_generates_one_daily_digest_without_wechat_upload(monk
         assert "## 1. 华为发布 AI DC 全栈方案" in brief["wechat_markdown"]
         assert "## 2. OpenAI 推出企业管理更新" in brief["wechat_markdown"]
         assert "## 3. 国产芯片工具链更新" in brief["wechat_markdown"]
+        assert "## 4. 三星 PCIe Gen6 固态硬盘上线官网" in brief["wechat_markdown"]
+        assert "## 5. 雷鸟发布 V4 AI 拍摄眼镜" in brief["wechat_markdown"]
         assert all(item.get("brief_id") == brief["id"] for item in refreshed["intel_events"])
         assert all(item.get("brief_status") == "prepared" for item in refreshed["intel_events"])
     finally:
@@ -286,7 +292,7 @@ def test_delivery_pipeline_generates_one_daily_digest_without_wechat_upload(monk
 def test_top_scored_strategy_selects_new_events_by_score() -> None:
     store, temp_root = _make_store()
     try:
-        _seed_digest_delivery_state(store, event_count=3)
+        _seed_digest_delivery_state(store, event_count=5)
 
         state = store._upgrade_state(store._read())
         selected = store._select_delivery_events_strict(state)
@@ -295,6 +301,8 @@ def test_top_scored_strategy_selects_new_events_by_score() -> None:
             "evt-runtime-digest-1",
             "evt-runtime-digest-2",
             "evt-runtime-digest-3",
+            "evt-runtime-digest-4",
+            "evt-runtime-digest-5",
         ]
         assert all(item["alert_state"] == "new" for item in selected)
     finally:
@@ -304,7 +312,7 @@ def test_top_scored_strategy_selects_new_events_by_score() -> None:
 def test_delivery_pipeline_collect_only_skips_deep_dive_and_digest(monkeypatch) -> None:
     store, temp_root = _make_store()
     try:
-        _seed_digest_delivery_state(store, event_count=3)
+        _seed_digest_delivery_state(store, event_count=5)
         state = store._upgrade_state(store._read())
         state["runtime_plan"]["delivery_mode"] = "collect_only"
         store._runtime(state)["delivery_mode"] = "collect_only"
@@ -369,9 +377,9 @@ def test_manual_mode_runtime_cycle_skips_delivery(monkeypatch) -> None:
 def test_delivery_pipeline_retry_briefs_do_not_block_new_daily_digest(monkeypatch) -> None:
     store, temp_root = _make_store()
     try:
-        _seed_digest_delivery_state(store, event_count=3)
+        _seed_digest_delivery_state(store, event_count=5)
         state = store._upgrade_state(store._read())
-        store._runtime_plan(state)["batch_limit"] = 3
+        store._runtime_plan(state)["batch_limit"] = 5
         state["briefs"] = [
             {
                 "id": f"brief-old-{index}",
@@ -412,7 +420,7 @@ def test_delivery_pipeline_retry_briefs_do_not_block_new_daily_digest(monkeypatc
         refreshed = store._upgrade_state(store._read())
         metrics = store._runtime(refreshed)["current_cycle_metrics"]
 
-        assert metrics["selected_event_count"] == 3
+        assert metrics["selected_event_count"] == 5
         assert metrics["brief_count"] == 1
         assert metrics["wechat_sync_count"] == 0
         assert len(refreshed["briefs"]) == 4
@@ -425,7 +433,7 @@ def test_delivery_pipeline_retry_briefs_do_not_block_new_daily_digest(monkeypatc
 def test_scheduled_batch_not_due_generates_digest_without_upload(monkeypatch) -> None:
     store, temp_root = _make_store()
     try:
-        _seed_digest_delivery_state(store, event_count=3)
+        _seed_digest_delivery_state(store, event_count=5)
         state = store._upgrade_state(store._read())
         plan = store._runtime_plan(state)
         plan["delivery_mode"] = "scheduled_batch"
@@ -447,8 +455,8 @@ def test_scheduled_batch_not_due_generates_digest_without_upload(monkeypatch) ->
         refreshed = store._upgrade_state(store._read())
         metrics = store._runtime(refreshed)["current_cycle_metrics"]
 
-        assert metrics["selected_event_count"] == 3
-        assert metrics["deep_dive_count"] == 3
+        assert metrics["selected_event_count"] == 5
+        assert metrics["deep_dive_count"] == 5
         assert metrics["brief_count"] == 1
         assert metrics["wechat_sync_count"] == 0
         assert len(refreshed["briefs"]) == 1
@@ -461,7 +469,7 @@ def test_scheduled_batch_not_due_generates_digest_without_upload(monkeypatch) ->
 def test_scheduled_batch_due_records_upload_slot(monkeypatch) -> None:
     store, temp_root = _make_store()
     try:
-        _seed_digest_delivery_state(store, event_count=3)
+        _seed_digest_delivery_state(store, event_count=5)
         state = store._upgrade_state(store._read())
         plan = store._runtime_plan(state)
         plan["delivery_mode"] = "scheduled_batch"
@@ -501,10 +509,10 @@ def test_scheduled_batch_due_records_upload_slot(monkeypatch) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def test_delivery_pipeline_skips_daily_digest_when_fewer_than_two_qualified_events(monkeypatch) -> None:
+def test_delivery_pipeline_skips_daily_digest_when_fewer_than_five_qualified_events(monkeypatch) -> None:
     store, temp_root = _make_store()
     try:
-        _seed_digest_delivery_state(store, event_count=1)
+        _seed_digest_delivery_state(store, event_count=4)
 
         def _fail_if_wechat_upload_called(*args, **kwargs):
             raise AssertionError("传统每日短讯 MVP 不应自动上传微信草稿箱。")
@@ -519,12 +527,12 @@ def test_delivery_pipeline_skips_daily_digest_when_fewer_than_two_qualified_even
         refreshed_runtime = store._runtime(refreshed)
         metrics = refreshed_runtime["current_cycle_metrics"]
 
-        assert metrics["selected_event_count"] == 1
-        assert metrics["deep_dive_count"] == 1
+        assert metrics["selected_event_count"] == 4
+        assert metrics["deep_dive_count"] == 4
         assert metrics["brief_count"] == 0
         assert metrics["wechat_sync_count"] == 0
         assert refreshed["briefs"] == []
-        assert not refreshed["intel_events"][0].get("brief_id")
-        assert any("至少需要 2 条合格事件" in str(item.get("message") or "") for item in refreshed["logs"])
+        assert all(not item.get("brief_id") for item in refreshed["intel_events"])
+        assert any("必须由 5 条合格事件组成" in str(item.get("message") or "") for item in refreshed["logs"])
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)

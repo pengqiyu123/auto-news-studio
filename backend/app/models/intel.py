@@ -5,7 +5,7 @@ Extracted from models.py to reduce file size and improve domain grouping.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -32,22 +32,22 @@ class DashboardTopBar(BaseModel):
     current_mode_label: str
     healthy_sources: int
     total_sources: int
-    latest_collected_at: Optional[str] = None
-    latest_published_at: Optional[str] = None
+    latest_collected_at: str | None = None
+    latest_published_at: str | None = None
     pending_briefs: int
     blocked_publish_count: int
 
 
 class FreshnessSnapshot(BaseModel):
-    latest_published_at: Optional[str] = None
-    latest_collected_at: Optional[str] = None
+    latest_published_at: str | None = None
+    latest_collected_at: str | None = None
     items_1h: int = 0
     items_6h: int = 0
     items_24h: int = 0
-    avg_collection_lag_minutes: Optional[float] = None
+    avg_collection_lag_minutes: float | None = None
     stale_source_count: int = 0
     has_staleness_alert: bool = False
-    last_successful_sync_at: Optional[str] = None
+    last_successful_sync_at: str | None = None
 
 
 class IntelStreamItem(BaseModel):
@@ -58,9 +58,9 @@ class IntelStreamItem(BaseModel):
     score: float
     source_names: list[str] = Field(default_factory=list)
     source_count: int = 0
-    published_at: Optional[str] = None
-    collected_at: Optional[str] = None
-    time_lag_minutes: Optional[float] = None
+    published_at: str | None = None
+    collected_at: str | None = None
+    time_lag_minutes: float | None = None
 
 
 class DiscoveryItem(BaseModel):
@@ -76,10 +76,10 @@ class DiscoveryItem(BaseModel):
     link: str
     canonical_link: str
     dedupe_key: str
-    source_native_id: Optional[str] = None
+    source_native_id: str | None = None
     title_tokens: list[str] = Field(default_factory=list)
     anchor_tokens: list[str] = Field(default_factory=list)
-    published_at: Optional[str] = None
+    published_at: str | None = None
     collected_at: str
     tags: list[str] = Field(default_factory=list)
     engagement_score: float = 0.0
@@ -106,10 +106,10 @@ class IntelEvent(BaseModel):
     story_count: int = 0
     member_delta: int = 0
     platform_delta: int = 0
-    published_at: Optional[str] = None
-    latest_collected_at: Optional[str] = None
-    first_seen_at: Optional[str] = None
-    last_seen_at: Optional[str] = None
+    published_at: str | None = None
+    latest_collected_at: str | None = None
+    first_seen_at: str | None = None
+    last_seen_at: str | None = None
     tags: list[str] = Field(default_factory=list)
     anchor_tokens: list[str] = Field(default_factory=list)
     velocity_score: float = 0.0
@@ -125,13 +125,13 @@ class IntelEvent(BaseModel):
     entity_names: list[str] = Field(default_factory=list)
     watchlisted: bool = False
     ignored: bool = False
-    deep_dive_id: Optional[str] = None
-    brief_id: Optional[str] = None
-    deep_dive_status: Optional[DeepDiveStatus] = None
-    deep_dive_started_at: Optional[str] = None
-    deep_dive_finished_at: Optional[str] = None
-    deep_dive_updated_at: Optional[str] = None
-    brief_status: Optional[Literal["prepared", "synced", "failed"]] = None
+    deep_dive_id: str | None = None
+    brief_id: str | None = None
+    deep_dive_status: DeepDiveStatus | None = None
+    deep_dive_started_at: str | None = None
+    deep_dive_finished_at: str | None = None
+    deep_dive_updated_at: str | None = None
+    brief_status: Literal["prepared", "synced", "failed"] | None = None
     deep_dive_summary: str = ""
     worth_to_brief: bool = False
     worth_reason: str = ""
@@ -170,10 +170,10 @@ class IntelAlert(BaseModel):
     triggered_at: str
     entity_ids: list[str] = Field(default_factory=list)
     entity_names: list[str] = Field(default_factory=list)
-    deep_dive_id: Optional[str] = None
-    brief_id: Optional[str] = None
-    deep_dive_status: Optional[DeepDiveStatus] = None
-    brief_status: Optional[Literal["prepared", "synced", "failed"]] = None
+    deep_dive_id: str | None = None
+    brief_id: str | None = None
+    deep_dive_status: DeepDiveStatus | None = None
+    brief_status: Literal["prepared", "synced", "failed"] | None = None
     deep_dive_summary: str = ""
     worth_to_brief: bool = False
     worth_reason: str = ""
@@ -185,22 +185,22 @@ class DeepDiveSourceItem(BaseModel):
     original_link: str
     canonical_link: str
     title: str = ""
-    published_at: Optional[str] = None
+    published_at: str | None = None
     fetch_status: DeepDiveFetchStatus = "pending"
     extract_status: DeepDiveExtractStatus = "pending"
     word_count: int = 0
     cleaned_full_text: str = ""
     excerpt: str = ""
     quotes: list[str] = Field(default_factory=list)
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class EventDeepDive(BaseModel):
     id: str
     event_id: str
     status: DeepDiveStatus = "pending"
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
+    started_at: str | None = None
+    finished_at: str | None = None
     updated_at: str
     attempted_count: int = 0
     success_count: int = 0
@@ -212,7 +212,7 @@ class EventDeepDive(BaseModel):
     quotes: list[str] = Field(default_factory=list)
     timeline: list[str] = Field(default_factory=list)
     worthiness: dict[str, Any] = Field(default_factory=dict)
-    last_error: Optional[str] = None
+    last_error: str | None = None
     article_writing_guide: str = ""
 
 
@@ -236,9 +236,9 @@ class AgentHtmlTarget(BaseModel):
     discover_mode: AgentHtmlDiscoverMode = "rule_with_ai_fallback"
     extract_mode: AgentHtmlExtractMode = "best_effort_html"
     discovery_rules: AgentHtmlDiscoveryRules = Field(default_factory=AgentHtmlDiscoveryRules)
-    last_run_at: Optional[str] = None
-    last_success_at: Optional[str] = None
-    last_error: Optional[str] = None
+    last_run_at: str | None = None
+    last_success_at: str | None = None
+    last_error: str | None = None
     created_at: str
     updated_at: str
 
@@ -256,23 +256,23 @@ class AgentHtmlTargetCreatePayload(BaseModel):
 
 
 class AgentHtmlTargetUpdatePayload(BaseModel):
-    brand: Optional[str] = Field(default=None, min_length=1, max_length=120)
-    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
-    entry_url: Optional[str] = Field(default=None, min_length=1, max_length=1000)
-    target_type: Optional[AgentHtmlTargetType] = None
-    enabled: Optional[bool] = None
-    tags: Optional[list[str]] = None
-    discover_mode: Optional[AgentHtmlDiscoverMode] = None
-    extract_mode: Optional[AgentHtmlExtractMode] = None
-    discovery_rules: Optional[AgentHtmlDiscoveryRules] = None
+    brand: str | None = Field(default=None, min_length=1, max_length=120)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    entry_url: str | None = Field(default=None, min_length=1, max_length=1000)
+    target_type: AgentHtmlTargetType | None = None
+    enabled: bool | None = None
+    tags: list[str] | None = None
+    discover_mode: AgentHtmlDiscoverMode | None = None
+    extract_mode: AgentHtmlExtractMode | None = None
+    discovery_rules: AgentHtmlDiscoveryRules | None = None
 
 
 class AgentHtmlRun(BaseModel):
     id: str
     target_id: str
     status: AgentHtmlRunStatus = "pending"
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
+    started_at: str | None = None
+    finished_at: str | None = None
     discovered_count: int = 0
     new_discovery_count: int = 0
     updated_discovery_count: int = 0
@@ -281,7 +281,7 @@ class AgentHtmlRun(BaseModel):
     failed_count: int = 0
     list_fetch_status: str = "pending"
     ai_fallback_used: bool = False
-    error_summary: Optional[str] = None
+    error_summary: str | None = None
     triggered_by: str = "dashboard"
     created_at: str
     updated_at: str
@@ -314,13 +314,13 @@ class AgentHtmlDiscoveryItem(BaseModel):
     summary: str
     link: str
     canonical_link: str
-    published_at: Optional[str] = None
+    published_at: str | None = None
     collected_at: str
     dedupe_key: str
     content_hash: str = ""
     item_state: AgentHtmlItemState = "new_item"
-    document_id: Optional[str] = None
-    event_id: Optional[str] = None
+    document_id: str | None = None
+    event_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -335,7 +335,7 @@ class AgentHtmlDocumentRevision(BaseModel):
     content_hash: str = ""
     word_count: int = 0
     extractor: str = ""
-    published_at: Optional[str] = None
+    published_at: str | None = None
     fetched_at: str
     revision_index: int = 1
     change_summary: str = ""
@@ -347,8 +347,8 @@ class AgentHtmlDocument(BaseModel):
     canonical_url: str
     current_revision_id: str
     title: str = ""
-    published_at: Optional[str] = None
-    latest_seen_at: Optional[str] = None
+    published_at: str | None = None
+    latest_seen_at: str | None = None
     current_content_hash: str = ""
     word_count: int = 0
     extractor: str = ""
@@ -361,14 +361,14 @@ class AgentHtmlEvent(BaseModel):
     id: str
     title: str
     summary: str
-    representative_document_id: Optional[str] = None
+    representative_document_id: str | None = None
     representative_link: str = ""
     discovery_item_ids: list[str] = Field(default_factory=list)
     document_ids: list[str] = Field(default_factory=list)
     member_count: int = 0
     source_count: int = 0
-    first_seen_at: Optional[str] = None
-    last_seen_at: Optional[str] = None
+    first_seen_at: str | None = None
+    last_seen_at: str | None = None
     change_state: AgentHtmlEventChangeState = "new_event"
     alert_state: AgentHtmlAlertState = "watch"
     entity_names: list[str] = Field(default_factory=list)
@@ -491,7 +491,7 @@ class EntityWatchlistItem(BaseModel):
     entity_name: str
     entity_type: str
     watchlisted: bool = True
-    added_at: Optional[str] = None
+    added_at: str | None = None
 
 
 class EntityWatchlistSummaryItem(EntityWatchlistItem):
@@ -499,7 +499,7 @@ class EntityWatchlistSummaryItem(EntityWatchlistItem):
     alert_count: int = 0
     rising_count: int = 0
     breakout_count: int = 0
-    last_seen_at: Optional[str] = None
+    last_seen_at: str | None = None
 
 
 class IntelOverviewSummary(BaseModel):
@@ -524,8 +524,8 @@ class IntelOverviewSummary(BaseModel):
     recent_event_count_24h: int = 0
     recent_breakout_count_24h: int = 0
     recent_rising_count_24h: int = 0
-    last_sync_at: Optional[str] = None
-    next_run_at: Optional[str] = None
+    last_sync_at: str | None = None
+    next_run_at: str | None = None
     running: bool = False
     work_scope: Literal["collect_only", "collect_events", "collect_events_alerts"] = "collect_events_alerts"
     top_alerts: list[IntelAlert] = Field(default_factory=list)

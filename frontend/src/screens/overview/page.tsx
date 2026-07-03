@@ -2,10 +2,12 @@ import { AlertTriangle, BellRing, CheckCircle2, CheckCircle, Clock3, Loader2, Pa
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { MoreDropdown } from "../../components/MoreDropdown";
+import { EntityTrendIndicator } from "../../components/EntityTrendIndicator";
+import { buildTrendLookup, getTrendForEntity } from "../../lib/trends";
 import { deriveRuntimeDisplayStatus, deriveRuntimeVisualState, describeLastOutcome, explainAlertsEmptyState, explainEventsEmptyState, getRuntimeProgressMeta, isLoopLaunchMode, runtimeDisplayTone } from "../../lib/runtimeIntent";
 import { formatDateTime, formatDuration, formatRelativeTime, toDateTimeLocalValue } from "../../lib/time";
 import { formatRuntimeIssueLabel } from "../../lib/runtimeUtils";
-import type { AutomationMode, DeliveryMode, EntityWatchlistSummaryItem, FreshnessSnapshot, HistoryRecordStatus, IntelAlert, IntelAlertHistoryItem, IntelEvent, IntelEventHistoryItem, IntelOverviewSummary, RuntimeIntent, RuntimePlan, SchedulerStatus } from "../../types";
+import type { AutomationMode, DeliveryMode, EntityWatchlistSummaryItem, FreshnessSnapshot, HistoryRecordStatus, IntelAlert, IntelAlertHistoryItem, IntelEvent, IntelEventHistoryItem, IntelOverviewSummary, RuntimeIntent, RuntimePlan, SchedulerStatus, TrendSignalInfo } from "../../types";
 
 type OverviewTab = "alerts" | "events" | "source-health";
 
@@ -47,6 +49,7 @@ interface OverviewPageProps {
   runtime: SchedulerStatus;
   freshness: FreshnessSnapshot;
   entityWatchlistSummary: EntityWatchlistSummaryItem[];
+  trends?: TrendSignalInfo[];
   runtimePlan: RuntimePlan;
   savingRuntimePlan: boolean;
   busyRuntimeAction?: "start" | "stop" | null;
@@ -146,6 +149,7 @@ export function OverviewPage({
   runtime,
   freshness,
   entityWatchlistSummary,
+  trends = [],
   runtimePlan,
   savingRuntimePlan,
   busyRuntimeAction,
@@ -207,6 +211,7 @@ export function OverviewPage({
 
   const displayStatus = useMemo(() => deriveRuntimeDisplayStatus(runtime), [runtime]);
   const visualState = useMemo(() => deriveRuntimeVisualState(runtime), [runtime]);
+  const trendLookup = useMemo(() => buildTrendLookup(trends), [trends]);
   const progressMeta = useMemo(() => getRuntimeProgressMeta(runtime), [runtime]);
   const cycleSummary = runtime.last_cycle_summary ?? null;
   const cycleIssuePreview = useMemo(() => {
@@ -724,7 +729,13 @@ export function OverviewPage({
               <article key={item.entity_id} className="entity-watchlist-card">
                 <div className="entity-watchlist-head">
                   <div>
-                    <strong>{item.entity_name}</strong>
+                    <div className="entity-watchlist-name-row">
+                      <strong>{item.entity_name}</strong>
+                      <EntityTrendIndicator
+                        entityName={item.entity_name}
+                        trend={getTrendForEntity(trendLookup, item.entity_id, item.entity_name)}
+                      />
+                    </div>
                     <p>{item.entity_type}</p>
                   </div>
                   <button type="button" className="ghost-button compact" onClick={() => onOpenEntity(item.entity_id)}>

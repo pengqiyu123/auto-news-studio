@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  BarChart3,
   CheckCircle,
   FileStack,
   LayoutDashboard,
@@ -16,6 +17,7 @@ export type TabKey =
   | "events"
   | "alerts"
   | "source-health"
+  | "analysis"
   | "watchlist"
   | "briefs"
   | "publish-history"
@@ -29,6 +31,7 @@ export const intelTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutD
   { key: "events", label: "热点簇", icon: SearchCheck },
   { key: "alerts", label: "预警台", icon: Siren },
   { key: "source-health", label: "来源健康", icon: AlertCircle },
+  { key: "analysis", label: "分析中心", icon: BarChart3 },
 ];
 
 export const draftTabs: Array<{ key: TabKey; label: string; icon: typeof LayoutDashboard }> = [
@@ -49,6 +52,7 @@ export const pageMeta: Record<TabKey, { eyebrow: string; title: string }> = {
   events: { eyebrow: "事件聚合", title: "热点事件列表" },
   alerts: { eyebrow: "趋势判断", title: "热点预警列表" },
   "source-health": { eyebrow: "来源巡检", title: "来源运行状态" },
+  analysis: { eyebrow: "分析中心", title: "趋势与关联研判" },
   watchlist: { eyebrow: "深挖池", title: "待深挖的观察事件" },
   briefs: { eyebrow: "简报", title: "简报工作台" },
   "publish-history": { eyebrow: "发表记录", title: "微信公众号发表记录" },

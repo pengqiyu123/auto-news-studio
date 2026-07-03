@@ -4,32 +4,45 @@ from fastapi import APIRouter, HTTPException
 
 from ..features.settings.read import (
     get_automation_modes_page as get_automation_modes_page_view,
+)
+from ..features.settings.read import (
     get_automation_profiles_page as get_automation_profiles_page_view,
+)
+from ..features.settings.read import (
     get_runtime_plan as get_runtime_plan_view,
+)
+from ..features.settings.read import (
     get_runtime_status as get_runtime_status_view,
-    list_automation_modes as list_automation_modes_view,
-    list_automation_profiles as list_automation_profiles_view,
 )
 from ..features.settings.write import (
     run_runtime_intent as run_runtime_intent_action,
+)
+from ..features.settings.write import (
     set_current_automation_mode_page as set_current_automation_mode_page_action,
-    set_current_automation_mode as set_current_automation_mode_action,
+)
+from ..features.settings.write import (
     start_runtime as start_runtime_action,
+)
+from ..features.settings.write import (
     stop_runtime as stop_runtime_action,
+)
+from ..features.settings.write import (
     update_automation_profile_page as update_automation_profile_page_action,
-    update_automation_profile as update_automation_profile_action,
+)
+from ..features.settings.write import (
     update_runtime_plan as update_runtime_plan_action,
 )
 from ..models import (
     AutomationModeProfile,
+    AutomationModeSelectionPayload,
     AutomationModesResponse,
     AutomationProfilesResponse,
-    AutomationModeSelectionPayload,
     RuntimeIntentPayload,
     RuntimePlanPayload,
     RuntimePlanResponse,
     SchedulerStatusResponse,
 )
+
 
 def build_runtime_router() -> APIRouter:
     router = APIRouter()

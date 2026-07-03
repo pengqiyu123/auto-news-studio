@@ -2,25 +2,50 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from ..features.briefs.read import get_brief
 from ..features.draft_box.read import list_publish_tasks_page
-from ..features.logs.read import list_logs as list_logs_view
 from ..features.settings.read import (
     get_browser_session as get_browser_session_view,
+)
+from ..features.settings.read import (
     get_douyin_browser_session as get_douyin_browser_session_view,
+)
+from ..features.settings.read import (
     get_douyin_channel as get_douyin_channel_view,
+)
+from ..features.settings.read import (
     get_wechat_channel as get_wechat_channel_view,
 )
 from ..features.settings.write import (
     check_browser_session as check_browser_session_action,
+)
+from ..features.settings.write import (
     check_douyin_browser_session as check_douyin_browser_session_action,
+)
+from ..features.settings.write import (
     fill_douyin_article as fill_douyin_article_action,
+)
+from ..features.settings.write import (
     inspect_douyin_article_structure as inspect_douyin_article_structure_action,
+)
+from ..features.settings.write import (
     open_browser_dashboard as open_browser_dashboard_action,
+)
+from ..features.settings.write import (
     open_douyin_article_publish as open_douyin_article_publish_action,
+)
+from ..features.settings.write import (
     open_douyin_browser_dashboard as open_douyin_browser_dashboard_action,
+)
+from ..features.settings.write import (
+    run_douyin_daily_news_pipeline as run_douyin_daily_news_pipeline_action,
+)
+from ..features.settings.write import (
     update_browser_session as update_browser_session_action,
+)
+from ..features.settings.write import (
     update_douyin_browser_session as update_douyin_browser_session_action,
+)
+from ..features.settings.write import (
     update_wechat_channel as update_wechat_channel_action,
 )
 from ..models import (
@@ -108,6 +133,13 @@ def build_browser_router() -> APIRouter:
     def fill_douyin_article(payload: DouyinArticleFillPayload):
         try:
             return BriefResponse(item=fill_douyin_article_action(payload))
+        except ValueError as exc:
+            raise http_from_value_error(exc) from exc
+
+    @router.post("/api/admin/browser/douyin/daily-news", response_model=BriefResponse)
+    def run_douyin_daily_news_pipeline():
+        try:
+            return BriefResponse(item=run_douyin_daily_news_pipeline_action())
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 

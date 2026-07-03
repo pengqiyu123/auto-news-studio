@@ -70,7 +70,7 @@ describe("LogsPanel", () => {
     fireEvent.click(screen.getByText("warning"));
     expect(onLevelFilterChange).toHaveBeenCalledWith("warning");
 
-    fireEvent.change(screen.getByPlaceholderText("搜索日志内容"), { target: { value: "source" } });
+    fireEvent.change(screen.getByPlaceholderText("搜索日志"), { target: { value: "source" } });
     expect(onSearchChange).toHaveBeenCalledWith("source");
 
     fireEvent.click(screen.getByLabelText("下一页"));
@@ -78,5 +78,50 @@ describe("LogsPanel", () => {
 
     fireEvent.change(screen.getByDisplayValue("20"), { target: { value: "50" } });
     expect(onPageSizeChange).toHaveBeenCalledWith(50);
+  });
+
+  it("shows skeleton rows when logs are loading before any rows are available", () => {
+    const { container } = render(
+      <LogsPanel
+        logs={[]}
+        page={1}
+        pageSize={20}
+        total={0}
+        levelFilter="all"
+        searchQuery=""
+        loading
+        runtime={runtime}
+        onLevelFilterChange={vi.fn()}
+        onSearchChange={vi.fn()}
+        onPageChange={vi.fn()}
+        onPageSizeChange={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelectorAll(".skeleton-card")).toHaveLength(5);
+    expect(screen.queryByText("暂无系统日志。")).not.toBeInTheDocument();
+  });
+
+  it("uses logs-specific search classes instead of draft toolbar styles", () => {
+    const { container } = render(
+      <LogsPanel
+        logs={logs}
+        page={1}
+        pageSize={20}
+        total={1}
+        levelFilter="all"
+        searchQuery=""
+        runtime={runtime}
+        onLevelFilterChange={vi.fn()}
+        onSearchChange={vi.fn()}
+        onPageChange={vi.fn()}
+        onPageSizeChange={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector(".logs-toolbar")).toBeTruthy();
+    expect(container.querySelector(".logs-search")).toBeTruthy();
+    expect(container.querySelector(".draft-toolbar")).toBeNull();
+    expect(container.querySelector(".draft-search")).toBeNull();
   });
 });

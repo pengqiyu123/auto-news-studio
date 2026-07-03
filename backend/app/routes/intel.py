@@ -3,6 +3,44 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from ..content.text_quality import score_text_quality
+from ..features.alerts.read import list_alerts_page as list_alerts_page_view
+from ..features.events.read import get_event_page as get_event_page_view
+from ..features.events.read import list_events_page as list_events_page_view
+from ..features.events.write import ignore_event as ignore_event_action
+from ..features.events.write import watch_event
+from ..features.overview.read import (
+    get_dashboard_lite_page as get_dashboard_lite_page_view,
+)
+from ..features.overview.read import (
+    get_dashboard_page as get_dashboard_page_view,
+)
+from ..features.overview.read import (
+    get_intel_snapshot_page as get_intel_snapshot_page_view,
+)
+from ..features.overview.read import (
+    get_intel_summary_page as get_intel_summary_page_view,
+)
+from ..features.source_health.read import list_intel_sources_page as list_intel_sources_page_view
+from ..features.source_health.read import list_sources_page as list_sources_page_view
+from ..features.source_health.write import (
+    create_source_page as create_source_page_action,
+)
+from ..features.source_health.write import (
+    delete_source_page as delete_source_page_action,
+)
+from ..features.source_health.write import (
+    sync_source as sync_source_action,
+)
+from ..features.source_health.write import (
+    sync_sources as sync_sources_action,
+)
+from ..features.source_health.write import (
+    update_source_page as update_source_page_action,
+)
+from ..features.stream.read import list_stream_page as list_stream_page_view
+from ..features.watchlist.read import list_entity_watchlist_page as list_entity_watchlist_page_view
+from ..features.watchlist.write import update_entity_watchlist as update_entity_watchlist_action
 from ..models import (
     CreateSourcePayload,
     DiscoveryItemsResponse,
@@ -14,36 +52,9 @@ from ..models import (
     IntelSnapshotResponse,
     IntelSummaryResponse,
     SourceConnectorPayload,
-    SourceSyncResponse,
     SourcesResponse,
+    SourceSyncResponse,
 )
-from ..features.alerts.read import list_alerts as list_alerts_view
-from ..features.alerts.read import list_alerts_page as list_alerts_page_view
-from ..features.events.read import get_event as get_event_view, get_event_page as get_event_page_view, list_events as list_events_view, list_events_page as list_events_page_view
-from ..features.events.write import ignore_event as ignore_event_action, watch_event
-from ..features.overview.read import (
-    get_dashboard as get_dashboard_view,
-    get_dashboard_lite_page as get_dashboard_lite_page_view,
-    get_dashboard_page as get_dashboard_page_view,
-    get_dashboard_lite as get_dashboard_lite_view,
-    get_intel_snapshot as get_intel_snapshot_view,
-    get_intel_snapshot_page as get_intel_snapshot_page_view,
-    get_intel_summary as get_intel_summary_view,
-    get_intel_summary_page as get_intel_summary_page_view,
-)
-from ..features.source_health.read import list_intel_sources_page as list_intel_sources_page_view, list_sources_page as list_sources_page_view
-from ..features.source_health.write import (
-    create_source_page as create_source_page_action,
-    delete_source_page as delete_source_page_action,
-    sync_source as sync_source_action,
-    sync_sources as sync_sources_action,
-    update_source_page as update_source_page_action,
-)
-from ..features.stream.read import list_stream as list_stream_view, list_stream_page as list_stream_page_view
-from ..features.watchlist.read import list_entity_watchlist as list_entity_watchlist_view, list_entity_watchlist_page as list_entity_watchlist_page_view
-from ..features.watchlist.write import update_entity_watchlist as update_entity_watchlist_action
-from .common import get_store
-from ..content.text_quality import score_text_quality
 
 
 class TextQualityRequest(BaseModel):

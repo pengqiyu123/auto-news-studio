@@ -1,10 +1,10 @@
 import ctypes
 import subprocess
-from pathlib import Path
 import winreg
+from pathlib import Path
 
-from ...routes.common import get_store
 from ...llm.cc_switch import get_cc_switch_db_path, read_cc_switch_providers
+from ...routes.common import get_store
 
 
 def update_wechat_channel(payload):
@@ -45,6 +45,10 @@ def inspect_douyin_article_structure():
 
 def fill_douyin_article(payload):
     return get_store().fill_douyin_article(payload)
+
+
+def run_douyin_daily_news_pipeline():
+    return get_store().run_douyin_daily_news_pipeline(triggered_by="douyin")
 
 
 def dismiss_system_update(payload):

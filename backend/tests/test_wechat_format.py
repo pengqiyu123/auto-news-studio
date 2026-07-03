@@ -69,6 +69,27 @@ def test_build_agent_article_writing_guide_contains_new_required_sections() -> N
     assert "禁止出现这些高频 AI 味词" in guide
 
 
+def test_build_agent_article_writing_guide_requires_polished_platform_digest() -> None:
+    guide = build_agent_article_writing_guide()
+
+    assert "本地审阅稿可以使用下面这种结构" in guide
+    assert "发到微信、抖音或其他平台前，必须再润色成自然连贯的发布稿" in guide
+    assert "不要保留 `## 1.`、`## 来源链接`、裸 URL 列表" in guide
+    assert "首先 / 然后 / 接下来 / 再说 / 最后" in guide
+
+
+def test_build_agent_article_writing_guide_pushes_strong_expression_without_false_certainty() -> None:
+    guide = build_agent_article_writing_guide()
+
+    assert "有事实纪律的强表达" in guide
+    assert "标题必须优先制造点击理由" in guide
+    assert "和普通人、开发者、消费者、公司账单或未来设备有什么关系" in guide
+    assert "允许有冲突感、利益关系、悬念和口语表达" in guide
+    assert "不能把推测写成确定事实" in guide
+    assert "不能把个体案例写成普遍结论" in guide
+    assert "不能承诺素材没有证明的未来结果" in guide
+
+
 def test_build_prompt_package_markdown_includes_writing_guide_before_material_sections() -> None:
     markdown = build_prompt_package_markdown(
         title="测试标题",
@@ -85,6 +106,24 @@ def test_build_prompt_package_markdown_includes_writing_guide_before_material_se
 
     assert "## 写作要求" in markdown
     assert markdown.index("## 写作要求") < markdown.index("## 事件标题")
+
+
+def test_build_prompt_package_markdown_prioritizes_clickable_publish_copy() -> None:
+    markdown = build_prompt_package_markdown(
+        title="测试标题",
+        one_line="一句话结论",
+        why_it_matters="为什么值得关注",
+        facts=["事实 1"],
+        full_text_sources=[],
+        source_quotes=[],
+        timeline=[],
+        risk_notes=[],
+        source_links=[],
+    )
+
+    assert "目标不是新闻简报，而是让普通读者愿意点开、读完、转发给朋友" in markdown
+    assert "标题要有冲突感、利益关系或悬念" in markdown
+    assert "不要输出后台素材稿或结构化审阅稿" in markdown
 
 
 def test_build_brief_summary_falls_back_in_expected_order() -> None:

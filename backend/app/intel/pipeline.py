@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
 import hashlib
+import os
 import re
+from collections import defaultdict
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from .entity_extractor import extract_entities_with_context
 from ..store.base import now_iso
+from .entity_extractor import extract_entities_with_context
 
-UTC = timezone.utc
+UTC = UTC
 TRACKING_QUERY_KEYS = {
     "utm_source",
     "utm_medium",
@@ -28,6 +29,7 @@ TRACKING_QUERY_KEYS = {
 }
 
 ALERT_LEVELS = {"cooling": 0, "new": 1, "watch": 2, "rising": 3, "breakout": 4}
+DEFAULT_SNAPSHOT_RETENTION_HOURS = 720
 
 PRIORITY_AUDIENCE_KEYWORDS = {
     "ai": 22.0,
@@ -172,6 +174,14 @@ def jaccard(left: set[str], right: set[str]) -> float:
     if not left and not right:
         return 0.0
     return len(left & right) / max(len(left | right), 1)
+
+
+def snapshot_retention_hours() -> int:
+    try:
+        value = int(os.environ.get("SNAPSHOT_RETENTION_HOURS", str(DEFAULT_SNAPSHOT_RETENTION_HOURS)))
+    except (TypeError, ValueError):
+        return DEFAULT_SNAPSHOT_RETENTION_HOURS
+    return max(48, value)
 
 
 def source_weight(source: dict[str, Any] | None) -> float:
@@ -452,7 +462,7 @@ def _compact_source_stories(
         grouped_by_source[str(item.get("source_key") or "")].append(item)
 
     stories: list[dict[str, Any]] = []
-    for source_key, source_items in grouped_by_source.items():
+    for _source_key, source_items in grouped_by_source.items():
         seed_buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for item in source_items:
             seed_buckets[_source_story_seed(item)].append(item)
@@ -467,13 +477,13 @@ def _compact_source_stories(
                 continue
             parent = list(range(len(bucket_items)))
 
-            def find(index: int) -> int:
+            def find(index: int, parent: list[int] = parent) -> int:
                 while parent[index] != index:
                     parent[index] = parent[parent[index]]
                     index = parent[index]
                 return index
 
-            def union(left: int, right: int) -> None:
+            def union(left: int, right: int, parent: list[int] = parent) -> None:
                 left_root = find(left)
                 right_root = find(right)
                 if left_root != right_root:
@@ -688,7 +698,6 @@ def _coverage_score(event: dict[str, Any], sources_by_key: dict[str, dict[str, A
 def _velocity_score(event: dict[str, Any], prior_snapshots: list[dict[str, Any]], now: datetime) -> tuple[float, dict[str, float]]:
     event_id = str(event.get("id"))
     member_count = int(event.get("member_count", 0) or 0)
-    platform_count = int(event.get("platform_count", 0) or 0)
     first_seen = parse_time(event.get("first_seen_at")) or now
     age_hours = max((now - first_seen).total_seconds() / 3600, 0.0)
 
@@ -973,7 +982,7 @@ def build_intel_state(
 
     retained_snapshots = [
         item for item in previous_snapshots
-        if (parse_time(item.get("captured_at")) or datetime.min.replace(tzinfo=UTC)) >= now - timedelta(hours=48)
+        if (parse_time(item.get("captured_at")) or datetime.min.replace(tzinfo=UTC)) >= now - timedelta(hours=snapshot_retention_hours())
     ]
     snapshots = retained_snapshots + [_event_to_snapshot(event, stamp) for event in events]
 

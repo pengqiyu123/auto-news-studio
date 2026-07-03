@@ -12,7 +12,6 @@ This keeps pipeline.py database-free and testable.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
 from typing import Any
 
 from ..db.config import get_database_settings
@@ -21,8 +20,8 @@ from ..db.read_models import (
     get_event_snapshots_for_analysis,
     get_raw_items_for_analysis,
     list_discovery_items_from_db,
-    list_intel_events_from_db,
     list_intel_alerts_from_db,
+    list_intel_events_from_db,
 )
 
 

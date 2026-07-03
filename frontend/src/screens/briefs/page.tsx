@@ -1,9 +1,9 @@
 import { Copy, FileSearch, Newspaper, RefreshCcw, RadioTower, Trash2 } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
+import { PaginationControls } from "../../components/PaginationControls";
 import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import type { AgentWorkflowItem, BriefItem, BriefRecordCounts, BriefRecordException, BriefRecordStatus } from "../../types";
-import { PaginationControls } from "../../components/PaginationControls";
 
 interface BriefsPageProps {
   briefs: BriefItem[];
@@ -29,6 +29,7 @@ interface BriefsPageProps {
   onCopyBrief: (brief: BriefItem) => Promise<void>;
   onCopyPackage: (briefId: string) => Promise<void>;
   onSyncBrief: (brief: BriefItem) => Promise<void>;
+  onPublishBrief: (brief: BriefItem) => Promise<void>;
   onDeleteBrief: (brief: BriefItem) => Promise<void>;
   onAbandonAgentWorkflow: (workflowSessionId: string) => Promise<void>;
   onCreateDailyDigest: () => Promise<void>;
@@ -40,27 +41,21 @@ type BriefWorkflowView = "all" | "traditional" | "agent";
 
 const recordStatusLabel: Record<BriefRecordStatus, string> = {
   local_only: "仅本地",
-  draft_synced: "已同步草稿箱",
-  published: "已同步发表记录",
+  draft_synced: "已同步",
+  published: "已发表",
 };
 
-const briefLevelLabel: Record<BriefItem["brief_level"], string> = {
-  rule: "传统简报",
-  enhanced: "增强简报",
-  article: "AI 长文",
-};
-
-const recordStatusTone: Record<BriefRecordStatus, "success" | "warning" | "info"> = {
-  local_only: "warning",
-  draft_synced: "info",
+const recordStatusTone: Record<BriefRecordStatus, "success" | "warning" | "neutral"> = {
+  local_only: "neutral",
+  draft_synced: "success",
   published: "success",
 };
 
 const recordExceptionLabel: Record<BriefRecordException, string> = {
   pending_confirmation: "待确认",
-  draft_check_failed: "草稿箱检查失败",
-  publish_check_failed: "发表记录检查失败",
-  draft_missing: "草稿已丢失",
+  draft_check_failed: "草稿检查失败",
+  publish_check_failed: "发表检查失败",
+  draft_missing: "草稿丢失",
 };
 
 const workflowModeLabel: Record<BriefItem["workflow_mode"], string> = {
@@ -68,10 +63,42 @@ const workflowModeLabel: Record<BriefItem["workflow_mode"], string> = {
   agent: "Agent",
 };
 
+const briefLevelLabel: Record<BriefItem["brief_level"], string> = {
+  rule: "规则简报",
+  enhanced: "增强简报",
+  article: "AI 长文",
+};
+
+const workflowOptions: Array<{ value: BriefWorkflowView; label: string }> = [
+  { value: "all", label: "全部来源" },
+  { value: "traditional", label: "传统" },
+  { value: "agent", label: "Agent" },
+];
+
+const statusOptions: Array<{ value: BriefWorkbenchView; label: string; countKey?: keyof BriefRecordCounts }> = [
+  { value: "all", label: "全部状态", countKey: "all" },
+  { value: "local_only", label: "仅本地", countKey: "local_only" },
+  { value: "draft_synced", label: "已同步", countKey: "draft_synced" },
+  { value: "published", label: "已发表", countKey: "published" },
+  { value: "exceptions", label: "异常", countKey: "exceptions" },
+];
+
 function matchesView(brief: BriefItem, view: BriefWorkbenchView) {
   if (view === "all") return true;
   if (view === "exceptions") return Boolean(brief.record_exception);
   return brief.record_status === view;
+}
+
+function buildSearchText(brief: BriefItem) {
+  return [
+    brief.title,
+    brief.one_line,
+    brief.why_it_matters,
+    brief.driver_label,
+    ...brief.facts,
+    ...brief.quotes,
+    ...brief.entity_names,
+  ].filter(Boolean).join(" ").toLowerCase();
 }
 
 function truncate(text: string, limit: number): string {
@@ -80,8 +107,8 @@ function truncate(text: string, limit: number): string {
 }
 
 function detailExcerpt(brief: BriefItem): string {
-  const text = brief.wechat_markdown || brief.one_line || "";
-  return truncate(text.replace(/^#+\s*/gm, "").replace(/\s+/g, " ").trim(), 240) || "暂无正文摘要。";
+  const text = brief.wechat_markdown || brief.prompt_package_markdown || brief.one_line || "";
+  return truncate(text.replace(/^#+\s*/gm, "").replace(/\s+/g, " ").trim(), 420) || "暂无正文摘要。";
 }
 
 function todayDateLabel(): string {
@@ -102,6 +129,35 @@ function shouldShowIncludedEvents(brief: BriefItem): boolean {
 
 function canAbandonWorkflow(workflow?: AgentWorkflowItem | null): workflow is AgentWorkflowItem {
   return Boolean(workflow && (workflow.status === "running" || workflow.status === "failed"));
+}
+
+function severityClass(brief: BriefItem) {
+  if (brief.stage === "failed" || brief.record_exception) return "severity-failed";
+  if (brief.record_status === "published") return "severity-published";
+  if (brief.record_status === "draft_synced") return "severity-synced";
+  return "severity-prepared";
+}
+
+function hasReadingMetrics(brief: BriefItem) {
+  return (brief.read_count || 0) > 0;
+}
+
+function formatMetricCount(value?: number) {
+  return String(value || 0);
+}
+
+function renderSkeletonCards(count = 4) {
+  return (
+    <div className="skeleton-list" aria-label="简报加载中">
+      {Array.from({ length: count }, (_, index) => (
+        <div key={`brief-skeleton-${index}`} className="skeleton-card">
+          <div className="skeleton-line skeleton-short" />
+          <div className="skeleton-line skeleton-long" />
+          <div className="skeleton-line skeleton-medium" />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function BriefsPage({
@@ -128,11 +184,13 @@ export function BriefsPage({
   onCopyBrief,
   onCopyPackage,
   onSyncBrief,
+  onPublishBrief,
   onDeleteBrief,
   onAbandonAgentWorkflow,
   onCreateDailyDigest,
   onLoadBriefDetail,
 }: BriefsPageProps) {
+  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const workflowCounts = useMemo(
     () => ({
       all: briefs.length,
@@ -145,21 +203,236 @@ export function BriefsPage({
     () => new Map(agentWorkflows.map((workflow) => [workflow.workflow_session_id, workflow])),
     [agentWorkflows],
   );
-  const filtered = useMemo(
-    () => [...briefs].sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()),
-    [briefs],
-  );
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    return [...briefs]
+      .filter((brief) => workflowView === "all" || brief.workflow_mode === workflowView)
+      .filter((brief) => matchesView(brief, view))
+      .filter((brief) => !normalizedSearch || buildSearchText(brief).includes(normalizedSearch))
+      .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
+  }, [briefs, normalizedSearch, view, workflowView]);
   const hasTodayDigest = useMemo(() => briefs.some((brief) => isTodayDailyDigest(brief)), [briefs]);
   const dailyDigestButtonLabel = hasTodayDigest ? "今日速递已生成" : creatingDailyDigest ? "生成中..." : "生成今日速递";
 
+  function toggleExpanded(brief: BriefItem) {
+    const nextExpanded = !expandedCards.has(brief.id);
+    setExpandedCards((previous) => {
+      const next = new Set(previous);
+      if (nextExpanded) {
+        next.add(brief.id);
+      } else {
+        next.delete(brief.id);
+      }
+      return next;
+    });
+    if (nextExpanded) {
+      void onLoadBriefDetail(brief.id);
+    }
+  }
+
+  function renderEmptyState() {
+    if (!briefs.length) {
+      return <p className="empty-state">还没有生成简报。</p>;
+    }
+    if (normalizedSearch) {
+      return <p className="empty-state">没有匹配的简报。</p>;
+    }
+    return <p className="empty-state">当前筛选条件下没有简报。</p>;
+  }
+
+  function renderBriefCard(brief: BriefItem) {
+    const expanded = expandedCards.has(brief.id);
+    const busy = busyBriefId === brief.id;
+    const workflow = brief.workflow_session_id ? workflowMap.get(brief.workflow_session_id) : null;
+    const workflowBusy = Boolean(workflow && abandoningWorkflowId === workflow.workflow_session_id);
+    const visibleTags = brief.entity_names.slice(0, 4);
+    const hiddenTagCount = Math.max(brief.entity_names.length - visibleTags.length, 0);
+    const representativeLink = brief.source_links[0] ?? brief.preview_url ?? brief.wechat_editor_url ?? null;
+    const loadingDetail = loadingBriefDetailId === brief.id;
+
+    return (
+      <article key={brief.id} className={`briefs-card ${severityClass(brief)}`}>
+        <div className="briefs-card-topline">
+          <div>
+            <span className={`status-badge status-${brief.record_exception ? "danger" : recordStatusTone[brief.record_status]} status-badge-compact`}>
+              {brief.record_exception ? recordExceptionLabel[brief.record_exception] : recordStatusLabel[brief.record_status]}
+            </span>
+            <span className={`status-badge status-${brief.workflow_mode === "agent" ? "info" : "neutral"} status-badge-compact`}>
+              {workflowModeLabel[brief.workflow_mode]}
+            </span>
+            <span className="entity-tag entity-tag-muted">{briefLevelLabel[brief.brief_level]}</span>
+          </div>
+          <span>{formatRelativeTime(brief.updated_at, "刚更新")}</span>
+        </div>
+
+        <h3 className="briefs-card-title">{brief.title}</h3>
+        <p className="briefs-card-summary">{brief.one_line || "尚未生成一句话结论。"}</p>
+
+        <div className="briefs-card-meta">
+          <span>来源 {brief.source_links.length}</span>
+          <span>事实 {brief.facts.length}</span>
+          <span>引文 {brief.quotes.length}</span>
+          {visibleTags.map((name) => (
+            <span key={`${brief.id}-${name}`} className="entity-tag entity-tag-muted">
+              {name}
+            </span>
+          ))}
+          {hiddenTagCount ? <span className="entity-tag entity-tag-muted">+{hiddenTagCount}</span> : null}
+          {brief.workflow_session_id ? <span>会话 {brief.workflow_session_id}</span> : null}
+        </div>
+
+        <div className="briefs-card-actions">
+          <button type="button" className="briefs-expand" onClick={() => toggleExpanded(brief)}>
+            {expanded ? "收起详情 ▲" : loadingDetail ? "详情加载中..." : "查看详情 ▼"}
+          </button>
+          {representativeLink ? <a href={representativeLink} target="_blank" rel="noreferrer">查看原文</a> : null}
+          <button
+            type="button"
+            className="ghost-button compact"
+            disabled={busy}
+            onClick={() => {
+              if (!window.confirm("确认重新生成简报？将消耗 LLM token。")) return;
+              void onRefreshBrief(brief.event_id);
+            }}
+          >
+            <RefreshCcw size={14} />
+            重新生成
+          </button>
+          <button type="button" className="ghost-button compact" disabled={busy} onClick={() => void onSyncBrief(brief)}>
+            <RadioTower size={14} />
+            同步微信
+          </button>
+          <button
+            type="button"
+            className="ghost-button compact"
+            disabled={busy}
+            onClick={() => {
+              if (!window.confirm(`确认进入《${brief.title}》的微信发表流程？系统会停在微信验证二维码。`)) return;
+              void onPublishBrief(brief);
+            }}
+          >
+            <RadioTower size={14} />
+            发表到验证
+          </button>
+          <button type="button" className="ghost-button compact" disabled={busy} onClick={() => void onCopyBrief(brief)}>
+            <Copy size={14} />
+            复制
+          </button>
+          <button type="button" className="ghost-button compact" disabled={busy} onClick={() => void onCopyPackage(brief.id)}>
+            <Copy size={14} />
+            来源包
+          </button>
+          <button
+            type="button"
+            className="ghost-button compact danger"
+            disabled={busy}
+            onClick={() => {
+              if (!window.confirm(`确认删除《${brief.title}》？此操作不可撤销。`)) return;
+              void onDeleteBrief(brief);
+            }}
+          >
+            <Trash2 size={14} />
+            删除
+          </button>
+          {canAbandonWorkflow(workflow) ? (
+            <button
+              type="button"
+              className="ghost-button compact danger"
+              disabled={busy || workflowBusy}
+              onClick={() => {
+                if (!window.confirm("确定放弃这个 Agent 会话吗？这不会删除已保存的文章，只会解除未完成会话状态。")) return;
+                void onAbandonAgentWorkflow(workflow.workflow_session_id);
+              }}
+            >
+              {workflowBusy ? "放弃中..." : "放弃 Agent 会话"}
+            </button>
+          ) : null}
+        </div>
+
+        {expanded ? (
+          <div className="briefs-detail">
+            <div className="briefs-detail-head">
+              <span>深挖详情</span>
+              {loadingDetail ? <span className="subtle">加载中...</span> : null}
+            </div>
+            <div className="draft-list-block">
+              <span>为什么值得关注</span>
+              <p>{brief.why_it_matters || "当前仍以规则简报为主，可继续补充判断。"}</p>
+            </div>
+            {!!brief.facts.length ? (
+              <div className="draft-list-block">
+                <span>核心事实</span>
+                <ul>
+                  {brief.facts.slice(0, 5).map((fact) => (
+                    <li key={fact}>{fact}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <div className="draft-list-block">
+              <span>文章详情</span>
+              <p>{detailExcerpt(brief)}</p>
+            </div>
+            {shouldShowIncludedEvents(brief) ? (
+              <div className="draft-list-block">
+                <span>收录事件</span>
+                <ul>
+                  {brief.included_events?.map((event) => (
+                    <li key={event.event_id}>
+                      {event.representative_link ? (
+                        <a href={event.representative_link} target="_blank" rel="noreferrer">{event.title}</a>
+                      ) : event.title}
+                      <div className="briefs-card-meta">
+                        <span>{event.alert_state}</span>
+                        <span>来源 {event.source_count}</span>
+                        <span>深挖 {event.deep_dive_status ?? "pending"}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {workflow ? (
+              <div className="briefs-card-meta">
+                <span>Agent 状态 {workflow.status}</span>
+                <span>步骤 {workflow.current_step}</span>
+                <span>更新 {formatRelativeTime(workflow.updated_at, "时间未知")}</span>
+                {workflow.last_error ? <span className="error-note">{workflow.last_error}</span> : null}
+              </div>
+            ) : null}
+            {hasReadingMetrics(brief) ? (
+              <div className="briefs-metrics-block">
+                <span>阅读数据</span>
+                <strong>阅读 {formatMetricCount(brief.read_count)}</strong>
+                <strong>点赞 {formatMetricCount(brief.like_count)}</strong>
+                <strong>分享 {formatMetricCount(brief.share_count)}</strong>
+                <strong>留言 {formatMetricCount(brief.comment_count)}</strong>
+                {(brief.recommend_count || 0) > 0 ? <strong>推荐 {brief.recommend_count}</strong> : null}
+                {(brief.highlight_count || 0) > 0 ? <strong>划线 {brief.highlight_count}</strong> : null}
+                {(brief.reprint_count || 0) > 0 ? <strong>转载 {brief.reprint_count}</strong> : null}
+                {brief.tip_amount && brief.tip_amount !== "0.00" ? <strong>赞赏 ¥{brief.tip_amount}</strong> : null}
+                {brief.metrics_fetched_at ? <em>数据更新于 {formatDateTime(brief.metrics_fetched_at, { fallback: "时间未知" })}</em> : null}
+              </div>
+            ) : null}
+            {brief.last_error ? <span className="error-note">{brief.last_error}</span> : null}
+            <button type="button" className="briefs-expand" onClick={() => toggleExpanded(brief)}>
+              收起详情 ▲
+            </button>
+          </div>
+        ) : null}
+      </article>
+    );
+  }
+
   return (
     <section className="panel">
-      <div className="panel-header">
+      <div className="panel-header compact">
         <div>
-          <p className="eyebrow">简报</p>
-          <h2>共享总账：区分传统链与 Agent 会话产物</h2>
+          <p className="eyebrow">简报/文章</p>
+          <h2>简报/文章</h2>
         </div>
         <div className="panel-header-actions">
+          <span className="subtle">{total} 篇文章</span>
           <button
             type="button"
             className="primary-button compact"
@@ -172,212 +445,57 @@ export function BriefsPage({
         </div>
       </div>
 
-      <div className="segmented-control draft-workbench-tabs">
-        <button type="button" className={workflowView === "all" ? "segment-active" : ""} onClick={() => onWorkflowViewChange("all")}>
-          全部
-          <strong>{workflowCounts.all}</strong>
-        </button>
-        <button type="button" className={workflowView === "traditional" ? "segment-active" : ""} onClick={() => onWorkflowViewChange("traditional")}>
-          传统
-          <strong>{workflowCounts.traditional}</strong>
-        </button>
-        <button type="button" className={workflowView === "agent" ? "segment-active" : ""} onClick={() => onWorkflowViewChange("agent")}>
-          Agent
-          <strong>{workflowCounts.agent}</strong>
-        </button>
-      </div>
+      <div className="briefs-filter-bar">
+        <label className="briefs-filter-group">
+          <span>来源</span>
+          <select aria-label="来源筛选" value={workflowView} disabled={loading} onChange={(event) => onWorkflowViewChange(event.target.value as BriefWorkflowView)}>
+            {workflowOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label} ({workflowCounts[option.value]})
+              </option>
+            ))}
+          </select>
+        </label>
 
-      <div className="segmented-control draft-workbench-tabs">
-        <button type="button" className={view === "all" ? "segment-active" : ""} onClick={() => onViewChange("all")}>
-          全部
-          <strong>{recordCounts.all}</strong>
-        </button>
-        <button type="button" className={view === "local_only" ? "segment-active" : ""} onClick={() => onViewChange("local_only")}>
-          仅本地
-          <strong>{recordCounts.local_only}</strong>
-        </button>
-        <button type="button" className={view === "draft_synced" ? "segment-active" : ""} onClick={() => onViewChange("draft_synced")}>
-          已同步草稿箱
-          <strong>{recordCounts.draft_synced}</strong>
-        </button>
-        <button type="button" className={view === "published" ? "segment-active" : ""} onClick={() => onViewChange("published")}>
-          已同步发表记录
-          <strong>{recordCounts.published}</strong>
-        </button>
-        <button type="button" className={view === "exceptions" ? "segment-active" : ""} onClick={() => onViewChange("exceptions")}>
-          待确认
-          <strong>{recordCounts.exceptions}</strong>
-        </button>
-      </div>
+        <label className="briefs-filter-group">
+          <span>状态</span>
+          <select aria-label="状态筛选" value={view} disabled={loading} onChange={(event) => onViewChange(event.target.value as BriefWorkbenchView)}>
+            {statusOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}{option.countKey ? ` (${recordCounts[option.countKey]})` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
 
-      <div className="draft-toolbar">
-        <label className="draft-search">
+        <label className="draft-search briefs-search">
           <FileSearch size={16} />
           <input
+            type="search"
             value={searchTerm}
             onChange={(event) => onSearchChange(event.target.value)}
             placeholder="搜索标题、结论、价值判断"
+            aria-label="搜索简报"
           />
         </label>
-        <div className="draft-toolbar-summary">
-          <span>当前显示</span>
-          <strong>{filtered.length}</strong>
-          <span>/ {total} 条</span>
-        </div>
+
+        <PaginationControls
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          currentCount={filtered.length}
+          filteredCount={filtered.length}
+          itemLabel="篇文章"
+          loading={loading}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
       </div>
 
-      <PaginationControls
-        page={page}
-        pageSize={pageSize}
-        total={total}
-        currentCount={filtered.length}
-        itemLabel="条简报"
-        loading={loading}
-        onPageChange={onPageChange}
-        onPageSizeChange={onPageSizeChange}
-      />
-
-      <div className="intel-list">
-        {filtered.length ? filtered.map((brief) => {
-          const busy = busyBriefId === brief.id;
-          const workflow = brief.workflow_session_id ? workflowMap.get(brief.workflow_session_id) : null;
-          const workflowBusy = Boolean(workflow && abandoningWorkflowId === workflow.workflow_session_id);
-          return (
-            <article key={brief.id} className="intel-row-card">
-              <div className="intel-card-topline">
-                <span className={`status-badge status-${recordStatusTone[brief.record_status]}`}>
-                  {recordStatusLabel[brief.record_status]}
-                </span>
-                {brief.record_exception ? (
-                  <span className="status-badge status-danger">{recordExceptionLabel[brief.record_exception]}</span>
-                ) : null}
-                <span className={`status-badge status-${brief.workflow_mode === "agent" ? "info" : "neutral"}`}>
-                  {workflowModeLabel[brief.workflow_mode]}
-                </span>
-                <span>{briefLevelLabel[brief.brief_level]}</span>
-              </div>
-              <strong>{brief.title}</strong>
-              <p>{truncate(brief.one_line || "尚未生成一句话结论。", 160)}</p>
-              <div className="intel-score-row">
-                <span>{formatRelativeTime(brief.updated_at, "刚更新")}</span>
-                <span>草稿箱: {brief.draft_remote_updated_at ? `已命中 ${formatDateTime(brief.draft_remote_updated_at, { fallback: "暂无" })}` : "未命中"}</span>
-                <span>发表记录: {brief.publish_record_published_at ? brief.publish_record_published_at : "未命中"}</span>
-              </div>
-              <div className="intel-score-row">
-                <span>{brief.facts.length} 条事实</span>
-                <span>{brief.source_links.length} 条来源</span>
-                <span>{brief.quotes.length} 条引文</span>
-              </div>
-              {brief.workflow_session_id ? (
-                <div className="intel-score-row">
-                  <span>会话 {brief.workflow_session_id}</span>
-                  <span>步骤 {workflow?.current_step ?? "article_saved"}</span>
-                  <span>状态 {workflow?.status ?? "running"}</span>
-                </div>
-              ) : null}
-              <div className="draft-list-block">
-                <span>为什么值得关注</span>
-                <p>{brief.why_it_matters || "当前仍以规则简报为主，可继续补充判断。"}</p>
-              </div>
-              {!!brief.facts.length ? (
-                <div className="draft-list-block">
-                  <span>核心事实</span>
-                  <ul>
-                    {brief.facts.slice(0, 4).map((fact) => (
-                      <li key={fact}>{fact}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-              <details className="draft-list-block">
-                <summary
-                  onClick={() => {
-                    if (!brief.wechat_markdown || !brief.prompt_package_markdown || (brief.title.includes("今日科技速递") && !brief.included_events)) {
-                      void onLoadBriefDetail(brief.id);
-                    }
-                  }}
-                >
-                  文章详情{loadingBriefDetailId === brief.id ? "（加载中...）" : ""}
-                </summary>
-                <p>{detailExcerpt(brief)}</p>
-                {shouldShowIncludedEvents(brief) ? (
-                  <div className="draft-list-block">
-                    <span>收录事件</span>
-                    <ul>
-                      {brief.included_events?.map((event) => (
-                        <li key={event.event_id}>
-                          {event.representative_link ? (
-                            <a href={event.representative_link} target="_blank" rel="noreferrer">{event.title}</a>
-                          ) : event.title}
-                          <div className="intel-score-row">
-                            <span>{event.alert_state}</span>
-                            <span>来源 {event.source_count}</span>
-                            <span>深挖 {event.deep_dive_status ?? "pending"}</span>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-              </details>
-              {(brief.read_count || 0) > 0 || (brief.like_count || 0) > 0 || (brief.share_count || 0) > 0 ? (
-                <div className="intel-score-row" style={{ gap: "12px" }}>
-                  <span style={{ color: "#576b95", fontWeight: 600 }}>阅读 {brief.read_count || 0}</span>
-                  <span>点赞 {brief.like_count || 0}</span>
-                  <span>分享 {brief.share_count || 0}</span>
-                  {(brief.comment_count || 0) > 0 ? <span>留言 {brief.comment_count}</span> : null}
-                  {(brief.recommend_count || 0) > 0 ? <span>推荐 {brief.recommend_count}</span> : null}
-                  {(brief.highlight_count || 0) > 0 ? <span>划线 {brief.highlight_count}</span> : null}
-                  {(brief.reprint_count || 0) > 0 ? <span>转载 {brief.reprint_count}</span> : null}
-                  {brief.tip_amount !== "0.00" ? <span>赞赏 ¥{brief.tip_amount}</span> : null}
-                  <span style={{ color: "#999", fontSize: "11px" }}>
-                    {brief.metrics_fetched_at ? formatRelativeTime(brief.metrics_fetched_at, "") : ""}
-                  </span>
-                </div>
-              ) : null}
-              {brief.last_error ? <span className="error-note">{brief.last_error}</span> : null}
-              <div className="intel-inline-actions">
-                <span>{formatDateTime(brief.updated_at, { fallback: "暂无" })}</span>
-                <button type="button" className="ghost-button compact" disabled={busy} onClick={() => {
-                  if (!window.confirm("确认重新生成简报？将消耗 LLM token。")) return;
-                  void onRefreshBrief(brief.event_id);
-                }}>
-                  <RefreshCcw size={14} />
-                  重新生成
-                </button>
-                <button type="button" className="ghost-button compact" disabled={busy} onClick={() => void onSyncBrief(brief)}>
-                  <RadioTower size={14} />
-                  同步到微信草稿箱
-                </button>
-                <button type="button" className="ghost-button compact" disabled={busy} onClick={() => void onCopyBrief(brief)}>
-                  <Copy size={14} />
-                  复制简报
-                </button>
-                <button type="button" className="ghost-button compact" disabled={busy} onClick={() => void onCopyPackage(brief.id)}>
-                  <Copy size={14} />
-                  复制来源包
-                </button>
-                <button type="button" className="ghost-button compact danger" disabled={busy} onClick={() => void onDeleteBrief(brief)}>
-                  <Trash2 size={14} />
-                  删除简报
-                </button>
-                {canAbandonWorkflow(workflow) ? (
-                  <button
-                    type="button"
-                    className="ghost-button compact danger"
-                    disabled={busy || workflowBusy}
-                    onClick={() => {
-                      if (!window.confirm("确定放弃这个 Agent 会话吗？这不会删除已保存的文章，只会解除未完成会话状态。")) return;
-                      void onAbandonAgentWorkflow(workflow.workflow_session_id);
-                    }}
-                  >
-                    {workflowBusy ? "放弃中..." : "放弃 Agent 会话"}
-                  </button>
-                ) : null}
-              </div>
-            </article>
-          );
-        }) : <p className="empty-state">当前筛选条件下没有简报。</p>}
+      <div className="briefs-list">
+        {loading && filtered.length === 0 ? renderSkeletonCards() : (
+          filtered.length ? filtered.map((brief) => renderBriefCard(brief)) : renderEmptyState()
+        )}
       </div>
     </section>
   );

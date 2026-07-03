@@ -1,67 +1,16 @@
 from __future__ import annotations
 
-from collections import Counter
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from copy import deepcopy
-from datetime import datetime, timedelta, timezone
-import hashlib
-from html import escape
-import json
-import os
-import shutil
-import time
-import traceback
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
-import zipfile
-from pathlib import Path
 import re
-from threading import RLock, Thread
+from copy import deepcopy
+from datetime import datetime, timedelta
+from html import escape
+from pathlib import Path
+from threading import RLock
 from typing import Any
 from uuid import uuid4
-import xml.etree.ElementTree as ET
 
-from .base import (
-    BACKUP_DIR,
-    CONFIG_FILE,
-    CONFIG_DIR,
-    DATA_FILE,
-    derive_config_file_for_data_file,
-    DEFAULT_RUNTIME_INTENT,
-    DEFAULT_RELEASE_NOTES_URL,
-    DEFAULT_RELEASE_REPO,
-    DEFAULT_USER_SETTINGS,
-    INTENT_STAGE_PLANS,
-    INTENT_TO_WORK_SCOPE,
-    LOG_DIR,
-    LOCAL_TZ,
-    LOCAL_TZ as LTZ,
-    load_version_manifest,
-    MAX_RAW_ITEMS,
-    MODE_STAGE_PLANS,
-    RUN_STALE_SECONDS,
-    SLOW_SOURCE_WARNING_SECONDS,
-    SOURCE_COLLECTION_STALL_SECONDS,
-    SOURCE_TIMEOUT_SECONDS,
-    SYNTHETIC_MARKERS,
-    UTC,
-    UNSUPPORTED_SOURCE_DRIVERS,
-    atomic_write_json,
-    backup_file,
-    _contains_synthetic_marker,
-    deepcopy_json,
-    _extract_json_payload,
-    _is_synthetic_raw_item,
-    ensure_parent_dir,
-    freshness_bucket,
-    local_now,
-    minutes_between,
-    now_iso,
-    parse_clock_time,
-    parse_time,
-    read_json_file,
-    resolve_existing_state_file,
-    schedule_to_minutes,
+from ..llm.store_llm import (
+    DEFAULT_LLM_TASK_TEMPLATE,
 )
 
 # Lazy imports to avoid circular dependencies
@@ -72,106 +21,18 @@ from .base import (
 # from ..intel.pipeline import ... (imported in methods)
 # from ..llm import ... (imported in methods)
 # from ..intel.legacy_sources import ... (imported in methods)
-from ..models import (
-    AgentHtmlDiscoveryItem,
-    AgentHtmlDiscoverMode,
-    AgentHtmlDiscoveryRules,
-    AgentHtmlDocument,
-    AgentHtmlDocumentRevision,
-    AgentHtmlEvent,
-    AgentHtmlEventHistoryItem,
-    AgentHtmlEventSnapshot,
-    AgentHtmlRun,
-    AgentHtmlTarget,
-    AgentHtmlTargetCreatePayload,
-    AgentHtmlTargetUpdatePayload,
-    AgentArticlePayload,
-    AppUpdateInfo,
-    AppVersionInfo,
-    AutomationMode,
-    AutomationModeDefinition,
-    AutomationModeProfile,
-    BriefItem,
-    DouyinArticleFillPayload,
-    BrowserSessionPayload,
-    BrowserSessionState,
-    BriefStageCounts,
-    BriefRecordCounts,
-    ChannelConfigPayload,
-    ChainStateCard,
-    DashboardResponse,
-    DashboardStats,
-    DashboardTopBar,
-    EventDeepDive,
-    DiscoveryItem,
-    EntityWatchlistItem,
-    EntityWatchlistSummaryItem,
-    ExecutionChainSnapshot,
-    FreshnessSnapshot,
-    GithubSignalItem,
-    ImportBackupResponse,
-    IntelAlert,
-    IntelAlertsResponse,
-    IntelEvent,
-    IntelEventResponse,
-    IntelEventsResponse,
-    IntelOverviewSummary,
-    IntelSummaryResponse,
-    HotClusterCard,
-    IntelStreamItem,
-    LogItem,
-    RuntimeCycleSummary,
-    RuntimeIssueItem,
-    RuntimeSlowSource,
-    SchedulerStatus,
-    PublishBackendStatus,
-    PublishTask,
-    ReferenceProject,
-    RuntimePlan,
-    RuntimeIntent,
-    RuntimePlanPayload,
-    SourceConnector,
-    SourceConnectorPayload,
-    CreateSourcePayload,
-    SourceSyncResponse,
-    SystemDoctorResult,
-    SystemCheckItem,
-    DouyinChannelConfig,
-    DouyinArticleStructureSnapshot,
-    WeChatDraftSyncCheckResult,
-    WeChatMappingResponse,
-    WeChatMappingRow,
-    WeChatMappingSnapshot,
-    WeChatRemoteDraftItem,
-    WeChatPublishHistorySnapshot,
-    WeChatPublishRecordItem,
-    WeChatChannelConfig,
-    DictOkResponse,
+from .base import (
+    CONFIG_FILE,
+    DATA_FILE,
+    UTC,
+    derive_config_file_for_data_file,
+    ensure_parent_dir,
+    freshness_bucket,
+    load_version_manifest,
+    now_iso,
+    parse_time,
+    resolve_existing_state_file,
 )
-from ..llm.store_llm import (
-    build_provider_from_profile,
-    build_runtime_tasks,
-    default_llm_state,
-    infer_fallback_profile_id_from_tasks,
-    merge_llm_profiles,
-    DEFAULT_LLM_PROFILES,
-    DEFAULT_LLM_TASK_TEMPLATE,
-)
-from .defaults import (
-    DEFAULT_SOURCES,
-    AUTOMATION_MODE_DEFINITIONS,
-    DEFAULT_AUTOMATION_PROFILES,
-)
-from ..services.wechat_reconcile import (
-    apply_publish_history_matches,
-    build_wechat_mapping_snapshot,
-    normalize_wechat_title as _normalize_wechat_title,
-    project_briefs,
-    wechat_title_matches as _wechat_title_matches,
-)
-from ..intel.normalize import normalize_raw_items
-from .reference_projects import write_reference_baseline
-from ..sources import discover_sources
 from .runtime import StoreCoreRuntimeMixin
 from .state import StoreCoreStateMixin
 
@@ -223,7 +84,7 @@ def _migrate_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             **current,
             **task,
             "task_key": key,
-            "label": str((task.get("label") or current.get("label") or base.get("label") or key)),
+            "label": str(task.get("label") or current.get("label") or base.get("label") or key),
         }
 
     ordered: list[dict[str, Any]] = []

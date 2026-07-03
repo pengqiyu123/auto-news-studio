@@ -6,6 +6,10 @@
 @import "./sources.css";
 @import "./intel.css";
 @import "./logs.css";
+@import "./analysis.css";
+@import "./watchlist.css";
+@import "./briefs.css";
+@import "./publish-history.css";
 @import "./deep-dive.css";
 @import "./overlays.css";
 @import "./editor-modal.css";

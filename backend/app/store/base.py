@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
 import json
 import os
 import re
 import shutil
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 LEGACY_DATA_DIR = PROJECT_ROOT / "backend" / "data"
@@ -30,7 +29,7 @@ BACKUP_DIR = RUNTIME_DIR / "backups"
 LOG_DIR = RUNTIME_LOG_DIR
 DIST_DIR = PROJECT_ROOT / "dist"
 VERSION_FILE = PROJECT_ROOT / "version.json"
-UTC = timezone.utc
+UTC = UTC
 LOCAL_TZ = timezone(timedelta(hours=8))
 
 MAX_RAW_ITEMS = int(os.environ.get("MAX_RAW_ITEMS", "480"))

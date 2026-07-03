@@ -8,7 +8,7 @@ Loop:
   publish_history → analytics → agent,articles (with optimized title hints)
 """
 
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 
 from fastapi import APIRouter
 
@@ -128,7 +128,7 @@ def _generate_markdown_report(total_articles: int, high_performers: list[dict]) 
     lines.append("# 标题优化分析报告")
     lines.append(f"\n**生成时间**: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"**历史文章数**: {total_articles}")
-    lines.append(f"**参考样本**: 最近 50 篇")
+    lines.append("**参考样本**: 最近 50 篇")
 
     # Performance summary
     if high_performers:
@@ -138,7 +138,7 @@ def _generate_markdown_report(total_articles: int, high_performers: list[dict]) 
         for i, article in enumerate(high_performers, 1):
             lines.append(f"### {i}. {article.get('title', 'N/A')}")
             lines.append(f"**发布时间**: {article.get('published_at', 'N/A')}")
-            lines.append(f"\n**数据**:")
+            lines.append("\n**数据**:")
             lines.append(f"  - 阅读: {article.get('read_count', 0):,} | 点赞: {article.get('like_count', 0):,} | ")
             lines.append(f"  - 分享: {article.get('share_count', 0):,} | 推荐: {article.get('recommend_count', 0):,} | ")
             lines.append(f"  - 留言: {article.get('comment_count', 0):,}")

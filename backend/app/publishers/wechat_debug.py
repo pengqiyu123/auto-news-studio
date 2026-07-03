@@ -41,6 +41,24 @@ from .wechat.session import (
 UTC = UTC
 
 
+def _resolve_current_editor_page(context, page, selector_profile: dict[str, list[str] | str], step_logs: list[str], *, phase: str):
+    editor_page = _locate_editor_page_with_retry(context, page, selector_profile, step_logs)
+    if editor_page is not page:
+        step_logs.append(f"检测到当前编辑页接管 URL={_page_url(editor_page)}")
+    try:
+        _converge_context_to_target(context, editor_page, step_logs, phase=phase)
+    except Exception as exc:
+        if not _validate_wechat_page_identity(editor_page, selector_profile, expected="editor"):
+            raise
+        step_logs.append(f"编辑页收敛未完成 phase={phase} error={exc}；目标编辑页已确认，继续。")
+    try:
+        WECHAT_BROWSER_MANAGER._page = editor_page
+    except Exception:
+        pass
+    WECHAT_BROWSER_MANAGER.set_resident_page("editor")
+    return editor_page
+
+
 def _click_remote_draft_edit_button(page, title: str, step_logs: list[str]) -> dict[str, object]:
     compact_title = " ".join(str(title or "").replace("\xa0", " ").split()).strip().lower()
     if not compact_title:
@@ -391,7 +409,7 @@ def test_wechat_cover_only(
 
     try:
         def _run(_context, page):
-            target = _wait_for_wechat_editor_in_current_page_with_retry(page, selector_profile, step_logs)
+            target = _resolve_current_editor_page(_context, page, selector_profile, step_logs, phase="cover_only_editor_ready")
             _ensure_wechat_ai_cover(
                 target,
                 selector_profile,
@@ -720,9 +738,7 @@ def fill_wechat_author_only(
 
     try:
         def _run(context, page):
-            _enforce_single_tab(context, page, step_logs, phase="author_only_start", allow_recover=True)
-            editor_page = _wait_for_wechat_editor_in_current_page_with_retry(page, selector_profile, step_logs)
-            _enforce_single_tab(context, editor_page, step_logs, phase="author_only_editor_ready", allow_recover=False)
+            editor_page = _resolve_current_editor_page(context, page, selector_profile, step_logs, phase="author_only_editor_ready")
             editor_page.wait_for_timeout(1200)
             step_logs.append(f"已锁定当前微信编辑页 URL={editor_page.url}")
             WECHAT_BROWSER_MANAGER.set_resident_page("editor")
@@ -783,9 +799,7 @@ def test_wechat_publish_settings_only(
 
     try:
         def _run(context, page):
-            _enforce_single_tab(context, page, step_logs, phase="settings_only_start", allow_recover=True)
-            editor_page = _wait_for_wechat_editor_in_current_page_with_retry(page, selector_profile, step_logs)
-            _enforce_single_tab(context, editor_page, step_logs, phase="settings_only_editor_ready", allow_recover=False)
+            editor_page = _resolve_current_editor_page(context, page, selector_profile, step_logs, phase="settings_only_editor_ready")
             editor_page.wait_for_timeout(1200)
             step_logs.append(f"已锁定当前微信编辑页 URL={editor_page.url}")
             WECHAT_BROWSER_MANAGER.set_resident_page("editor")
@@ -866,9 +880,8 @@ def inspect_wechat_publish_settings_dom(
 
     try:
         def _run(_context, page):
-            current_url = str(page.url or "")
-            if "appmsg" not in current_url and "media/appmsg_edit" not in current_url:
-                raise RuntimeError(f"当前不在微信编辑页：{current_url}")
+            selector_profile = get_selector_profile(selector_version)
+            page = _resolve_current_editor_page(_context, page, selector_profile, step_logs, phase="inspect_publish_settings_dom_ready")
 
             # Selector candidates to probe, grouped by semantic purpose.
             # Multiple candidates per group increase the chance of a match
@@ -1089,11 +1102,9 @@ def test_collection_click(
 
     try:
         def _run(context, page):
-            current_url = str(page.url or "")
-            if "appmsg" not in current_url and "media/appmsg_edit" not in current_url:
-                raise RuntimeError(f"当前不在微信编辑页：{current_url}")
-            step_logs.append(f"已锁定编辑器 URL={current_url}")
             selector_profile = get_selector_profile(selector_version)
+            page = _resolve_current_editor_page(context, page, selector_profile, step_logs, phase="test_collection_click_editor_ready")
+            step_logs.append(f"已锁定编辑器 URL={page.url}")
 
             _select_collection_ai_news(
                 page,
@@ -1209,11 +1220,9 @@ def test_claim_source_click(
 
     try:
         def _run(context, page):
-            current_url = str(page.url or "")
-            if "appmsg" not in current_url and "media/appmsg_edit" not in current_url:
-                raise RuntimeError(f"当前不在微信编辑页：{current_url}")
-            step_logs.append(f"已锁定编辑器 URL={current_url}")
             selector_profile = get_selector_profile(selector_version)
+            page = _resolve_current_editor_page(context, page, selector_profile, step_logs, phase="test_claim_source_click_editor_ready")
+            step_logs.append(f"已锁定编辑器 URL={page.url}")
 
             _select_claim_source_personal(
                 page,
@@ -1316,11 +1325,10 @@ def eval_wechat_editor_js(
 
     try:
         def _run(context, page):
-            current_url = str(page.url or "")
-            snapshot["url"] = current_url
-            if "appmsg" not in current_url and "media/appmsg_edit" not in current_url:
-                raise RuntimeError(f"当前不在微信编辑页：{current_url}")
-            step_logs.append(f"已锁定编辑器 URL={current_url}")
+            selector_profile = get_selector_profile(str(channel.get("selectors_version", "wechat-mp-v1")))
+            page = _resolve_current_editor_page(context, page, selector_profile, step_logs, phase="eval_js_editor_ready")
+            snapshot["url"] = str(page.url or "")
+            step_logs.append(f"已锁定编辑器 URL={page.url}")
             step_logs.append(f"准备执行 JS, 长度={len(script)}")
 
             result = page.evaluate(script)

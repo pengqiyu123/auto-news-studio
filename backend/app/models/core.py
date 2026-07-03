@@ -11,9 +11,101 @@ This file re-exports everything so all consumers can continue to
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from .analysis import (  # noqa: F401
+    AnalysisBatchRunInfo,
+    AnalysisBatchStatusResponse,
+    AnalysisFeedbackPayload,
+    AnalysisFeedbackResponse,
+    AnalysisFeedbackStatsResponse,
+    AnalysisReportItem,
+    AnalysisReportRequest,
+    AnalysisReportResponse,
+    AnalysisReportSections,
+    AnalysisReportsResponse,
+    AnalysisReportSummary,
+    AnalysisSignalInfo,
+    AnalysisSignalsResponse,
+    AnalysisTopicEventInfo,
+    AnalysisTopicEventsResponse,
+    EventRelationInfo,
+    EventRelationsResponse,
+    TemporalRuleInfo,
+    TemporalRulesResponse,
+    TopicInfo,
+    TopicPeriodicityInfo,
+    TopicPeriodicityResponse,
+    TopicsResponse,
+    TrendSignalInfo,
+    TrendSignalsResponse,
+)
+
+# Re-export intel/agent-html models
+from .intel import (  # noqa: F401
+    AgentHtmlAlertState,
+    AgentHtmlDiscoverMode,
+    AgentHtmlDiscoveryItem,
+    AgentHtmlDiscoveryResponse,
+    AgentHtmlDiscoveryRules,
+    AgentHtmlDocument,
+    AgentHtmlDocumentResponse,
+    AgentHtmlDocumentRevision,
+    AgentHtmlDocumentsResponse,
+    AgentHtmlEvent,
+    AgentHtmlEventChangeState,
+    AgentHtmlEventHistoryItem,
+    AgentHtmlEventResponse,
+    AgentHtmlEventSnapshot,
+    AgentHtmlEventsResponse,
+    AgentHtmlExtractMode,
+    AgentHtmlItemState,
+    AgentHtmlMainlineBatchPayload,
+    AgentHtmlRun,
+    AgentHtmlRunBatchPayload,
+    AgentHtmlRunResponse,
+    AgentHtmlRunsResponse,
+    AgentHtmlRunStatus,
+    AgentHtmlTarget,
+    AgentHtmlTargetCreatePayload,
+    AgentHtmlTargetResponse,
+    AgentHtmlTargetsResponse,
+    AgentHtmlTargetType,
+    AgentHtmlTargetUpdatePayload,
+    DashboardTopBar,
+    DeepDiveExtractStatus,
+    DeepDiveFetchStatus,
+    DeepDiveSourceItem,
+    DeepDiveStatus,
+    DiscoveryItem,
+    DiscoveryItemsResponse,
+    EntityWatchlistItem,
+    EntityWatchlistPayload,
+    EntityWatchlistResponse,
+    EntityWatchlistSummaryItem,
+    EventDeepDive,
+    EventDeepDiveResponse,
+    EventDeepDivesResponse,
+    EventSnapshot,
+    FreshnessSnapshot,
+    HistoryRecordStatus,
+    IntelAlert,
+    IntelAlertHistoryItem,
+    IntelAlertLevel,
+    IntelAlertsResponse,
+    IntelEvent,
+    IntelEventChangeState,
+    IntelEventHistoryItem,
+    IntelEventResponse,
+    IntelEventsResponse,
+    IntelEventState,
+    IntelItemChangeState,
+    IntelOverviewSummary,
+    IntelStreamItem,
+    IntelSummaryResponse,
+)
 
 # Re-export LLM models
 from .llm import (  # noqa: F401
@@ -63,70 +155,6 @@ from .publish import (  # noqa: F401
     WeChatPublishHistorySnapshot,
     WeChatPublishRecordItem,
     WeChatRemoteDraftItem,
-)
-
-# Re-export intel/agent-html models
-from .intel import (  # noqa: F401
-    AgentHtmlDiscoveryItem,
-    AgentHtmlDiscoveryResponse,
-    AgentHtmlDiscoveryRules,
-    AgentHtmlDocument,
-    AgentHtmlDocumentResponse,
-    AgentHtmlDocumentRevision,
-    AgentHtmlDocumentsResponse,
-    AgentHtmlEvent,
-    AgentHtmlEventHistoryItem,
-    AgentHtmlEventResponse,
-    AgentHtmlEventSnapshot,
-    AgentHtmlEventsResponse,
-    AgentHtmlItemState,
-    AgentHtmlMainlineBatchPayload,
-    AgentHtmlRun,
-    AgentHtmlRunBatchPayload,
-    AgentHtmlRunResponse,
-    AgentHtmlRunStatus,
-    AgentHtmlRunsResponse,
-    AgentHtmlTarget,
-    AgentHtmlTargetCreatePayload,
-    AgentHtmlTargetResponse,
-    AgentHtmlTargetsResponse,
-    AgentHtmlTargetUpdatePayload,
-    DashboardTopBar,
-    DeepDiveExtractStatus,
-    DeepDiveFetchStatus,
-    DeepDiveSourceItem,
-    DeepDiveStatus,
-    DiscoveryItem,
-    DiscoveryItemsResponse,
-    EntityWatchlistItem,
-    EntityWatchlistPayload,
-    EntityWatchlistResponse,
-    EntityWatchlistSummaryItem,
-    EventDeepDive,
-    EventDeepDiveResponse,
-    EventDeepDivesResponse,
-    EventSnapshot,
-    FreshnessSnapshot,
-    IntelAlert,
-    IntelAlertHistoryItem,
-    IntelAlertLevel,
-    IntelAlertsResponse,
-    IntelEvent,
-    IntelEventChangeState,
-    IntelEventHistoryItem,
-    IntelEventResponse,
-    IntelEventState,
-    IntelEventsResponse,
-    IntelItemChangeState,
-    IntelOverviewSummary,
-    IntelStreamItem,
-    IntelSummaryResponse,
-    AgentHtmlAlertState,
-    AgentHtmlDiscoverMode,
-    AgentHtmlEventChangeState,
-    AgentHtmlExtractMode,
-    AgentHtmlTargetType,
-    HistoryRecordStatus,
 )
 
 # ---------------------------------------------------------------------------
@@ -213,25 +241,25 @@ class AutomationModeProfile(BaseModel):
     mode: AutomationMode
     collect_interval_minutes: int = Field(default=30, ge=5, le=360)
     brief_trigger: AutomationBriefTrigger = "manual"
-    brief_schedule_time: Optional[str] = None
+    brief_schedule_time: str | None = None
     delivery_target: AutomationDeliveryTarget = "local_only"
     selection_mode: AutomationSelectionMode = "all_new"
     brief_limit: int = Field(default=10, ge=1, le=100)
     publish_strategy: AutomationPublishStrategy = "disabled"
-    publish_schedule_time: Optional[str] = None
+    publish_schedule_time: str | None = None
     require_approval: bool = True
     notes: str = ""
 
 
 class RuntimePlan(BaseModel):
     launch_mode: RuntimeLaunchMode = "interval_now"
-    start_at: Optional[str] = None
-    interval_minutes: Optional[int] = Field(default=30, ge=5, le=360)
+    start_at: str | None = None
+    interval_minutes: int | None = Field(default=30, ge=5, le=360)
     timezone: str = "Asia/Shanghai"
     effective_mode: AutomationMode = "manual"
     work_scope: IntelWorkScope = "collect_events_alerts"
     delivery_mode: DeliveryMode = "collect_only"
-    delivery_schedule_time: Optional[str] = None
+    delivery_schedule_time: str | None = None
     admission_strategy: AdmissionStrategy = "top_scored"
     batch_limit: int = Field(default=3, ge=1, le=20)
     admission_filters: dict[str, bool | int] = Field(default_factory=dict)
@@ -245,11 +273,11 @@ class SourceConnector(BaseModel):
     platform: str = "rss"
     enabled: bool
     schedule: str
-    interval_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
+    interval_minutes: int | None = Field(default=None, ge=1, le=1440)
     priority: int = Field(ge=1, le=10)
     weight: float = Field(default=0.7, ge=0.0, le=1.0)
     auth: dict[str, str] = Field(default_factory=dict)
-    url: Optional[str] = None
+    url: str | None = None
     tags: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
     origin_repo: str
@@ -257,25 +285,25 @@ class SourceConnector(BaseModel):
     health_status: SourceHealth = "idle"
     health_detail: str = ""
     item_count: int = Field(default=0, ge=0)
-    last_synced_at: Optional[str] = None
-    last_error: Optional[str] = None
-    last_attempt_at: Optional[str] = None
-    last_success_at: Optional[str] = None
-    last_failure_at: Optional[str] = None
+    last_synced_at: str | None = None
+    last_error: str | None = None
+    last_attempt_at: str | None = None
+    last_success_at: str | None = None
+    last_failure_at: str | None = None
     consecutive_failures: int = Field(default=0, ge=0)
-    last_duration_ms: Optional[int] = Field(default=None, ge=0)
-    avg_duration_ms: Optional[int] = Field(default=None, ge=0)
+    last_duration_ms: int | None = Field(default=None, ge=0)
+    avg_duration_ms: int | None = Field(default=None, ge=0)
     last_item_count: int = Field(default=0, ge=0)
-    updated_at: Optional[str] = None
+    updated_at: str | None = None
 
 
 class SourceConnectorPayload(BaseModel):
     enabled: bool
     schedule: str
     priority: int = Field(ge=1, le=10)
-    url: Optional[str] = None
+    url: str | None = None
     tags: list[str] = Field(default_factory=list)
-    weight: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    weight: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class CreateSourcePayload(BaseModel):
@@ -283,7 +311,7 @@ class CreateSourcePayload(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     kind: SourceKind = "rss"
     driver: str = "rss_feed"
-    url: Optional[str] = None
+    url: str | None = None
     enabled: bool = True
     schedule: str = "*/30 * * * *"
     priority: int = Field(default=5, ge=1, le=10)
@@ -351,27 +379,27 @@ class BriefItem(BaseModel):
     douyin_title: str = ""
     douyin_summary: str = ""
     douyin_markdown: str = ""
-    wechat_target_id: Optional[str] = None
-    wechat_editor_url: Optional[str] = None
-    wechat_remote_appmsg_id: Optional[str] = None
-    preview_url: Optional[str] = None
-    delivery_status: Optional[str] = None
+    wechat_target_id: str | None = None
+    wechat_editor_url: str | None = None
+    wechat_remote_appmsg_id: str | None = None
+    preview_url: str | None = None
+    delivery_status: str | None = None
     delivery_attempt_count: int = 0
-    last_delivery_attempt_at: Optional[str] = None
-    last_verified_at: Optional[str] = None
-    last_delivery_error_kind: Optional[str] = None
+    last_delivery_attempt_at: str | None = None
+    last_verified_at: str | None = None
+    last_delivery_error_kind: str | None = None
     needs_resync: bool = False
-    last_synced_revision: Optional[str] = None
-    last_successful_upload_at: Optional[str] = None
-    last_error: Optional[str] = None
+    last_synced_revision: str | None = None
+    last_successful_upload_at: str | None = None
+    last_error: str | None = None
     updated_at: str
     driver_label: str = ""
     record_status: BriefRecordStatus = "local_only"
-    record_exception: Optional[BriefRecordException] = None
-    draft_remote_updated_at: Optional[str] = None
-    publish_record_published_at: Optional[str] = None
+    record_exception: BriefRecordException | None = None
+    draft_remote_updated_at: str | None = None
+    publish_record_published_at: str | None = None
     workflow_mode: WorkflowMode = "traditional"
-    workflow_session_id: Optional[str] = None
+    workflow_session_id: str | None = None
     read_count: int = 0
     like_count: int = 0
     share_count: int = 0
@@ -380,8 +408,8 @@ class BriefItem(BaseModel):
     highlight_count: int = 0
     tip_amount: str = "0.00"
     reprint_count: int = 0
-    metrics_fetched_at: Optional[str] = None
-    included_events: list["BriefIncludedEvent"] = Field(default_factory=list)
+    metrics_fetched_at: str | None = None
+    included_events: list[BriefIncludedEvent] = Field(default_factory=list)
 
 
 class BriefIncludedEvent(BaseModel):
@@ -389,7 +417,7 @@ class BriefIncludedEvent(BaseModel):
     title: str
     alert_state: IntelEventState = "new"
     source_count: int = 0
-    deep_dive_status: Optional[DeepDiveStatus] = None
+    deep_dive_status: DeepDiveStatus | None = None
     representative_link: str = ""
 
 
@@ -397,14 +425,14 @@ class AgentWorkflowItem(BaseModel):
     workflow_session_id: str
     status: AgentWorkflowStatus = "running"
     current_step: AgentWorkflowStep = "sources_sync"
-    event_id: Optional[str] = None
-    material_brief_id: Optional[str] = None
-    article_brief_id: Optional[str] = None
+    event_id: str | None = None
+    material_brief_id: str | None = None
+    article_brief_id: str | None = None
     target_platforms: list[Literal["wechat", "douyin"]] = Field(default_factory=list)
-    last_error: Optional[str] = None
+    last_error: str | None = None
     started_at: str
     updated_at: str
-    finished_at: Optional[str] = None
+    finished_at: str | None = None
 
 
 class AgentArticlePayload(BaseModel):
@@ -420,7 +448,7 @@ class AgentArticlePayload(BaseModel):
     entity_names: list[str] = Field(default_factory=list)
     source_links: list[str] = Field(default_factory=list)
     risk_notes: list[str] = Field(default_factory=list)
-    publish_to_wechat_draft: bool = True
+    publish_to_wechat_draft: bool = False
     publish_to_douyin_article: bool = False
     triggered_by: str = "agent"
     driver_label: str = "external-ai"
@@ -434,17 +462,17 @@ class RuntimeSlowSource(BaseModel):
 
 
 class RuntimeIssueItem(BaseModel):
-    source_key: Optional[str] = None
-    source_name: Optional[str] = None
+    source_key: str | None = None
+    source_name: str | None = None
     error_kind: str
     message: str
 
 
 class RuntimeCycleSummary(BaseModel):
-    run_id: Optional[str] = None
+    run_id: str | None = None
     mode_key: AutomationMode = "manual"
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
+    started_at: str | None = None
+    finished_at: str | None = None
     duration_ms: int = 0
     success_source_count: int = 0
     failed_source_count: int = 0
@@ -459,7 +487,7 @@ class RuntimeCycleSummary(BaseModel):
     wechat_sync_count: int = 0
     wechat_verify_count: int = 0
     publish_count: int = 0
-    blocked_reason: Optional[str] = None
+    blocked_reason: str | None = None
     recent_selected_titles: list[str] = Field(default_factory=list)
     recent_brief_titles: list[str] = Field(default_factory=list)
     recent_synced_titles: list[str] = Field(default_factory=list)
@@ -476,8 +504,8 @@ class HotClusterCard(BaseModel):
     final_score: float
     member_count: int = 0
     source_names: list[str] = Field(default_factory=list)
-    published_at: Optional[str] = None
-    latest_collected_at: Optional[str] = None
+    published_at: str | None = None
+    latest_collected_at: str | None = None
     signals: list[str] = Field(default_factory=list)
 
 
@@ -488,8 +516,8 @@ class GithubSignalItem(BaseModel):
     link: str
     stars_signal: int = 0
     source_name: str
-    published_at: Optional[str] = None
-    collected_at: Optional[str] = None
+    published_at: str | None = None
+    collected_at: str | None = None
 
 
 class IntelSnapshot(BaseModel):
@@ -517,9 +545,9 @@ class ExecutionChainSnapshot(BaseModel):
     stages: list[ChainStateCard] = Field(default_factory=list)
     selectors_version: str
     browser_logged_in: bool = False
-    last_screenshot: Optional[str] = None
-    last_failed_task_label: Optional[str] = None
-    last_failed_task_at: Optional[str] = None
+    last_screenshot: str | None = None
+    last_failed_task_label: str | None = None
+    last_failed_task_at: str | None = None
     source_alerts: list[str] = Field(default_factory=list)
 
 
@@ -529,49 +557,49 @@ class SchedulerStatus(BaseModel):
     launch_mode: RuntimeLaunchMode = "interval_now"
     current_mode: AutomationMode = "manual"
     work_scope: IntelWorkScope = "collect_events_alerts"
-    last_collect_at: Optional[str] = None
-    last_event_sync_at: Optional[str] = None
-    last_brief_at: Optional[str] = None
-    next_collect_at: Optional[str] = None
+    last_collect_at: str | None = None
+    last_event_sync_at: str | None = None
+    last_brief_at: str | None = None
+    next_collect_at: str | None = None
     delivery_mode: DeliveryMode = "collect_only"
-    delivery_schedule_time: Optional[str] = None
+    delivery_schedule_time: str | None = None
     admission_strategy: AdmissionStrategy = "top_scored"
     batch_limit: int = 3
     current_cycle: str = "idle"
     current_cycle_progress_percent: int = 0
     current_cycle_progress_done: int = 0
     current_cycle_progress_total: int = 0
-    current_cycle_progress_label: Optional[str] = None
+    current_cycle_progress_label: str | None = None
     stage_key: str = "idle"
     stage_label: str = "空闲"
     stage_index: int = 0
     stage_total: int = 0
-    enabled_at: Optional[str] = None
-    scheduled_start_at: Optional[str] = None
-    current_cycle_started_at: Optional[str] = None
-    last_cycle_started_at: Optional[str] = None
-    last_cycle_finished_at: Optional[str] = None
-    last_cycle_duration_seconds: Optional[float] = None
+    enabled_at: str | None = None
+    scheduled_start_at: str | None = None
+    current_cycle_started_at: str | None = None
+    last_cycle_started_at: str | None = None
+    last_cycle_finished_at: str | None = None
+    last_cycle_duration_seconds: float | None = None
     uptime_seconds: int = 0
     completed_cycles_today: int = 0
     failed_cycles_today: int = 0
-    last_error: Optional[str] = None
-    blocked_reason: Optional[str] = None
+    last_error: str | None = None
+    blocked_reason: str | None = None
     last_cycle_issue_count: int = 0
-    last_cycle_issue_summary: Optional[str] = None
-    run_id: Optional[str] = None
+    last_cycle_issue_summary: str | None = None
+    run_id: str | None = None
     run_status: AutomationRunStatus = "idle"
     run_stage: str = "idle"
-    run_started_at: Optional[str] = None
-    run_heartbeat_at: Optional[str] = None
-    run_finished_at: Optional[str] = None
-    run_triggered_by: Optional[str] = None
-    run_error: Optional[str] = None
-    recovered_run_id: Optional[str] = None
+    run_started_at: str | None = None
+    run_heartbeat_at: str | None = None
+    run_finished_at: str | None = None
+    run_triggered_by: str | None = None
+    run_error: str | None = None
+    recovered_run_id: str | None = None
     run_stale: bool = False
     run_intent: RuntimeIntent = "normal_monitoring"
-    last_run_outcome: Optional[RuntimeRunOutcome] = None
-    last_cycle_summary: Optional[RuntimeCycleSummary] = None
+    last_run_outcome: RuntimeRunOutcome | None = None
+    last_cycle_summary: RuntimeCycleSummary | None = None
 
 
 class RuntimeIntentPayload(BaseModel):
@@ -598,25 +626,25 @@ class LogItem(BaseModel):
     category: str
     stream: LogStream = "business_event"
     actor: str = "system"
-    detail: Optional[str] = None
+    detail: str | None = None
 
 
 class DashboardResponse(BaseModel):
-    app_version: Optional[AppVersionInfo] = None
-    update_info: Optional[AppUpdateInfo] = None
-    stats: Optional[DashboardStats] = None
-    top_bar: Optional[DashboardTopBar] = None
-    freshness: Optional[FreshnessSnapshot] = None
+    app_version: AppVersionInfo | None = None
+    update_info: AppUpdateInfo | None = None
+    stats: DashboardStats | None = None
+    top_bar: DashboardTopBar | None = None
+    freshness: FreshnessSnapshot | None = None
     intel_stream: list[IntelStreamItem] = Field(default_factory=list)
     hot_clusters: list[HotClusterCard] = Field(default_factory=list)
     github_watch: list[GithubSignalItem] = Field(default_factory=list)
-    execution_chain: Optional[ExecutionChainSnapshot] = None
-    current_automation_mode: Optional[AutomationModeDefinition] = None
-    current_automation_profile: Optional[AutomationModeProfile] = None
+    execution_chain: ExecutionChainSnapshot | None = None
+    current_automation_mode: AutomationModeDefinition | None = None
+    current_automation_profile: AutomationModeProfile | None = None
     automation_profiles: list[AutomationModeProfile] = Field(default_factory=list)
-    runtime_plan: Optional[RuntimePlan] = None
-    runtime_status: Optional[SchedulerStatus] = None
-    last_cycle_summary: Optional[RuntimeCycleSummary] = None
+    runtime_plan: RuntimePlan | None = None
+    runtime_status: SchedulerStatus | None = None
+    last_cycle_summary: RuntimeCycleSummary | None = None
     recent_alerts_24h: list[IntelAlertHistoryItem] = Field(default_factory=list)
     recent_events_24h: list[IntelEventHistoryItem] = Field(default_factory=list)
     entity_watchlist_summary: list[EntityWatchlistSummaryItem] = Field(default_factory=list)
@@ -624,7 +652,7 @@ class DashboardResponse(BaseModel):
     briefs: list[BriefItem] = Field(default_factory=list)
     deep_dives: list[EventDeepDive] = Field(default_factory=list)
     sources: list[SourceConnector] = Field(default_factory=list)
-    browser_session: Optional[BrowserSessionState] = None
+    browser_session: BrowserSessionState | None = None
     publish_backends: list[PublishBackendStatus] = Field(default_factory=list)
     setup_status: dict[str, Any] = Field(default_factory=dict)
     doctor_summary: dict[str, Any] = Field(default_factory=dict)
@@ -640,12 +668,12 @@ class AutomationModeSelectionPayload(BaseModel):
 
 class RuntimePlanPayload(BaseModel):
     launch_mode: RuntimeLaunchMode
-    start_at: Optional[str] = None
-    interval_minutes: Optional[int] = Field(default=None, ge=5, le=360)
+    start_at: str | None = None
+    interval_minutes: int | None = Field(default=None, ge=5, le=360)
     timezone: str = "Asia/Shanghai"
     work_scope: IntelWorkScope = "collect_events_alerts"
     delivery_mode: DeliveryMode = "collect_only"
-    delivery_schedule_time: Optional[str] = None
+    delivery_schedule_time: str | None = None
     admission_strategy: AdmissionStrategy = "top_scored"
     batch_limit: int = Field(default=3, ge=1, le=20)
     admission_filters: dict[str, bool | int] = Field(default_factory=dict)
@@ -654,8 +682,8 @@ class RuntimePlanPayload(BaseModel):
 class SettingsUpdatePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    max_workers: Optional[int] = Field(default=None, ge=1, le=20)
-    tavily_api_key: Optional[str] = None
+    max_workers: int | None = Field(default=None, ge=1, le=20)
+    tavily_api_key: str | None = None
 
 
 class BriefResponse(BaseModel):
@@ -711,12 +739,12 @@ class ReferenceProject(BaseModel):
     local_name: str
     upstream_repo: str
     branch: str
-    commit_sha: Optional[str] = None
-    refreshed_at: Optional[str] = None
+    commit_sha: str | None = None
+    refreshed_at: str | None = None
     layer: Literal["discovery", "aggregation", "writing", "wechat", "ops"]
     tags: list[str] = Field(default_factory=list)
     refresh_status: RefreshStatus = "missing"
-    notes: Optional[str] = None
+    notes: str | None = None
     local_exists: bool = False
     license_name: str = "unknown"
     borrow_mode: BorrowMode = "reference_only"
@@ -748,7 +776,7 @@ class SystemCheckItem(BaseModel):
     label: str
     ok: bool
     detail: str
-    next_action: Optional[str] = None
+    next_action: str | None = None
 
 
 class SystemDoctorResult(BaseModel):
@@ -767,15 +795,15 @@ class AppVersionInfo(BaseModel):
 
 class AppUpdateInfo(BaseModel):
     current_version: str
-    latest_version: Optional[str] = None
+    latest_version: str | None = None
     update_available: bool = False
     checked_at: str
     source: str = "unknown"
-    release_url: Optional[str] = None
-    release_notes_url: Optional[str] = None
-    published_at: Optional[str] = None
-    error: Optional[str] = None
-    dismissed_version: Optional[str] = None
+    release_url: str | None = None
+    release_notes_url: str | None = None
+    published_at: str | None = None
+    error: str | None = None
+    dismissed_version: str | None = None
     dismissed: bool = False
 
 
@@ -794,7 +822,7 @@ class SystemDoctorResponse(BaseModel):
 class ImportBackupResponse(BaseModel):
     ok: bool = True
     message: str = ""
-    backup_path: Optional[str] = None
+    backup_path: str | None = None
 
 
 class AutomationModesResponse(BaseModel):

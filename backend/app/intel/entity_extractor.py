@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from hashlib import md5
 import logging
 import re
+from hashlib import md5
 from typing import Any
 
 from .entity_aliases import ALIAS_MAP

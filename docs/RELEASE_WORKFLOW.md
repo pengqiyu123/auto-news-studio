@@ -65,7 +65,7 @@ Use this order every time:
 9. Tag.
 10. Push branch and tag.
 11. Create GitHub Release.
-12. Verify the Release page and updater metadata.
+12. Verify the Release page, updater metadata, and tag / release notes / GitHub Release alignment.
 
 ## Validation Checklist
 
@@ -112,7 +112,7 @@ Each release must have a dedicated markdown file:
 Example:
 
 ```markdown
-# 0.2.12 更新说明
+# 0.2.13 更新说明
 
 ## 本次重点
 - ...
@@ -174,14 +174,14 @@ Then stage, commit, and tag:
 
 ```powershell
 git add .
-git commit -m "release: ship v0.2.12"
-git tag v0.2.12
+git commit -m "release: ship v0.2.13"
+git tag v0.2.13
 ```
 
 If the tag already exists locally:
 
 ```powershell
-git tag --list v0.2.12
+git tag --list v0.2.13
 ```
 
 Do not delete and reuse it for a different payload. Bump to the next version instead.
@@ -193,7 +193,7 @@ Push branch and tag:
 ```powershell
 Set-Location D:\python\Auto-news2\auto-news-studio
 git push origin master
-git push origin v0.2.12
+git push origin v0.2.13
 ```
 
 The helper script [scripts/release_version.ps1](/d:/python/Auto-news2/auto-news-studio/scripts/release_version.ps1) can push a tag after frontend build and backend compile, but it does not create release notes, does not build the Windows zip, and does not publish the GitHub Release. Treat it as a helper, not the full workflow.
@@ -204,9 +204,9 @@ The helper script [scripts/release_version.ps1](/d:/python/Auto-news2/auto-news-
 
 ```powershell
 Set-Location D:\python\Auto-news2\auto-news-studio
-gh release create v0.2.12 dist/windows/auto-news-studio-windows.zip `
-  --title "v0.2.12" `
-  --notes-file docs/release/RELEASE_NOTES_0.2.12.md
+gh release create v0.2.13 dist/windows/auto-news-studio-windows.zip `
+  --title "v0.2.13" `
+  --notes-file docs/release/RELEASE_NOTES_0.2.13.md
 ```
 
 ### Option B: GitHub API Using Existing Git Credentials
@@ -224,10 +224,10 @@ $headers = @{
 }
 
 $body = @{
-  tag_name = "v0.2.12"
+  tag_name = "v0.2.13"
   target_commitish = "master"
-  name = "v0.2.12"
-  body = (Get-Content .\docs\release\RELEASE_NOTES_0.2.12.md -Raw)
+  name = "v0.2.13"
+  body = (Get-Content .\docs\release\RELEASE_NOTES_0.2.13.md -Raw)
   draft = $false
   prerelease = $false
 } | ConvertTo-Json -Depth 8
@@ -239,7 +239,7 @@ Invoke-RestMethod -Method Post `
   -ContentType "application/json"
 
 $release = Invoke-RestMethod -Method Get `
-  -Uri "https://api.github.com/repos/pengqiyu123/auto-news-studio/releases/tags/v0.2.12" `
+  -Uri "https://api.github.com/repos/pengqiyu123/auto-news-studio/releases/tags/v0.2.13" `
   -Headers $headers
 
 $uploadUri = $release.upload_url.Split('{')[0] + '?name=auto-news-studio-windows.zip'
@@ -258,7 +258,8 @@ After publishing the GitHub Release:
 2. Confirm the tag and release title match exactly.
 3. Confirm `version.json` inside the repo and inside the Windows package is the new version.
 4. Start the app and verify the version shown by the UI/API matches the release.
-5. Confirm update metadata resolves correctly from GitHub Releases.
+5. Confirm the release notes file used for publication matches the shipped tag.
+6. Confirm update metadata resolves correctly from GitHub Releases.
 
 ## Product-Specific Release Risks
 
@@ -307,8 +308,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_release.ps1
 # 3. Review and ship
 git status --short
 git add .
-git commit -m "release: ship v0.2.12"
-git tag v0.2.12
+git commit -m "release: ship v0.2.13"
+git tag v0.2.13
 git push origin master
-git push origin v0.2.12
+git push origin v0.2.13
 ```

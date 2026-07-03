@@ -1,0 +1,243 @@
+.briefs-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.briefs-filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.briefs-filter-group select {
+  min-height: 34px;
+  min-width: 132px;
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #111827;
+  font-size: 13px;
+}
+
+.briefs-filter-group select:focus,
+.briefs-search input:focus {
+  outline: none;
+}
+
+.briefs-search {
+  flex: 1 1 260px;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.briefs-filter-bar .list-pagination {
+  flex: 1 1 360px;
+  padding: 0;
+  border-bottom: 0;
+}
+
+.briefs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.briefs-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-left: 4px solid #94a3b8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.briefs-card.severity-prepared {
+  border-left-color: #94a3b8;
+}
+
+.briefs-card.severity-synced {
+  border-left-color: #22c55e;
+}
+
+.briefs-card.severity-published {
+  border-left-color: #0f766e;
+}
+
+.briefs-card.severity-failed {
+  border-left-color: #ef4444;
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.briefs-card-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.briefs-card-topline > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.briefs-card-title {
+  margin: 0;
+  color: #111827;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.briefs-card-summary {
+  display: -webkit-box;
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.briefs-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px 10px;
+  flex-wrap: wrap;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.briefs-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+  padding-top: 10px;
+  border-top: 1px dashed #e5e7eb;
+}
+
+.briefs-card-actions a {
+  color: #6366f1;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.briefs-card-actions a:hover {
+  color: #4f46e5;
+  text-decoration: underline;
+}
+
+.briefs-expand {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: #6366f1;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.briefs-expand:hover {
+  color: #4f46e5;
+  text-decoration: underline;
+}
+
+.briefs-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.briefs-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.briefs-detail p {
+  margin: 6px 0 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.briefs-metrics-block {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #f0fdf4;
+  color: #166534;
+  font-size: 12px;
+}
+
+.briefs-metrics-block span {
+  color: #14532d;
+  font-weight: 700;
+}
+
+.briefs-metrics-block strong {
+  color: #166534;
+  font-size: 12px;
+}
+
+.briefs-metrics-block em {
+  color: #64748b;
+  font-style: normal;
+}
+
+.briefs-list .skeleton-card {
+  min-height: 112px;
+}
+
+@media (max-width: 768px) {
+  .briefs-filter-bar,
+  .briefs-card-topline,
+  .briefs-detail-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .briefs-filter-group,
+  .briefs-filter-group select,
+  .briefs-search,
+  .briefs-filter-bar .list-pagination {
+    width: 100%;
+  }
+
+  .briefs-card-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .briefs-card-actions .ghost-button,
+  .briefs-card-actions a,
+  .briefs-expand {
+    justify-content: center;
+    width: 100%;
+  }
+}

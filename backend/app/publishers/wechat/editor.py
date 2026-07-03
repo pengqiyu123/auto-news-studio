@@ -46,6 +46,29 @@ from .session import (
 WECHAT_QRCODE_REQUIRED_STATUS = "wechat_qrcode_required"
 
 
+def _read_input_state(page, selector: str) -> dict[str, object]:
+    try:
+        result = page.evaluate(
+            """({ selector }) => {
+                const node = document.querySelector(selector);
+                if (!node) return null;
+                const value = "value" in node
+                    ? String(node.value || "")
+                    : String(node.textContent || "");
+                return {
+                    value: value.trim(),
+                    readOnly: !!node.readOnly || node.getAttribute("readonly") !== null,
+                    disabled: !!node.disabled,
+                    visible: !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length),
+                };
+            }""",
+            {"selector": selector},
+        )
+    except Exception:
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
 def _dismiss_wechat_hover_popovers(page, step_logs: list[str], *, step_name: str) -> None:
     try:
         try:
@@ -103,6 +126,86 @@ def _click_required_selector_once(
     page.wait_for_timeout(settle_ms)
     step_logs.append(f"{step_name} 已点击 selector={selector}")
     return selector
+
+
+def _is_publish_confirm_layer_visible(page) -> bool:
+    try:
+        result = page.evaluate(
+            """() => {
+                const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+                const isVisible = (node) => !!node && !!(
+                    node.offsetWidth || node.offsetHeight || node.getClientRects().length
+                );
+                const layers = Array.from(document.querySelectorAll(
+                    ".weui-desktop-popover__wrp, .weui-desktop-dialog__wrp, .weui-dialog, [role='dialog']"
+                ));
+                return layers.some((layer) => {
+                    if (!isVisible(layer)) return false;
+                    const buttons = Array.from(layer.querySelectorAll("button"));
+                    const hasPublish = buttons.some((button) =>
+                        isVisible(button) && normalize(button.textContent) === "发表"
+                    );
+                    const hasCancel = buttons.some((button) =>
+                        isVisible(button) && normalize(button.textContent) === "取消"
+                    );
+                    return hasPublish && hasCancel;
+                });
+            }"""
+        )
+        return bool(result)
+    except Exception:
+        return False
+
+
+def _dispatch_publish_confirm_layer_click(page, step_logs: list[str]) -> bool:
+    try:
+        result = page.evaluate(
+            """() => {
+                const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+                const isVisible = (node) => !!node && !!(
+                    node.offsetWidth || node.offsetHeight || node.getClientRects().length
+                );
+                const layers = Array.from(document.querySelectorAll(
+                    ".weui-desktop-popover__wrp, .weui-desktop-dialog__wrp, .weui-dialog, [role='dialog']"
+                ));
+                for (const layer of layers) {
+                    if (!isVisible(layer)) continue;
+                    const buttons = Array.from(layer.querySelectorAll("button"));
+                    const publishButton = buttons.find((button) =>
+                        isVisible(button) && normalize(button.textContent) === "发表"
+                    );
+                    const cancelButton = buttons.find((button) =>
+                        isVisible(button) && normalize(button.textContent) === "取消"
+                    );
+                    if (!publishButton || !cancelButton) continue;
+                    publishButton.scrollIntoView({ block: "center", inline: "center" });
+                    const mouseOptions = { bubbles: true, cancelable: true, view: window };
+                    for (const eventName of ["pointerdown", "mousedown", "mouseup", "click"]) {
+                        publishButton.dispatchEvent(new MouseEvent(eventName, mouseOptions));
+                    }
+                    return { ok: true, text: normalize(publishButton.textContent) };
+                }
+                return { ok: false, reason: "confirm_layer_not_found" };
+            }"""
+        )
+        if isinstance(result, dict) and result.get("ok"):
+            step_logs.append("confirm_publish_modal 已通过确认层 DOM 事件补点")
+            page.wait_for_timeout(1800)
+            return True
+        step_logs.append(f"confirm_publish_modal 确认层 DOM 补点失败：{result}")
+    except Exception as exc:
+        step_logs.append(f"confirm_publish_modal 确认层 DOM 补点异常：{exc}")
+    return False
+
+
+def _ensure_publish_confirm_layer_closed(page, step_logs: list[str]) -> None:
+    if not _is_publish_confirm_layer_visible(page):
+        return
+    step_logs.append("confirm_publish_modal 点击后确认弹窗仍存在，尝试 DOM 补点。")
+    if not _dispatch_publish_confirm_layer_click(page, step_logs):
+        raise RuntimeError("二次确认发表未完成：确认弹窗仍存在。")
+    if _is_publish_confirm_layer_visible(page):
+        raise RuntimeError("二次确认发表未完成：确认弹窗仍存在。")
 
 
 def _select_hidden_wechat_option_by_text(
@@ -473,6 +576,32 @@ def _build_ai_cover_prompt(draft: dict[str, object], *, limit: int = 50) -> str:
     return prompt[:limit].strip(" ，,。；;：:")
 
 
+def _has_wechat_cover(page) -> bool:
+    try:
+        result = page.evaluate(
+            """() => {
+                const previews = Array.from(document.querySelectorAll(
+                    ".js_cover_preview_new, .select-cover__preview, .first_appmsg_cover"
+                ));
+                for (const node of previews) {
+                    const visible = !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length);
+                    const style = window.getComputedStyle(node);
+                    const background = String(node.style.backgroundImage || style.backgroundImage || "");
+                    const dataUrl = String(node.getAttribute("data-url") || node.getAttribute("data-src") || "");
+                    const image = node.querySelector("img[src]");
+                    const imageSrc = image ? String(image.getAttribute("src") || "") : "";
+                    if (visible && (background.includes("url(") || dataUrl || imageSrc)) {
+                        return true;
+                    }
+                }
+                return false;
+            }"""
+        )
+    except Exception:
+        return False
+    return bool(result)
+
+
 def _ensure_wechat_ai_cover(
     page,
     selector_profile: dict[str, list[str] | str],
@@ -484,6 +613,9 @@ def _ensure_wechat_ai_cover(
     max_checks: int = 6,
 ) -> str:
     prompt = _build_ai_cover_prompt(draft)
+    if _has_wechat_cover(page):
+        step_logs.append("已检测到现有封面，跳过 AI 封面生成。")
+        return prompt
     _click_required_selector_once(
         page,
         selector_profile.get("cover_button", []),
@@ -576,6 +708,7 @@ def _click_wechat_publish_until_qrcode(
         timeout=6000,
         settle_ms=1800,
     )
+    _ensure_publish_confirm_layer_closed(page, step_logs)
     continue_clicks = 0
     for index in range(max(0, max_continue_clicks)):
         selector = _pick_selector(page, selector_profile.get("continue_publish_button", []), timeout=3000)
@@ -633,6 +766,15 @@ def _ensure_wechat_author_before_publish_settings(
     )
     current_author = _read_locator_value(page, author_selector, rich_text=False)
     if current_author != author:
+        field_state = _read_input_state(page, author_selector)
+        is_locked = bool(field_state.get("readOnly") or field_state.get("disabled"))
+        existing_author = str(field_state.get("value") or current_author or "").strip()
+        if is_locked and existing_author:
+            step_logs.append(
+                f"声明前作者字段只读，沿用微信现有作者 selector={author_selector} value={existing_author}"
+            )
+            page.wait_for_timeout(600)
+            return existing_author
         author_length = _write_plain_field(page, author_selector, author, step_logs, field_label="作者")
         step_logs.append(f"声明前已补齐作者 selector={author_selector}")
         step_logs.append(f"声明前作者最终长度={author_length}")
@@ -692,8 +834,15 @@ def _fill_wechat_editor(
     step_logs.append(f"标题最终长度={title_length}")
 
     if author_selector and author:
-        _write_plain_field(page, author_selector, author, step_logs, field_label="作者")
-        step_logs.append(f"已填充作者 selector={author_selector}")
+        current_author = _read_locator_value(page, author_selector, rich_text=False)
+        field_state = _read_input_state(page, author_selector)
+        is_locked = bool(field_state.get("readOnly") or field_state.get("disabled"))
+        existing_author = str(field_state.get("value") or current_author or "").strip()
+        if is_locked and existing_author and existing_author != author:
+            step_logs.append(f"作者字段只读，沿用微信现有作者 selector={author_selector} value={existing_author}")
+        else:
+            _write_plain_field(page, author_selector, author, step_logs, field_label="作者")
+            step_logs.append(f"已填充作者 selector={author_selector}")
 
     if digest_selector and digest:
         digest_length = _write_plain_field(page, digest_selector, digest, step_logs, field_label="摘要")
@@ -848,11 +997,13 @@ def _open_existing_wechat_draft_editor(context, page, draft: dict[str, object], 
     target_title = str(target.get("title") or "").strip()
     target_url = str(target.get("url") or "").strip()
     target_appmsg_id = str(target.get("appmsg_id") or "").strip()
-    if target_url:
+    if _is_wechat_editor_url(target_url):
         page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(2200)
     else:
-        _click_wechat_draft_card_by_title(page, target_title, step_logs)
+        if target_url:
+            step_logs.append(f"忽略草稿卡片非编辑链接 url={target_url}")
+        _click_wechat_draft_edit_button_by_title(page, target_title, step_logs)
         page.wait_for_timeout(2500)
     editor_page = _locate_editor_page_with_retry(context, page, selector_profile, step_logs)
     if editor_page is not page:
@@ -873,6 +1024,16 @@ def _open_existing_wechat_draft_editor(context, page, draft: dict[str, object], 
     step_logs.append(f"已打开已有远端草稿 title={target_title or draft.get('title')}")
     return editor_page
 
+def _is_wechat_editor_url(url: str) -> bool:
+    normalized = str(url or "")
+    if not normalized:
+        return False
+    if "action=list_card" in normalized:
+        return False
+    if "action=preview" in normalized or "/s/" in normalized:
+        return False
+    return "media/appmsg_edit" in normalized or "action=edit" in normalized
+
 def _ensure_publish_editor_tab(context, target, selector_profile: dict[str, list[str] | str], step_logs: list[str], *, phase: str) -> None:
     try:
         _enforce_single_tab(context, target, step_logs, phase=phase, allow_recover=True)
@@ -881,15 +1042,18 @@ def _ensure_publish_editor_tab(context, target, selector_profile: dict[str, list
             raise
         step_logs.append(f"单标签页收敛未完成 phase={phase} error={exc}；目标编辑页已确认，继续执行。")
 
-def _click_wechat_draft_card_by_title(page, title: str, step_logs: list[str]) -> None:
+def _click_wechat_draft_edit_button_by_title(page, title: str, step_logs: list[str]) -> None:
     compact_title = re.sub(r"\s+", " ", str(title or "").replace("\xa0", " ")).strip().lower()
     if not compact_title:
         raise RuntimeError("远端草稿缺少标题，无法打开。")
-    clicked = page.evaluate(
+    result = page.evaluate(
         """({ title }) => {
-            const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+            const marker = "clickRemoteDraftEditButton";
+            const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim().toLowerCase();
             const titleMatches = (left, right) => {
                 if (!left || !right) return false;
+                left = left.replace(/[：:]/g, ":");
+                right = right.replace(/[：:]/g, ":");
                 if (left === right) return true;
                 const shorter = left.length <= right.length ? left : right;
                 const longer = left.length <= right.length ? right : left;
@@ -904,23 +1068,72 @@ def _click_wechat_draft_card_by_title(page, title: str, step_logs: list[str]) ->
                     row.querySelector('.weui-desktop-publish__cover__title') ||
                     row.querySelector('.weui-desktop-card__title') ||
                     row.querySelector('a[title]');
-                const rowTitle = normalize(titleNode ? titleNode.textContent : '');
+                const rowTitle = normalize(titleNode ? titleNode.textContent : row.innerText || '');
                 if (!titleMatches(rowTitle, title)) continue;
-                const linkNode =
-                    row.querySelector('a.weui-desktop-publish__cover__title[href]') ||
-                    row.querySelector('.weui-desktop-publish__cover__title[href]') ||
-                    row.querySelector('a[href]');
-                const clickable = linkNode || titleNode || row;
-                clickable.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                return true;
+
+                row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+                row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true, view: window }));
+
+                const actionArea =
+                    row.querySelector('.weui-desktop-card__action') ||
+                    row.querySelector('.weui-desktop-publish__opr') ||
+                    row;
+                const wrappers = Array.from(actionArea.querySelectorAll(
+                    '.weui-desktop-tooltip__wrp, .weui-desktop-popover__wrp, .weui-desktop-link'
+                ));
+                const editWrapper = wrappers.find((wrapper) => {
+                    const text = normalize(wrapper.innerText || wrapper.textContent || '');
+                    if (!text.includes('编辑')) return false;
+                    if (text.includes('预览') || text.includes('删除') || text.includes('发表')) return false;
+                    return !!wrapper.querySelector('a, button, [role="button"]');
+                });
+
+                let editButton = editWrapper
+                    ? editWrapper.querySelector('a, button, [role="button"]')
+                    : null;
+                if (!editButton) {
+                    const buttons = Array.from(actionArea.querySelectorAll(
+                        'a.weui-desktop-icon20.weui-desktop-icon-btn, a.weui-desktop-icon-btn, button'
+                    )).filter((button) => {
+                        const text = normalize(button.innerText || button.textContent || button.getAttribute('title') || '');
+                        const classes = String(button.className || '');
+                        if (classes.includes('disable') || button.closest('.appmsg_publish_disable')) return false;
+                        if (text.includes('预览') || text.includes('删除') || text.includes('发表')) return false;
+                        return true;
+                    });
+                    editButton = buttons.length >= 2 ? buttons[1] : buttons[0] || null;
+                }
+                if (!editButton) {
+                    return {
+                        ok: false,
+                        marker,
+                        reason: 'edit_button_not_found',
+                        title: rowTitle,
+                        buttonCount: actionArea.querySelectorAll('a, button, [role="button"]').length,
+                    };
+                }
+
+                editButton.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+                editButton.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+                editButton.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+                editButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                return {
+                    ok: true,
+                    marker,
+                    reason: 'clicked',
+                    title: rowTitle,
+                    buttonCount: actionArea.querySelectorAll('a, button, [role="button"]').length,
+                };
             }
-            return false;
+            return { ok: false, marker, reason: 'draft_card_not_found', title: '' };
         }""",
         {"title": compact_title},
     )
-    if not clicked:
-        raise RuntimeError(f"未能点击目标草稿卡片：{title}")
-    step_logs.append(f"已点击目标草稿卡片 title={title}")
+    if not isinstance(result, dict) or not result.get("ok"):
+        reason = result.get("reason") if isinstance(result, dict) else "unknown"
+        button_count = result.get("buttonCount") if isinstance(result, dict) else None
+        raise RuntimeError(f"未能点击目标草稿编辑按钮：{title} reason={reason} buttons={button_count}")
+    step_logs.append(f"已点击目标草稿编辑按钮 title={result.get('title') or title}")
 
 def _run_publish_to_qrcode(context, page, draft: dict[str, object], channel: dict[str, object], entry_url: str, selector_profile: dict[str, list[str] | str], browser_state: dict[str, object], step_logs: list[str], screenshot_path: Path) -> tuple[dict[str, object], list[str], list[str], object]:
     _enforce_single_tab(context, page, step_logs, phase="before_publish", allow_recover=True)
@@ -1091,7 +1304,12 @@ def run_browser_action(
                 artifacts.extend(publish_artifacts)
                 browser_state["last_error"] = None
 
-            WECHAT_BROWSER_MANAGER.with_session(channel, restore_window=True, action_fn=_run_publish)
+            WECHAT_BROWSER_MANAGER.with_session(
+                channel,
+                restore_window=True,
+                action_fn=_run_publish,
+                reset_on_failure=False,
+            )
             browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
             if Path(screenshot_path).exists() or browser_state.get("last_screenshot"):
                 browser_state["last_screenshot"] = str(browser_state.get("last_screenshot") or screenshot_path)
@@ -1172,6 +1390,8 @@ def run_browser_action(
         if ok:
             browser_state["last_opened_url"] = current_url or entry_url
             browser_state["current_page"] = current_url or entry_url
+            browser_state["last_screenshot"] = str(screenshot_path)
+            artifacts.append(str(screenshot_path))
         else:
             _write_debug_artifact(
                 screenshot_path.with_suffix(".txt"),
@@ -1179,12 +1399,11 @@ def run_browser_action(
             )
             browser_state["last_opened_url"] = entry_url
             browser_state["current_page"] = entry_url
+            browser_state["last_screenshot"] = str(screenshot_path.with_suffix(".txt"))
+            artifacts.append(str(screenshot_path.with_suffix(".txt")))
         browser_state.update(WECHAT_BROWSER_MANAGER.manager_state())
         browser_state["last_error"] = str(exc)
         browser_state["is_session_level_error"] = _browser_session_error_kind(exc, recovery_ok=False)
-        browser_state["last_screenshot"] = str(screenshot_path)
-        if str(screenshot_path) not in artifacts:
-            artifacts.append(str(screenshot_path))
         step_logs.append(f"浏览器动作失败：{exc}")
     return browser_state, artifacts, step_logs
 def _fill_wechat_editor_with_retry(

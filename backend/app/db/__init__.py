@@ -15,6 +15,7 @@ __all__ = [
     "database_write_enabled",
     "get_database_settings",
     "persist_content_assets",
+    "persist_incremental_analysis",
     "persist_ingest_chain_state",
     "upsert_sync_run",
 ]
@@ -31,6 +32,7 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "database_write_enabled": (".ingest_runtime", "database_write_enabled"),
     "get_database_settings": (".config", "get_database_settings"),
     "persist_content_assets": (".content_runtime", "persist_content_assets"),
+    "persist_incremental_analysis": (".analysis_runtime", "persist_incremental_analysis"),
     "persist_ingest_chain_state": (".ingest_runtime", "persist_ingest_chain_state"),
     "upsert_sync_run": (".sync_runs", "upsert_sync_run"),
 }

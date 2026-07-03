@@ -6,7 +6,8 @@ import json
 import logging
 import re
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
@@ -351,7 +352,7 @@ def _score_model_candidate(model_id: str) -> tuple[int, int, str]:
     return (score, freshness, model_id)
 
 
-def _resolve_openai_model_candidates(provider: dict[str, Any], route: dict[str, Any], timeout: float, service: "LLMService") -> list[str]:
+def _resolve_openai_model_candidates(provider: dict[str, Any], route: dict[str, Any], timeout: float, service: LLMService) -> list[str]:
     explicit = _clean_str(route.get("model"))
     if explicit:
         return [explicit]

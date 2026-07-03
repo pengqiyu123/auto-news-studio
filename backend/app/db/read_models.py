@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-from collections import Counter
-from datetime import datetime, timedelta, timezone
 import json
+from collections import Counter
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import bindparam, text
 
-from .session import build_session_factory
-from .status_normalizer import normalize_fetch_status, normalize_extract_status
 from ..intel.entity_extractor import entity_match_keys
 from ..models import (
     DiscoveryItem,
     IntelAlert,
+    IntelAlertHistoryItem,
     IntelEvent,
     IntelEventHistoryItem,
     IntelOverviewSummary,
-    IntelAlertHistoryItem,
 )
 from ..store.base import now_iso
+from .session import build_session_factory
+from .status_normalizer import normalize_extract_status, normalize_fetch_status
 
 EVENT_SORT_COLUMNS = {
     "composite_score": "composite_score",
@@ -180,7 +180,7 @@ def list_discovery_items_from_db(
         hours = {"1h": 1, "6h": 6, "24h": 24, "72h": 72}.get(time_range, 0)
         if hours:
             filters.append("collected_at >= :collected_after")
-            params["collected_after"] = datetime.now(timezone.utc) - timedelta(hours=hours)
+            params["collected_after"] = datetime.now(UTC) - timedelta(hours=hours)
     if platform:
         filters.append("platform = :platform")
         params["platform"] = platform
@@ -995,10 +995,10 @@ def get_raw_items_for_analysis(
     Returns:
         List of raw_item dicts
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     session_factory = build_session_factory(database_url)
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
 
     with session_factory() as session:
         if source_keys:
@@ -1066,10 +1066,10 @@ def get_event_snapshots_for_analysis(
     Returns:
         Dict mapping event_id -> list of snapshot dicts
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     session_factory = build_session_factory(database_url)
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
 
     with session_factory() as session:
         if event_ids:
@@ -1140,10 +1140,10 @@ def get_discovery_items_for_clustering(
     Returns:
         List of discovery_item dicts with title_tokens and anchor_tokens
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     session_factory = build_session_factory(database_url)
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
 
     with session_factory() as session:
         rows = session.execute(

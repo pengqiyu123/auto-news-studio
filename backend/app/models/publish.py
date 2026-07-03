@@ -5,7 +5,7 @@ Extracted from models.py to reduce file size and improve domain grouping.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -34,26 +34,26 @@ class BrowserSessionState(BaseModel):
     browser_name: str = "edge"
     user_data_dir: str = ""
     logged_in: bool = False
-    last_checked_at: Optional[str] = None
-    last_opened_url: Optional[str] = None
-    last_error: Optional[str] = None
+    last_checked_at: str | None = None
+    last_opened_url: str | None = None
+    last_error: str | None = None
     selectors_version: str = "wechat-mp-v1"
-    last_screenshot: Optional[str] = None
-    last_selector_check: Optional[str] = None
-    current_page: Optional[str] = None
+    last_screenshot: str | None = None
+    last_selector_check: str | None = None
+    current_page: str | None = None
     sidecar_health: BackendHealth = "offline"
     manager_alive: bool = False
-    window_state: Optional[Literal["restored", "minimized", "unknown"]] = "unknown"
-    resident_page: Optional[str] = None
+    window_state: Literal["restored", "minimized", "unknown"] | None = "unknown"
+    resident_page: str | None = None
     busy: bool = False
-    last_reset_reason: Optional[str] = None
+    last_reset_reason: str | None = None
     session_generation: int = 0
-    last_action: Optional[str] = None
-    last_action_phase: Optional[str] = None
+    last_action: str | None = None
+    last_action_phase: str | None = None
     is_session_level_error: bool = False
-    last_draft_check: Optional["WeChatDraftSyncCheckResult"] = None
-    last_analytics_overview: Optional["WeChatAnalyticsOverview"] = None
-    last_publish_history_check: Optional["WeChatPublishHistorySnapshot"] = None
+    last_draft_check: WeChatDraftSyncCheckResult | None = None
+    last_analytics_overview: WeChatAnalyticsOverview | None = None
+    last_publish_history_check: WeChatPublishHistorySnapshot | None = None
 
 
 class BrowserSessionPayload(BaseModel):
@@ -64,9 +64,9 @@ class BrowserSessionPayload(BaseModel):
 class WeChatRemoteDraftItem(BaseModel):
     title: str = ""
     url: str = ""
-    appmsg_id: Optional[str] = None
-    updated_at: Optional[str] = None
-    remote_key: Optional[str] = None
+    appmsg_id: str | None = None
+    updated_at: str | None = None
+    remote_key: str | None = None
 
 
 class WeChatDraftSyncCheckResult(BaseModel):
@@ -86,9 +86,9 @@ class WeChatDraftSyncCheckResponse(BaseModel):
 class WeChatPublishRecordItem(BaseModel):
     title: str = ""
     url: str = ""
-    appmsg_id: Optional[str] = None
-    published_at: Optional[str] = None
-    remote_key: Optional[str] = None
+    appmsg_id: str | None = None
+    published_at: str | None = None
+    remote_key: str | None = None
     read_count: int = 0
     like_count: int = 0
     share_count: int = 0
@@ -101,7 +101,7 @@ class WeChatPublishRecordItem(BaseModel):
 
 
 class WeChatArticleMetrics(BaseModel):
-    appmsg_id: Optional[str] = None
+    appmsg_id: str | None = None
     title: str = ""
     read_count: int = 0
     like_count: int = 0
@@ -130,7 +130,7 @@ class WeChatPublishHistorySnapshot(BaseModel):
     checked_at: str
     record_count: int = 0
     items: list[WeChatPublishRecordItem] = Field(default_factory=list)
-    overview: Optional[WeChatAnalyticsOverview] = None
+    overview: WeChatAnalyticsOverview | None = None
     message: str = ""
     check_ok: bool = True
 
@@ -144,7 +144,7 @@ class WeChatEditorDomField(BaseModel):
     label: str
     found: bool = False
     visible: bool = False
-    selector: Optional[str] = None
+    selector: str | None = None
     count: int = 0
     sample_text: str = ""
     sample_html: str = ""
@@ -183,7 +183,7 @@ class DouyinArticleStructureField(BaseModel):
     label: str
     found: bool = False
     visible: bool = False
-    selector: Optional[str] = None
+    selector: str | None = None
     count: int = 0
     sample_text: str = ""
     sample_html: str = ""
@@ -204,7 +204,7 @@ class DouyinArticleStructureResponse(BaseModel):
 
 
 class DouyinArticleFillPayload(BaseModel):
-    brief_id: Optional[str] = None
+    brief_id: str | None = None
 
 
 class WeChatMappingStatus(str):
@@ -213,18 +213,18 @@ class WeChatMappingStatus(str):
 
 class WeChatMappingRow(BaseModel):
     remote_title: str = ""
-    remote_key: Optional[str] = None
-    remote_appmsg_id: Optional[str] = None
+    remote_key: str | None = None
+    remote_appmsg_id: str | None = None
     remote_url: str = ""
-    remote_updated_at: Optional[str] = None
-    local_brief_id: Optional[str] = None
-    local_brief_title: Optional[str] = None
-    local_stage: Optional[Literal["prepared", "synced", "failed"]] = None
+    remote_updated_at: str | None = None
+    local_brief_id: str | None = None
+    local_brief_title: str | None = None
+    local_stage: Literal["prepared", "synced", "failed"] | None = None
     mapping_status: str = "unresolved"
 
 
 class WeChatMappingSnapshot(BaseModel):
-    checked_at: Optional[str] = None
+    checked_at: str | None = None
     remote_count: int = 0
     matched_count: int = 0
     missing_count: int = 0

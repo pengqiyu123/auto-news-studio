@@ -477,3 +477,55 @@
   text-align: center;
 }
 
+.page-content .segmented-control.settings-sections {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.settings-skeleton-card {
+  min-height: 80px;
+}
+
+.settings-skeleton-card-tall {
+  min-height: 120px;
+}
+
+.settings-skeleton-card-large {
+  min-height: 160px;
+}
+
+.settings-inline-note {
+  margin-top: 4px;
+}
+
+.settings-subpanel {
+  margin-top: 16px;
+}
+
+.settings-inline-actions {
+  justify-content: flex-start;
+  margin-top: 12px;
+}
+
+.settings-file-trigger {
+  cursor: pointer;
+}
+
+.settings-hidden-input {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .page-content .segmented-control.settings-sections {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .llm-workbench {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 540px) {
+  .page-content .segmented-control.settings-sections {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

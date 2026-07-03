@@ -1,11 +1,58 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
+from ..api.admin.agent_analytics import router as analytics_router
+from ..features.briefs.read import (
+    copy_brief_package_page as copy_brief_package_page_view,
+)
+from ..features.briefs.read import (
+    get_agent_workflow_page as get_agent_workflow_page_view,
+)
+from ..features.briefs.read import (
+    get_brief_page as get_brief_page_view,
+)
+from ..features.briefs.read import (
+    get_deep_dive_page as get_deep_dive_page_view,
+)
+from ..features.briefs.read import (
+    list_agent_workflows_page as list_agent_workflows_page_view,
+)
+from ..features.briefs.read import (
+    list_briefs_page as list_briefs_page_view,
+)
+from ..features.briefs.read import (
+    list_deep_dives_page as list_deep_dives_page_view,
+)
+from ..features.briefs.write import (
+    abandon_agent_workflow_page as abandon_agent_workflow_page_action,
+)
+from ..features.briefs.write import (
+    create_agent_article_page as create_agent_article_page_action,
+)
+from ..features.briefs.write import (
+    create_brief_from_event_page as create_brief_from_event_page_action,
+)
+from ..features.briefs.write import (
+    create_daily_digest_brief_page as create_daily_digest_brief_page_action,
+)
+from ..features.briefs.write import (
+    create_event_deep_dive_page as create_event_deep_dive_page_action,
+)
+from ..features.briefs.write import (
+    delete_brief_page as delete_brief_page_action,
+)
+from ..features.briefs.write import (
+    publish_brief_wechat_article_page as publish_brief_wechat_article_page_action,
+)
+from ..features.briefs.write import (
+    sync_brief_wechat_draft_page as sync_brief_wechat_draft_page_action,
+)
 from ..models import (
     AgentArticlePayload,
     AgentWorkflowResponse,
@@ -19,27 +66,7 @@ from ..models import (
     EventDeepDivesResponse,
     ImportBackupResponse,
 )
-from ..api.admin.agent_analytics import router as analytics_router
-from ..features.briefs.read import (
-    copy_brief_package_page as copy_brief_package_page_view,
-    get_agent_workflow_page as get_agent_workflow_page_view,
-    get_brief_page as get_brief_page_view,
-    get_deep_dive_page as get_deep_dive_page_view,
-    list_agent_workflows_page as list_agent_workflows_page_view,
-    list_briefs_page as list_briefs_page_view,
-    list_deep_dives_page as list_deep_dives_page_view,
-)
-from ..features.briefs.write import (
-    abandon_agent_workflow_page as abandon_agent_workflow_page_action,
-    create_agent_article_page as create_agent_article_page_action,
-    create_brief_from_event_page as create_brief_from_event_page_action,
-    create_daily_digest_brief_page as create_daily_digest_brief_page_action,
-    create_event_deep_dive_page as create_event_deep_dive_page_action,
-    delete_brief_page as delete_brief_page_action,
-    sync_brief_wechat_draft_page as sync_brief_wechat_draft_page_action,
-)
 from .common import RUNTIME_DIR, get_store, http_from_value_error, parse_request_model
-
 
 IMAGES_DIR = Path(__file__).resolve().parents[2] / "data" / "images"
 MAX_UPLOAD_SIZE = 5 * 1024 * 1024
@@ -146,6 +173,13 @@ def build_content_router() -> APIRouter:
         except ValueError as exc:
             raise http_from_value_error(exc) from exc
 
+    @router.post("/api/admin/briefs/{brief_id}/wechat-publish", response_model=BriefResponse)
+    def publish_brief_wechat_article(brief_id: str, triggered_by: str = "dashboard"):
+        try:
+            return BriefResponse(**publish_brief_wechat_article_page_action(brief_id, triggered_by=triggered_by))
+        except ValueError as exc:
+            raise http_from_value_error(exc) from exc
+
     @router.post("/api/admin/briefs/{brief_id}/copy-package", response_model=BriefCopyPackageResponse)
     def copy_brief_package(brief_id: str):
         try:
@@ -164,7 +198,7 @@ def build_content_router() -> APIRouter:
     router.include_router(analytics_router)
 
     @router.post("/api/admin/images/upload")
-    async def upload_image(file: UploadFile = File(...)):
+    async def upload_image(file: Annotated[UploadFile, File()]):
         content = await file.read()
         if len(content) > MAX_UPLOAD_SIZE:
             raise HTTPException(status_code=413, detail="Image too large (max 5MB)")
@@ -187,7 +221,7 @@ def build_content_router() -> APIRouter:
         return FileResponse(target)
 
     @router.post("/api/admin/system/import-backup", response_model=ImportBackupResponse)
-    async def import_system_backup(file: UploadFile = File(...)):
+    async def import_system_backup(file: Annotated[UploadFile, File()]):
         suffix = Path(file.filename or "backup.zip").suffix or ".zip"
         temp_path = RUNTIME_DIR / f"import-backup-{uuid4().hex}{suffix}"
         temp_path.write_bytes(await file.read())

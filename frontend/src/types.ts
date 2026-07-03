@@ -669,6 +669,182 @@ export interface EntityWatchlistSummaryItem extends EntityWatchlistItem {
   last_seen_at?: string | null;
 }
 
+export interface TopicInfo {
+  topic_id: string;
+  label: string;
+  keywords: string[];
+  event_count: number;
+}
+
+export interface TopicsResponse {
+  items: TopicInfo[];
+}
+
+export interface EventRelationInfo {
+  event_id: string;
+  title: string;
+  relation_type: string;
+  weight: number;
+  evidence: Record<string, unknown>;
+}
+
+export interface EventRelationsResponse {
+  items: EventRelationInfo[];
+}
+
+export interface TrendSignalInfo {
+  entity_id: string;
+  entity_name: string;
+  trend: string;
+  trend_label: string;
+  sma_7d: number;
+  sma_14d: number;
+  signals: Array<Record<string, unknown>>;
+}
+
+export interface TrendSignalsResponse {
+  items: TrendSignalInfo[];
+}
+
+export interface AnalysisSignalInfo {
+  entity_id: string;
+  entity_name: string;
+  trend: string;
+  trend_label: string;
+  sma_7d: number;
+  sma_14d: number;
+  recent_event_count: number;
+  latest_event_title: string;
+  latest_event_id?: string;
+}
+
+export interface AnalysisSignalsResponse {
+  items: AnalysisSignalInfo[];
+}
+
+export interface AnalysisTopicEventInfo {
+  event_id: string;
+  title: string;
+  composite_score: number;
+  first_seen_at?: string | null;
+}
+
+export interface AnalysisTopicEventsResponse {
+  items: AnalysisTopicEventInfo[];
+}
+
+export interface TopicPeriodicityInfo {
+  topic_id: string;
+  label: string;
+  period_days: number;
+  confidence: number;
+  detected_at?: string;
+}
+
+export interface TopicPeriodicityResponse {
+  items: TopicPeriodicityInfo[];
+}
+
+export interface TemporalRuleInfo {
+  id: string;
+  antecedent_event_id: string;
+  consequent_event_id: string;
+  antecedent_title: string;
+  consequent_title: string;
+  lag_days: number;
+  support: number;
+  confidence: number;
+  lift: number;
+}
+
+export interface TemporalRulesResponse {
+  items: TemporalRuleInfo[];
+}
+
+export type AnalysisBatchRunStatus = "running" | "success" | "failed";
+
+export interface AnalysisBatchRunInfo {
+  id: string;
+  task_name: string;
+  status: AnalysisBatchRunStatus;
+  started_at: string;
+  finished_at?: string | null;
+  items_processed: number;
+  error_message: string;
+}
+
+export interface AnalysisBatchStatusResponse {
+  items: AnalysisBatchRunInfo[];
+}
+
+export type AnalysisFeedbackType = "confirm" | "correct" | "dismiss";
+
+export interface AnalysisFeedbackPayload {
+  target_type: string;
+  target_id: string;
+  feedback_type: AnalysisFeedbackType;
+  correction?: {
+    note?: string;
+  };
+}
+
+export interface AnalysisFeedbackResponse {
+  ok: boolean;
+  feedback_id: string;
+}
+
+export type AnalysisReportScope = "daily" | "weekly" | "monthly";
+
+export interface AnalysisReportRequest {
+  scope: AnalysisReportScope;
+  date_from: string;
+  date_to: string;
+  focus_entities?: string[];
+  focus_topics?: string[];
+}
+
+export interface AnalysisReportSections {
+  executive_summary: string;
+  key_findings: string;
+  risk_assessment: string;
+  recommendation: string;
+}
+
+export interface AnalysisReportItem {
+  report_id: string;
+  scope: AnalysisReportScope | string;
+  period_start: string;
+  period_end: string;
+  status: string;
+  markdown: string;
+  sections: AnalysisReportSections;
+  created_at?: string;
+}
+
+export interface AnalysisReportResponse {
+  item: AnalysisReportItem;
+}
+
+export interface AnalysisReportSummary {
+  report_id: string;
+  scope: AnalysisReportScope | string;
+  period_start: string;
+  period_end: string;
+  status: string;
+  preview: string;
+  created_at?: string;
+}
+
+export interface AnalysisReportsResponse {
+  items: AnalysisReportSummary[];
+}
+
+export interface AnalysisFeedbackStats {
+  total: number;
+  accurate_pct: number;
+  by_type: Record<AnalysisFeedbackType, number>;
+}
+
 export interface RuntimeSlowSource {
   source_key: string;
   source_name: string;

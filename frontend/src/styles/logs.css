@@ -1063,6 +1063,13 @@ button.entity-tag:hover {
   margin-bottom: 4px;
 }
 
+.entity-watchlist-name-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .entity-watchlist-head p {
   margin: 0;
   color: #64748b;
@@ -1082,6 +1089,116 @@ button.entity-tag:hover {
   margin: 10px 0 6px;
   color: #475569;
   font-size: 12px;
+}
+
+.entity-trend-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.entity-trend-symbol {
+  font-size: 11px;
+}
+
+.entity-trend-label {
+  white-space: nowrap;
+}
+
+.trend-hot {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.trend-warm {
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.trend-cool {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.trend-cold,
+.trend-insufficient {
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.trend-emerging {
+  background: #f0fdf4;
+  color: #16a34a;
+}
+
+.intel-event-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+}
+
+.related-events-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.related-events-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.related-events-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.related-event-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.related-event-topline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.related-event-topline strong {
+  margin: 0;
+  font-size: 13px;
+}
+
+.related-event-meter {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+}
+
+.related-event-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #6366f1, #14b8a6);
 }
 
 .intel-subsection-head {

@@ -728,6 +728,8 @@ def test_manual_daily_digest_endpoint_creates_one_local_roundup() -> None:
                 "华为发布 AI DC 全栈方案",
                 "OpenAI 推出企业管理更新",
                 "国产芯片工具链更新",
+                "三星 PCIe Gen6 固态硬盘上线官网",
+                "雷鸟发布 V4 AI 拍摄眼镜",
             ],
             start=1,
         ):
@@ -829,6 +831,8 @@ def test_manual_daily_digest_endpoint_creates_one_local_roundup() -> None:
         assert "## 1. 华为发布 AI DC 全栈方案" in payload["wechat_markdown"]
         assert "## 2. OpenAI 推出企业管理更新" in payload["wechat_markdown"]
         assert "## 3. 国产芯片工具链更新" in payload["wechat_markdown"]
+        assert "## 4. 三星 PCIe Gen6 固态硬盘上线官网" in payload["wechat_markdown"]
+        assert "## 5. 雷鸟发布 V4 AI 拍摄眼镜" in payload["wechat_markdown"]
 
         refreshed = json.loads(state_file.read_text(encoding="utf-8"))
         assert len(refreshed["briefs"]) == 1
@@ -838,7 +842,7 @@ def test_manual_daily_digest_endpoint_creates_one_local_roundup() -> None:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def test_manual_daily_digest_endpoint_requires_two_qualified_events() -> None:
+def test_manual_daily_digest_endpoint_requires_five_qualified_events() -> None:
     temp_dir = _make_repo_temp_dir()
     try:
         client = _build_client(temp_dir)
@@ -951,7 +955,7 @@ def test_manual_daily_digest_endpoint_requires_two_qualified_events() -> None:
         response = client.post("/api/admin/briefs/daily-digest?triggered_by=dashboard")
 
         assert response.status_code == 400
-        assert "至少需要 2 条合格事件" in response.json()["detail"]
+        assert "必须由 5 条合格事件组成" in response.json()["detail"]
         refreshed = json.loads(state_file.read_text(encoding="utf-8"))
         assert refreshed["briefs"] == []
         assert refreshed["intel_events"][0].get("brief_id") is None

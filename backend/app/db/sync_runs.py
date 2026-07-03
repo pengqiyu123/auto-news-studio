@@ -5,9 +5,9 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..store.base import parse_time
 from .models import SyncRunRecord
 from .session import build_session_factory
-from ..store.base import parse_time
 
 
 def _dt(value: Any) -> datetime | None:

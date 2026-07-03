@@ -241,17 +241,40 @@ class WechatBrowserManager:
             except Exception:
                 pass
 
+    def _is_editor_like_page(self, page) -> bool:
+        try:
+            page_url = str(getattr(page, "url", "") or "")
+        except Exception:
+            return False
+        if "action=list_card" in page_url or "action=preview" in page_url or "/s/" in page_url:
+            return False
+        return "action=edit" in page_url or "media/appmsg_edit" in page_url
+
+    def _pick_reusable_page(self, pages: list[object]):
+        live_pages = [page for page in pages if _can_interact_with_page(page)]
+        if not live_pages:
+            return None
+        for page in live_pages:
+            if self._is_editor_like_page(page):
+                return page
+        if _can_interact_with_page(self._page):
+            for page in live_pages:
+                if page is self._page:
+                    return page
+        return live_pages[0]
+
     def _prepare_working_page(self, context, entry_url: str, *, phase: str):
-        page = None
-        page_factory = getattr(context, "new_page", None)
-        if callable(page_factory):
-            try:
-                page = page_factory()
-            except Exception:
-                page = None
-        if not _can_interact_with_page(page):
-            live_pages = [item for item in _list_live_context_pages(context) if _can_interact_with_page(item)]
-            page = live_pages[0] if live_pages else None
+        live_pages = [item for item in _list_live_context_pages(context) if _can_interact_with_page(item)]
+        page = self._pick_reusable_page(live_pages)
+        created_page = False
+        if page is None:
+            page_factory = getattr(context, "new_page", None)
+            if callable(page_factory):
+                try:
+                    page = page_factory()
+                    created_page = True
+                except Exception:
+                    page = None
         if page is None:
             raise RuntimeError("违反单标签页约束：当前浏览器上下文中没有可复用标签页。")
         try:
@@ -259,12 +282,18 @@ class WechatBrowserManager:
         except Exception:
             pass
         try:
-            page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
+            current_url = str(getattr(page, "url", "") or "").strip().lower()
         except Exception:
-            pass
+            current_url = ""
+        should_navigate_entry = created_page or current_url in {"", "about:blank"}
+        if should_navigate_entry:
+            try:
+                page.goto(entry_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                pass
         self._close_extra_pages(context, page)
         self._page = page
-        self._resident_page = "home"
+        self._resident_page = "home" if should_navigate_entry else (self._resident_page or "recovered")
         self._last_action_phase = phase
         return page
 
@@ -273,8 +302,12 @@ class WechatBrowserManager:
         if self._context is not None and self.is_alive() and signature == self._channel_signature:
             live_pages = [page for page in _list_live_context_pages(self._context) if _can_interact_with_page(page)]
             if live_pages:
-                if not _can_interact_with_page(self._page):
-                    self._page = live_pages[0]
+                preferred_page = self._pick_reusable_page(live_pages)
+                if preferred_page is not None and (
+                    not _can_interact_with_page(self._page)
+                    or (self._is_editor_like_page(preferred_page) and not self._is_editor_like_page(self._page))
+                ):
+                    self._page = preferred_page
                 self._resident_page = f"{self._resident_page or 'home'}|context_reused"
                 return self._context
         self._close_runtime_internal()
@@ -361,6 +394,7 @@ class WechatBrowserManager:
         restore_window: bool,
         action_fn,
         timeout_seconds: int = DEFAULT_BROWSER_LOCK_TIMEOUT_SECONDS,
+        reset_on_failure: bool = True,
     ):
         acquired = self._lock.acquire(timeout=timeout_seconds)
         if not acquired:
@@ -381,11 +415,12 @@ class WechatBrowserManager:
 
             return self._run_in_worker(_execute)
         except Exception:
-            try:
-                self.reset("with_session_failed")
-            except Exception:
-                self._last_reset_reason = "with_session_failed"
-                self._close_runtime_internal()
+            if reset_on_failure:
+                try:
+                    self.reset("with_session_failed")
+                except Exception:
+                    self._last_reset_reason = "with_session_failed"
+                    self._close_runtime_internal()
             raise
         finally:
             try:

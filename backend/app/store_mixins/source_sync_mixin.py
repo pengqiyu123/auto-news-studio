@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime, timezone
 import time
 import traceback
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from datetime import datetime
 from typing import Any
 
 from ..intel.connectors import _collect_with_retry
+from ..intel.normalize import normalize_raw_items
 from ..intel.pipeline import build_intel_state
 from ..models import SourceSyncResponse
-from ..intel.normalize import normalize_raw_items
 from ..store.base import (
     MAX_RAW_ITEMS,
-    SOURCE_COLLECTION_STALL_SECONDS,
     SLOW_SOURCE_WARNING_SECONDS,
+    SOURCE_COLLECTION_STALL_SECONDS,
     UTC,
     freshness_bucket,
     now_iso,
@@ -186,7 +186,6 @@ class SourceSyncMixin:
     def _sync_due_sources(self, state: dict[str, Any], triggered_by: str, minimum_interval_minutes: int | None = None) -> SourceSyncResponse:
         now = datetime.now(UTC)
         runtime = self._runtime(state)
-        run = self._runtime_run(runtime)
         stage_plan = self._stage_plan(runtime)
         stage_positions = {item["key"]: index + 1 for index, item in enumerate(stage_plan)}
         stage_total = len(stage_plan)
@@ -235,7 +234,7 @@ class SourceSyncMixin:
             try:
                 items, warning = _collect_with_retry(source)
                 return source, items, warning, None, started_at, datetime.now(UTC)
-            except Exception as exc:
+            except Exception:
                 tb = traceback.format_exc()
                 return source, [], None, f"{source['name']}: 抓取器异常:\n{tb}", started_at, datetime.now(UTC)
 
@@ -532,7 +531,6 @@ class SourceSyncMixin:
         stamp = now_iso()
 
         for source in state["sources"]:
-            count = sum(1 for item in raw_items if item["source_key"] == source["key"])
             warning_text = next((warning for warning in warnings if warning.startswith(f"{source['name']}:")), None)
             now = datetime.now(UTC)
             items_for_source = [item for item in raw_items if item["source_key"] == source["key"]]
@@ -548,7 +546,7 @@ class SourceSyncMixin:
             self._finalize_source_health(source, now=now)
 
         state["raw_items"] = raw_items
-        candidates = self._rebuild_candidates_for_state(state, work_scope_override=work_scope_override)
+        self._rebuild_candidates_for_state(state, work_scope_override=work_scope_override)
         runtime = self._runtime(state)
         runtime["last_collect_at"] = stamp
         if raw_items:

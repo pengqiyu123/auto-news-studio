@@ -7,22 +7,12 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from ..db import content_database_write_enabled, database_write_enabled, persist_content_assets, persist_ingest_chain_state
-from ..db.config import get_database_settings
-from ..db.read_models import (
-    list_intel_events_from_db,
-    list_event_deep_dives_from_db,
-    get_deep_dive_from_db,
-    get_deep_dive_by_event_id_from_db,
-    list_briefs_from_db,
-    get_brief_from_db,
-)
-from ..intel.deep_dive import fetch_and_extract_link
 from ..content.briefing import (
     build_agent_article_writing_guide,
     build_brief_summary,
     build_daily_digest_brief_payload,
     build_douyin_article_markdown,
+    build_douyin_daily_news_markdown,
     build_douyin_prompt_package_markdown,
     build_douyin_summary,
     build_douyin_title,
@@ -31,7 +21,28 @@ from ..content.briefing import (
     optimize_wechat_article_title,
     rewrite_markdown_title,
 )
-from ..models import AgentArticlePayload, AgentWorkflowItem, BriefIncludedEvent, BriefItem, BriefRecordCounts, BriefStageCounts, DictOkResponse, DouyinArticleFillPayload, EventDeepDive
+from ..content.wechat_format import markdown_to_wechat_html, normalize_markdown_newlines
+from ..db import content_database_write_enabled, database_write_enabled, persist_content_assets, persist_ingest_chain_state
+from ..db.config import get_database_settings
+from ..db.read_models import (
+    get_brief_from_db,
+    get_deep_dive_by_event_id_from_db,
+    list_briefs_from_db,
+    list_event_deep_dives_from_db,
+    list_intel_events_from_db,
+)
+from ..intel.deep_dive import fetch_and_extract_link
+from ..models import (
+    AgentArticlePayload,
+    AgentWorkflowItem,
+    BriefIncludedEvent,
+    BriefItem,
+    BriefRecordCounts,
+    BriefStageCounts,
+    DictOkResponse,
+    DouyinArticleFillPayload,
+    EventDeepDive,
+)
 from ..publishers import (
     build_preview_url,
     build_wechat_target_id,
@@ -41,10 +52,50 @@ from ..publishers import (
 )
 from ..services.wechat_reconcile import project_briefs
 from ..store.base import UTC, now_iso, parse_time
-from ..content.wechat_format import markdown_to_wechat_html, normalize_markdown_newlines
 
 
 class BriefsMixin:
+    def _agent_article_claims_short_digest(self, payload: AgentArticlePayload, title: str, article_markdown: str) -> bool:
+        marker_text = " ".join(
+            [
+                str(payload.driver_label or ""),
+                str(title or ""),
+                str(payload.summary or ""),
+                str(payload.one_line or ""),
+                str(article_markdown or "")[:500],
+            ]
+        ).lower()
+        return any(
+            marker in marker_text
+            for marker in (
+                "短讯",
+                "速递",
+                "short brief",
+                "short-news",
+                "short news",
+                "daily digest",
+                "今日5条科技要闻",
+                "今日科技速递",
+            )
+        )
+
+    def _article_markdown_has_five_digest_items(self, article_markdown: str) -> bool:
+        item_numbers: set[int] = set()
+        chinese_numbers = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5}
+        for raw_line in str(article_markdown or "").splitlines():
+            line = raw_line.strip()
+            match = re.match(r"^(?:#{1,4}\s*)?(?:第\s*)?([1-5一二三四五])\s*[\.．、:：]", line)
+            if not match:
+                continue
+            token = match.group(1)
+            item_numbers.add(int(token) if token.isdigit() else chinese_numbers[token])
+        if len(item_numbers) >= 5:
+            return True
+
+        compact = re.sub(r"\s+", "", str(article_markdown or ""))
+        ordinal_markers = ("首先是", "第二条", "第三条", "第四条", "最后一条")
+        return all(marker in compact for marker in ordinal_markers)
+
     def _write_with_content_asset_projection(self, state: dict[str, Any]) -> None:
         self._write(state)
         if content_database_write_enabled():
@@ -331,10 +382,9 @@ class BriefsMixin:
                 for item in base_payload.get("included_deep_dive_ids", [])
                 if str(item or "").strip()
             ]
-            if len(included_event_ids) < 2:
-                raise ValueError("今日短讯合集至少需要 2 条合格事件。")
+            if len(included_event_ids) < 5:
+                raise ValueError("今日短讯合集必须由 5 条合格事件组成。")
             lead_event_id = included_event_ids[0]
-            lead_event = self._find_event(state, lead_event_id)
             lead_deep_dive = self._find_deep_dive_for_event(state, lead_event_id) or (deep_dives[0] if deep_dives else {})
             title = str(base_payload.get("title") or "")
             existing = self._find_daily_digest_brief_with_event_overlap(state, title, included_event_ids)
@@ -419,9 +469,220 @@ class BriefsMixin:
                     continue
                 event_ids.append(event_id)
 
-        if len(event_ids) < 2:
-            raise ValueError("今日短讯合集至少需要 2 条合格事件。")
+        if len(event_ids) < 5:
+            raise ValueError("今日短讯合集必须由 5 条合格事件组成。")
         return self.create_daily_digest_brief_from_events(event_ids, triggered_by=triggered_by)
+
+    def _select_douyin_daily_news_event_ids(
+        self,
+        state: dict[str, Any],
+        *,
+        lead_event_id: str = "",
+        limit: int = 5,
+    ) -> list[str]:
+        event_ids: list[str] = []
+        seen: set[str] = set()
+        deep_dive_lookup = self._deep_dive_lookup(state)
+
+        def add_event_id(value: str) -> None:
+            event_id = str(value or "").strip()
+            if event_id and event_id not in seen:
+                seen.add(event_id)
+                event_ids.append(event_id)
+
+        if lead_event_id:
+            deep_dive = deep_dive_lookup.get(str(lead_event_id).strip())
+            if deep_dive and str(deep_dive.get("status") or "") in {"ready", "partial"}:
+                add_event_id(lead_event_id)
+
+        candidates = [
+            self._project_event_runtime_fields(state, item)
+            for item in state.get("intel_events", [])
+            if isinstance(item, dict) and not bool(item.get("ignored"))
+        ]
+        candidates.sort(key=lambda item: self._delivery_sort_key(item, deep_dive_lookup), reverse=True)
+        for event in candidates:
+            event_id = str(event.get("id") or "").strip()
+            deep_dive = deep_dive_lookup.get(event_id)
+            if not deep_dive or str(deep_dive.get("status") or "") not in {"ready", "partial"}:
+                continue
+            add_event_id(event_id)
+            if len(event_ids) >= limit:
+                break
+        return event_ids[:limit]
+
+    def create_douyin_daily_news_digest(self, *, triggered_by: str = "douyin") -> BriefItem:
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            event_ids = self._select_douyin_daily_news_event_ids(state, limit=5)
+            if len(event_ids) < 5:
+                raise ValueError("抖音今日要闻至少需要 5 条已深挖事件。")
+
+            events: list[dict[str, Any]] = []
+            deep_dives: list[dict[str, Any]] = []
+            for event_id in event_ids:
+                event = self._find_event(state, event_id)
+                deep_dive = self._find_deep_dive_for_event(state, event_id)
+                if not deep_dive:
+                    continue
+                events.append(event)
+                deep_dives.append(deep_dive)
+
+            base_payload = build_daily_digest_brief_payload(events, deep_dives)
+            included_event_ids = [
+                str(item or "").strip()
+                for item in base_payload.get("included_event_ids", [])
+                if str(item or "").strip()
+            ][:5]
+            included_deep_dive_ids = [
+                str(item or "").strip()
+                for item in base_payload.get("included_deep_dive_ids", [])
+                if str(item or "").strip()
+            ][:5]
+            if len(included_event_ids) < 5:
+                raise ValueError("抖音今日要闻至少需要 5 条合格事件。")
+
+            qualified: list[tuple[dict[str, Any], dict[str, Any], list[str], list[str]]] = []
+            for event_id in included_event_ids:
+                event = self._find_event(state, event_id)
+                deep_dive = self._find_deep_dive_for_event(state, event_id)
+                if not deep_dive:
+                    continue
+                facts = [str(item).strip() for item in deep_dive.get("facts", []) if str(item).strip()]
+                links = [
+                    str(item.get("canonical_link") or item.get("original_link") or "").strip()
+                    for item in deep_dive.get("sources", [])
+                    if isinstance(item, dict) and str(item.get("canonical_link") or item.get("original_link") or "").strip()
+                ]
+                qualified.append((event, deep_dive, facts, list(dict.fromkeys(links))))
+            if len(qualified) < 5:
+                raise ValueError("抖音今日要闻至少需要 5 条合格事件。")
+
+            douyin_title, douyin_summary, douyin_markdown = build_douyin_daily_news_markdown(
+                qualified,
+                title="今日5条科技要闻",
+                max_items=5,
+            )
+            title = "今日5条科技要闻"
+            lead_event_id = included_event_ids[0]
+            lead_deep_dive_id = included_deep_dive_ids[0] if included_deep_dive_ids else str(qualified[0][1].get("id") or "")
+            existing = self._find_daily_digest_brief_with_event_overlap(state, title, included_event_ids)
+            brief = self._build_brief_dict(
+                event_id=lead_event_id,
+                deep_dive_id=lead_deep_dive_id,
+                brief_level="rule",
+                title=title,
+                summary="整理今日最值得关注的 5 条科技要闻。",
+                one_line="整理今日最值得关注的 5 条科技要闻。",
+                why_it_matters="这 5 条来自今日信息池和正文深挖，适合用短讯形式快速扫读。",
+                facts=list(base_payload.get("facts", []))[:8],
+                quotes=[],
+                timeline=list(base_payload.get("timeline", []))[:8],
+                entity_names=list(base_payload.get("entity_names", [])),
+                source_links=list(base_payload.get("source_links", [])),
+                risk_notes=list(base_payload.get("risk_notes", [])),
+                prompt_package_markdown=str(base_payload.get("prompt_package_markdown") or ""),
+                douyin_prompt_package_markdown=str(base_payload.get("douyin_prompt_package_markdown") or ""),
+                wechat_markdown=douyin_markdown,
+                douyin_title=douyin_title,
+                douyin_summary=douyin_summary,
+                douyin_markdown=douyin_markdown,
+                workflow_mode="traditional",
+                driver_label=str(existing.get("driver_label") or "") if existing else "douyin-daily-news",
+                existing=existing,
+            )
+            if existing:
+                brief["stage"] = "prepared"
+                brief["delivery_status"] = "idle"
+                brief["needs_resync"] = bool(existing.get("last_synced_revision") or existing.get("wechat_editor_url"))
+                brief["last_synced_revision"] = None
+                brief["last_successful_upload_at"] = None
+                brief["last_verified_at"] = None
+                brief["last_delivery_error_kind"] = None
+                brief["last_error"] = None
+
+            self._upsert_brief(state, brief, existing)
+            if existing:
+                included_event_id_set = set(included_event_ids)
+                for event in state.get("intel_events", []):
+                    if not isinstance(event, dict):
+                        continue
+                    if str(event.get("brief_id") or "").strip() != str(brief["id"]):
+                        continue
+                    if str(event.get("id") or "").strip() in included_event_id_set:
+                        continue
+                    event["brief_id"] = None
+                    event["brief_status"] = None
+            for event_id in included_event_ids:
+                try:
+                    event = self._find_event(state, event_id)
+                except ValueError:
+                    continue
+                event["brief_id"] = brief["id"]
+                event["brief_status"] = brief["stage"]
+            self._append_log(
+                state,
+                "success",
+                "brief",
+                "已生成抖音今日5条科技要闻短讯合集。",
+                actor=triggered_by,
+                detail=f"收录 {len(included_event_ids)} 条事件",
+            )
+            self._write_with_content_asset_projection(state)
+            return BriefItem(**brief)
+
+    def _ensure_douyin_daily_news_digest(self, lead_event_id: str = "", *, triggered_by: str) -> BriefItem:
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            event_ids = self._select_douyin_daily_news_event_ids(state, lead_event_id=lead_event_id, limit=5)
+        if len(event_ids) < 5:
+            raise ValueError("抖音今日要闻至少需要 5 条已深挖事件。")
+        return self.create_douyin_daily_news_digest(triggered_by=triggered_by)
+
+    def run_douyin_daily_news_pipeline(self, *, triggered_by: str = "douyin") -> BriefItem:
+        self.sync_sources(triggered_by=triggered_by)
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            candidates = [
+                self._project_event_runtime_fields(state, item)
+                for item in state.get("intel_events", [])
+                if isinstance(item, dict) and not bool(item.get("ignored"))
+            ]
+            candidates.sort(key=lambda item: self._delivery_sort_key(item, self._deep_dive_lookup(state)), reverse=True)
+            candidate_ids = [str(item.get("id") or "").strip() for item in candidates if str(item.get("id") or "").strip()]
+
+        deep_dive_ids: list[str] = []
+        for event_id in candidate_ids[:12]:
+            try:
+                deep_dive = self.create_event_deep_dive(event_id, triggered_by=triggered_by).model_dump()
+            except Exception as exc:
+                with self._lock:
+                    state = self._upgrade_state(self._read())
+                    self._append_log(
+                        state,
+                        "warning",
+                        "douyin",
+                        f"抖音今日要闻深挖跳过：{event_id} - {exc}",
+                        actor=triggered_by,
+                    )
+                    self._write(state)
+                continue
+            if str(deep_dive.get("status") or "") in {"ready", "partial"}:
+                deep_dive_ids.append(event_id)
+            if len(deep_dive_ids) >= 5:
+                break
+        if len(deep_dive_ids) < 5:
+            raise ValueError("抖音今日要闻至少需要 5 条已深挖事件。")
+
+        douyin_brief = self.create_douyin_daily_news_digest(triggered_by=triggered_by)
+        session = self.open_douyin_article_publish()
+        if session.last_error:
+            raise ValueError(str(session.last_error))
+        filled = self.fill_douyin_article(DouyinArticleFillPayload(brief_id=douyin_brief.id))
+        latest_session = self.get_douyin_browser_session()
+        if latest_session.last_error:
+            raise ValueError(str(latest_session.last_error))
+        return filled
 
     def create_agent_article(self, payload: AgentArticlePayload) -> BriefItem:
         raw_title = str(payload.title or "").strip()
@@ -430,6 +691,12 @@ class BriefsMixin:
             raise ValueError("文章标题不能为空。")
         if not article_markdown:
             raise ValueError("文章正文不能为空。")
+        if (
+            payload.publish_to_wechat_draft
+            and self._agent_article_claims_short_digest(payload, raw_title, article_markdown)
+            and not self._article_markdown_has_five_digest_items(article_markdown)
+        ):
+            raise ValueError("微信短讯必须由 5 条信息组成一篇完整合集，不能上传单事件短文。")
 
         def dedupe_texts(values: list[str]) -> list[str]:
             result: list[str] = []
@@ -683,10 +950,22 @@ class BriefsMixin:
         if payload.publish_to_wechat_draft:
             latest_brief = self.sync_brief_wechat_draft(brief_id, triggered_by=payload.triggered_by)
         if payload.publish_to_douyin_article:
+            douyin_brief = self._ensure_douyin_daily_news_digest(payload.event_id, triggered_by=payload.triggered_by)
+            with self._lock:
+                state = self._upgrade_state(self._read())
+                self._append_log(
+                    state,
+                    "info",
+                    "douyin",
+                    f"抖音发表使用今日5条科技要闻短讯合集：{douyin_brief.title}",
+                    actor=payload.triggered_by,
+                    detail=f"article_brief_id={brief_id} | douyin_digest_brief_id={douyin_brief.id}",
+                )
+                self._write(state)
             session = self.open_douyin_article_publish()
             if session.last_error:
                 raise ValueError(str(session.last_error))
-            latest_brief = self.fill_douyin_article(DouyinArticleFillPayload(brief_id=brief_id))
+            self.fill_douyin_article(DouyinArticleFillPayload(brief_id=douyin_brief.id))
             latest_session = self.get_douyin_browser_session()
             if latest_session.last_error:
                 raise ValueError(str(latest_session.last_error))
@@ -1045,7 +1324,10 @@ class BriefsMixin:
         return BriefItem(**payload)
 
     def _is_daily_digest_brief(self, brief: dict[str, Any]) -> bool:
-        return str(brief.get("workflow_mode") or "traditional") == "traditional" and "今日科技速递" in str(brief.get("title") or "")
+        title = str(brief.get("title") or "")
+        return str(brief.get("workflow_mode") or "traditional") == "traditional" and (
+            "今日科技速递" in title or "今日5条科技要闻" in title
+        )
 
     def _find_daily_digest_brief_with_event_overlap(
         self,
@@ -1185,7 +1467,7 @@ class BriefsMixin:
                 self._ensure_agent_upload_allowed(state, actor=triggered_by)
             brief = self._find_brief(state, brief_id)
             if triggered_by == "agent" and str(brief.get("brief_level") or "rule") != "article":
-                raise ValueError("Agent 模式禁止上传传统简报，请使用 /api/admin/agent/articles 保存并上传长文。")
+                raise ValueError("Agent 模式禁止上传传统简报，请先使用 /api/admin/agent/articles 保存 Agent 文章，再用返回的 brief_id 上传。")
             current_markdown = normalize_markdown_newlines(str(brief.get("wechat_markdown") or ""))
             if current_markdown != str(brief.get("wechat_markdown") or ""):
                 brief["wechat_markdown"] = current_markdown
@@ -1343,6 +1625,92 @@ class BriefsMixin:
                     last_error=str(brief.get("last_error") or "") or None,
                     finished=brief["stage"] == "synced",
                 )
+            self._write(state)
+            return BriefItem(**brief)
+
+    def publish_brief_wechat_article(self, brief_id: str, triggered_by: str = "dashboard") -> BriefItem:
+        with self._lock:
+            state = self._upgrade_state(self._read())
+            brief = self._find_brief(state, brief_id)
+            current_markdown = normalize_markdown_newlines(str(brief.get("wechat_markdown") or ""))
+            if current_markdown != str(brief.get("wechat_markdown") or ""):
+                brief["wechat_markdown"] = current_markdown
+            if current_markdown:
+                brief["wechat_html"] = markdown_to_wechat_html(current_markdown)
+            if not brief.get("wechat_target_id"):
+                brief["wechat_target_id"] = build_wechat_target_id(str(brief["id"]))
+            brief["preview_url"] = build_preview_url(str(brief["id"]))
+            brief["last_delivery_attempt_at"] = now_iso()
+            brief["delivery_attempt_count"] = int(brief.get("delivery_attempt_count", 0) or 0) + 1
+            event_summary = ""
+            event_id = str(brief.get("event_id") or "").strip()
+            if event_id:
+                try:
+                    event_summary = str(self._find_event(state, event_id).get("summary") or "").strip()
+                except ValueError:
+                    event_summary = ""
+            resolved_summary = self._resolve_brief_summary(
+                brief=brief,
+                event_summary=event_summary,
+            )
+            brief["summary"] = resolved_summary
+            browser = self._refresh_browser_session(state)
+            browser_payload = {
+                **brief,
+                "summary": resolved_summary,
+                "markdown": current_markdown,
+            }
+            browser, artifacts, step_logs = run_browser_action("publish_wechat_article", browser_payload, state["channels"]["wechat"], browser)
+            state["browser"]["wechat"] = browser
+            verification_status = str(browser.get("verification_status") or "").strip()
+            verification_message = str(browser.get("verification_message") or "").strip()
+            if verification_status == "wechat_qrcode_required":
+                brief["stage"] = "synced" if str(brief.get("stage") or "") == "synced" else "prepared"
+                brief["record_exception"] = "pending_confirmation"
+                brief["delivery_status"] = "pending_confirmation"
+                brief["last_delivery_error_kind"] = None
+                brief["last_error"] = verification_message or "已到微信验证二维码，请扫码确认。"
+                task_status = "blocked"
+                task_message = "已到微信验证二维码，请扫码确认。"
+                log_level = "warning"
+            elif browser.get("last_error"):
+                brief["stage"] = "failed"
+                brief["record_exception"] = "publish_check_failed"
+                brief["delivery_status"] = "check_failed"
+                brief["last_delivery_error_kind"] = "session" if bool(browser.get("is_session_level_error")) else "publish"
+                brief["last_error"] = str(browser.get("last_error"))
+                task_status = "failed"
+                task_message = "微信文章发表路径执行失败。"
+                log_level = "warning"
+            else:
+                brief["record_exception"] = "publish_check_failed"
+                brief["delivery_status"] = "check_failed"
+                brief["last_delivery_error_kind"] = "publish_check_failed"
+                brief["last_error"] = verification_message or "发表后未确认到微信验证二维码。"
+                task_status = "failed"
+                task_message = "微信文章发表路径未到达二维码确认。"
+                log_level = "warning"
+            brief["updated_at"] = now_iso()
+            state["publish_tasks"].insert(
+                0,
+                create_publish_task(
+                    brief_id,
+                    "publish_wechat_article",
+                    task_status,
+                    task_message,
+                    triggered_by,
+                    str(state["channels"]["wechat"]["selectors_version"]),
+                    artifacts=artifacts,
+                    step_logs=step_logs,
+                ),
+            )
+            self._append_log(
+                state,
+                log_level,
+                "wechat",
+                f"{task_message.rstrip('。')}：{brief['title']}",
+                detail=brief.get("last_error"),
+            )
             self._write(state)
             return BriefItem(**brief)
 

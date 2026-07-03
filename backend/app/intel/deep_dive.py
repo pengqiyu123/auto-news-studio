@@ -1,15 +1,14 @@
 from __future__ import annotations
 
+import re
 from html import unescape
 from html.parser import HTMLParser
-import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import trafilatura
 from readability import Document
-
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, DateTime, Index, Integer, JSON, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -177,6 +177,137 @@ class EventSnapshotRecord(Base):
     audience_fit_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
     composite_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
     alert_state: Mapped[str] = mapped_column(String(32), nullable=False, default="new")
+
+
+class TopicModelRecord(Base):
+    __tablename__ = "topic_models"
+
+    topic_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    keywords_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    label: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    event_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class EventTopicRecord(Base):
+    __tablename__ = "event_topics"
+    __table_args__ = (Index("ix_event_topics_topic_id", "topic_id"),)
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    topic_id: Mapped[str] = mapped_column(String(64), ForeignKey("topic_models.topic_id"), primary_key=True)
+    weight: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False, default=0)
+
+
+class EventRelationRecord(Base):
+    __tablename__ = "event_relations"
+    __table_args__ = (
+        Index("ix_event_relations_source", "source_event_id"),
+        Index("ix_event_relations_target", "target_event_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    relation_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    weight: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False, default=0)
+    evidence_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TrendSignalRecord(Base):
+    __tablename__ = "trend_signals"
+    __table_args__ = (Index("ix_trend_signals_entity", "entity_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    signal_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    signal_value: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
+    confidence: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False, default=0)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DailyEventMetricRecord(Base):
+    __tablename__ = "daily_event_metrics"
+    __table_args__ = (Index("ix_daily_metrics_date", "metric_date"),)
+
+    metric_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String(64), primary_key=True, default="")
+    event_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    avg_composite_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
+    max_velocity_score: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=0)
+    breakout_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class TopicPeriodicityRecord(Base):
+    __tablename__ = "topic_periodicity"
+    __table_args__ = (Index("ix_topic_periodicity_detected", "detected_at"),)
+
+    topic_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    label: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    period_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    confidence: Mapped[float] = mapped_column(Numeric(6, 4), nullable=False, default=0)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TemporalAssociationRuleRecord(Base):
+    __tablename__ = "temporal_association_rules"
+    __table_args__ = (
+        Index("ix_temporal_rules_antecedent", "antecedent_event_id"),
+        Index("ix_temporal_rules_consequent", "consequent_event_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    antecedent_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    consequent_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    lag_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    support: Mapped[float] = mapped_column(Numeric(8, 4), nullable=False, default=0)
+    confidence: Mapped[float] = mapped_column(Numeric(8, 4), nullable=False, default=0)
+    lift: Mapped[float] = mapped_column(Numeric(8, 4), nullable=False, default=0)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AnalysisBatchRunRecord(Base):
+    __tablename__ = "analysis_batch_runs"
+    __table_args__ = (
+        Index("ix_analysis_batch_runs_task_started", "task_name", "started_at"),
+        Index("ix_analysis_batch_runs_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    items_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
+class AnalysisFeedbackRecord(Base):
+    __tablename__ = "analysis_feedback"
+    __table_args__ = (Index("ix_analysis_feedback_target", "target_type", "target_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    feedback_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    correction_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AnalysisReportRecord(Base):
+    __tablename__ = "analysis_reports"
+    __table_args__ = (Index("ix_analysis_reports_created", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    report_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="ready")
+    content_markdown: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sections_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class IntelAlertCurrentRecord(Base):

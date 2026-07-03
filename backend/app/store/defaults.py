@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 AUTOMATION_MODE_DEFINITIONS: list[dict[str, Any]] = [
     {
         "key": "manual",

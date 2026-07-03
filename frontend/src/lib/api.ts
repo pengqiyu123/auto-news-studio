@@ -1,5 +1,14 @@
 import type {
   AppUpdateInfo,
+  AnalysisFeedbackPayload,
+  AnalysisFeedbackResponse,
+  AnalysisFeedbackStats,
+  AnalysisBatchStatusResponse,
+  AnalysisReportRequest,
+  AnalysisReportResponse,
+  AnalysisReportsResponse,
+  AnalysisSignalsResponse,
+  AnalysisTopicEventsResponse,
   AgentWorkflowItem,
   AutomationMode,
   AutomationModeDefinition,
@@ -38,6 +47,11 @@ import type {
   SchedulerStatus,
   SourceConnector,
   SystemDoctorResult,
+  TopicsResponse,
+  TopicPeriodicityResponse,
+  TemporalRulesResponse,
+  EventRelationsResponse,
+  TrendSignalsResponse,
   WeChatChannelConfig,
   WeChatDraftSyncCheckResult,
   WeChatMappingSnapshot,
@@ -331,6 +345,30 @@ export const api = {
     const suffix = query.size ? `?${query.toString()}` : "";
     return request<IntelEventsResponse>(`/api/admin/intel/events${suffix}`);
   },
+  fetchTopics: () => request<TopicsResponse>("/api/admin/topics"),
+  fetchRelatedEvents: (eventId: string) =>
+    request<EventRelationsResponse>(`/api/admin/events/${encodeURIComponent(eventId)}/related`),
+  fetchTrends: () => request<TrendSignalsResponse>("/api/admin/trends"),
+  fetchAnalysisSignals: () => request<AnalysisSignalsResponse>("/api/admin/analysis/signals"),
+  fetchTopicEvents: (topicId: string) =>
+    request<AnalysisTopicEventsResponse>(`/api/admin/topics/${encodeURIComponent(topicId)}/events`),
+  fetchTopicsPeriodicity: () => request<TopicPeriodicityResponse>("/api/admin/topics/periodicity"),
+  fetchTemporalRules: () => request<TemporalRulesResponse>("/api/admin/analysis/temporal-rules"),
+  fetchAnalysisBatchStatus: () => request<AnalysisBatchStatusResponse>("/api/admin/analysis/batch-status"),
+  submitAnalysisFeedback: (payload: AnalysisFeedbackPayload) =>
+    request<AnalysisFeedbackResponse>("/api/admin/analysis/feedback", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  generateAnalysisReport: (payload: AnalysisReportRequest) =>
+    request<AnalysisReportResponse>("/api/admin/analysis/report", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  fetchAnalysisReports: () => request<AnalysisReportsResponse>("/api/admin/analysis/reports"),
+  fetchAnalysisReport: (reportId: string) =>
+    request<AnalysisReportResponse>(`/api/admin/analysis/reports/${encodeURIComponent(reportId)}`),
+  fetchAnalysisFeedbackStats: () => request<AnalysisFeedbackStats>("/api/admin/analysis/feedback/stats"),
   getIntelEvent: (eventId: string) => request<{ item: IntelEvent }>(`/api/admin/intel/events/${eventId}`),
   getIntelAlerts: () => request<IntelAlertsResponse>("/api/admin/intel/alerts"),
   createEventDeepDive: (eventId: string, force = false) =>
@@ -374,6 +412,10 @@ export const api = {
     }),
   syncBriefWeChatDraft: (briefId: string) =>
     request<{ item: BriefItem }>(`/api/admin/briefs/${briefId}/wechat-draft`, {
+      method: "POST"
+    }),
+  publishBriefWeChatArticle: (briefId: string) =>
+    request<{ item: BriefItem }>(`/api/admin/briefs/${briefId}/wechat-publish`, {
       method: "POST"
     }),
   deleteBrief: (briefId: string, remote = "auto") =>

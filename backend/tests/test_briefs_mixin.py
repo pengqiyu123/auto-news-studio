@@ -1,10 +1,11 @@
 from __future__ import annotations
-
 from pathlib import Path
 import shutil
 import sys
 import tempfile
 import types
+
+import pytest
 
 if "trafilatura" not in sys.modules:
     trafilatura_stub = types.ModuleType("trafilatura")
@@ -65,6 +66,7 @@ def test_studio_store_brief_methods_are_bound_from_mixin() -> None:
         assert StudioStore.create_agent_article is BriefsMixin.create_agent_article
         assert StudioStore.list_briefs is BriefsMixin.list_briefs
         assert StudioStore.sync_brief_wechat_draft is BriefsMixin.sync_brief_wechat_draft
+        assert StudioStore.publish_brief_wechat_article is BriefsMixin.publish_brief_wechat_article
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -513,6 +515,32 @@ def test_create_daily_digest_brief_from_events_generates_one_roundup_and_marks_m
                 "ignored": False,
                 "source_count": 1,
             },
+            {
+                "id": "evt-digest-4",
+                "title": "三星 PCIe Gen6 固态硬盘上线官网",
+                "summary": "三星首款 PCIe Gen6 固态硬盘 PM1743 上线官网。",
+                "alert_state": "new",
+                "entity_names": ["三星"],
+                "entity_ids": [],
+                "tags": ["存储", "硬件"],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 2,
+            },
+            {
+                "id": "evt-digest-5",
+                "title": "雷鸟发布 V4 AI 拍摄眼镜",
+                "summary": "雷鸟发布 V4 AI 拍摄眼镜，强调随身拍摄能力。",
+                "alert_state": "new",
+                "entity_names": ["雷鸟"],
+                "entity_ids": [],
+                "tags": ["AI 硬件", "智能眼镜"],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 2,
+            },
         ]
         state["event_deep_dives"] = [
             {
@@ -575,11 +603,51 @@ def test_create_daily_digest_brief_from_events_generates_one_roundup_and_marks_m
                 "worthiness": {},
                 "updated_at": "2026-05-26T10:10:00+08:00",
             },
+            {
+                "id": "dd-digest-4",
+                "event_id": "evt-digest-4",
+                "status": "ready",
+                "sources": [
+                    {
+                        "source_name": "IT之家",
+                        "canonical_link": "https://example.com/samsung-pcie-gen6",
+                        "original_link": "https://example.com/samsung-pcie-gen6",
+                        "title": "三星 PCIe Gen6 固态硬盘",
+                        "cleaned_full_text": "三星首款 PCIe Gen6 固态硬盘 PM1743 上线官网。",
+                        "quotes": [],
+                    }
+                ],
+                "facts": ["三星首款 PCIe Gen6 固态硬盘 PM1743 上线官网"],
+                "quotes": [],
+                "timeline": ["2026-05-26：官网信息更新"],
+                "worthiness": {"reason": "PCIe Gen6 存储进入产品化披露阶段。"},
+                "updated_at": "2026-05-26T10:15:00+08:00",
+            },
+            {
+                "id": "dd-digest-5",
+                "event_id": "evt-digest-5",
+                "status": "ready",
+                "sources": [
+                    {
+                        "source_name": "Example",
+                        "canonical_link": "https://example.com/rayneo-v4",
+                        "original_link": "https://example.com/rayneo-v4",
+                        "title": "雷鸟 V4 AI 拍摄眼镜",
+                        "cleaned_full_text": "雷鸟发布 V4 AI 拍摄眼镜，强调随身拍摄能力。",
+                        "quotes": [],
+                    }
+                ],
+                "facts": ["雷鸟发布 V4 AI 拍摄眼镜，强调随身拍摄能力"],
+                "quotes": [],
+                "timeline": ["2026-05-26：新品发布"],
+                "worthiness": {"reason": "AI 眼镜继续进入消费硬件场景。"},
+                "updated_at": "2026-05-26T10:20:00+08:00",
+            },
         ]
         store._write(state)
 
         brief = store.create_daily_digest_brief_from_events(
-            ["evt-digest-1", "evt-digest-2", "evt-digest-3"],
+            ["evt-digest-1", "evt-digest-2", "evt-digest-3", "evt-digest-4", "evt-digest-5"],
             triggered_by="scheduler",
         )
 
@@ -587,7 +655,7 @@ def test_create_daily_digest_brief_from_events_generates_one_roundup_and_marks_m
         assert brief.event_id == "evt-digest-1"
         assert brief.deep_dive_id == "dd-digest-1"
         assert brief.title.startswith("今日科技速递")
-        assert "今日筛选出 3 条值得关注的科技动态" in brief.why_it_matters
+        assert "今日筛选出 5 条值得关注的科技动态" in brief.why_it_matters
         assert "华为、OpenAI、芯片工具链" in brief.why_it_matters
         assert "AI 基础设施" in brief.why_it_matters
         assert "1 条处于爆发状态" in brief.why_it_matters
@@ -598,10 +666,22 @@ def test_create_daily_digest_brief_from_events_generates_one_roundup_and_marks_m
         assert "## 1. 华为发布 AI DC 全栈方案" in brief.wechat_markdown
         assert "## 2. OpenAI 推出新企业功能" in brief.wechat_markdown
         assert "## 3. 国产芯片工具链更新" in brief.wechat_markdown
+        assert "## 4. 三星 PCIe Gen6 固态硬盘上线官网" in brief.wechat_markdown
+        assert "## 5. 雷鸟发布 V4 AI 拍摄眼镜" in brief.wechat_markdown
         assert "https://example.com/huawei-ai-dc" in brief.wechat_markdown
         assert "https://example.com/openai-enterprise" in brief.wechat_markdown
         assert "https://example.com/chip-toolchain" in brief.wechat_markdown
+        assert "https://example.com/samsung-pcie-gen6" in brief.wechat_markdown
+        assert "https://example.com/rayneo-v4" in brief.wechat_markdown
         assert brief.douyin_markdown
+        assert brief.douyin_title.startswith("今日5条科技要闻")
+        assert "朋友们，今天咱们来盘一盘" in brief.douyin_markdown
+        assert "首先是华为发布 AI DC 全栈方案" in brief.douyin_markdown
+        assert "第二条，OpenAI 推出新企业功能" in brief.douyin_markdown
+        assert "第三条，国产芯片工具链更新" in brief.douyin_markdown
+        assert "第四条，三星 PCIe Gen6 固态硬盘上线官网" in brief.douyin_markdown
+        assert "最后一条，雷鸟发布 V4 AI 拍摄眼镜" in brief.douyin_markdown
+        assert "评论区" in brief.douyin_markdown
 
         refreshed = store._upgrade_state(store._read())
         assert len(refreshed["briefs"]) == 1
@@ -610,8 +690,168 @@ def test_create_daily_digest_brief_from_events_generates_one_roundup_and_marks_m
             "evt-digest-1": brief.id,
             "evt-digest-2": brief.id,
             "evt-digest-3": brief.id,
+            "evt-digest-4": brief.id,
+            "evt-digest-5": brief.id,
         }
         assert all(item.get("brief_status") == "prepared" for item in refreshed["intel_events"])
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_create_douyin_daily_news_digest_requires_five_short_news_items() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["intel_events"] = []
+        state["event_deep_dives"] = []
+        titles = [
+            "华为发布 AI DC 全栈方案",
+            "OpenAI 推出新企业功能",
+            "国产芯片工具链更新",
+            "三星首款 PCIe Gen6 固态硬盘 PM1743 上线官网：28.4GB/s 顺序读",
+            "房地产垂类大模型发布",
+        ]
+        for index, title in enumerate(titles, start=1):
+            event_id = f"evt-douyin-digest-{index}"
+            state["intel_events"].append(
+                {
+                    "id": event_id,
+                    "title": title,
+                    "summary": f"{title}。",
+                    "alert_state": "new",
+                    "entity_names": [title.split()[0]],
+                    "entity_ids": [],
+                    "tags": ["科技要闻"],
+                    "brief_id": None,
+                    "watchlisted": False,
+                    "ignored": False,
+                    "source_count": 1,
+                    "composite_score": 100 - index,
+                    "audience_fit_score": 80,
+                    "velocity_score": 70,
+                    "coverage_score": 70,
+                    "freshness_score": 70,
+                }
+            )
+            state["event_deep_dives"].append(
+                {
+                    "id": f"dd-douyin-digest-{index}",
+                    "event_id": event_id,
+                    "status": "ready",
+                    "success_count": 1,
+                    "sources": [
+                        {
+                            "source_name": "Example",
+                            "canonical_link": f"https://example.com/douyin-digest-{index}",
+                            "original_link": f"https://example.com/douyin-digest-{index}",
+                            "title": title,
+                    "cleaned_full_text": f"{title} 已经披露关键进展，后续还要观察落地节奏。",
+                            "quotes": [],
+                        }
+                    ],
+                    "facts": (
+                        [
+                            "事件覆盖 1 个平台、1 个来源，成员数 4",
+                            "IT之家提到：三星半导体现已在官网列出其首款 PCIe Gen6 固态硬盘 PM1763",
+                            "IT之家提到：三星半导体现已在官网列出其首款 PCIe Gen6 固态硬盘 PM1743",
+                        ]
+                        if index == 4
+                        else [
+                            f"事件覆盖 1 个平台、1 个来源，成员数 {index}",
+                            f"驱动之家提到：{title} 的已核验事实",
+                        ]
+                    ),
+                    "quotes": [],
+                    "timeline": [],
+                    "worthiness": {"reason": "事件已进入深挖池，且更贴近公众号大众科技受众，可继续生成简报。"},
+                    "updated_at": "2026-05-26T10:00:00+08:00",
+                }
+            )
+        store._write(state)
+
+        brief = store.create_douyin_daily_news_digest(triggered_by="douyin")
+
+        assert brief.title.startswith("今日5条科技要闻")
+        assert brief.douyin_title.startswith("今日5条科技要闻")
+        assert "朋友们，今天咱们来盘一盘" in brief.douyin_markdown
+        assert "首先是华为发布 AI DC 全栈方案" in brief.douyin_markdown
+        assert "第二条，OpenAI 推出新企业功能" in brief.douyin_markdown
+        assert "第三条，国产芯片工具链更新" in brief.douyin_markdown
+        assert "第四条，三星首款 PCIe Gen6 固态硬盘 PM1743 上线官网：28.4GB/s 顺序读" in brief.douyin_markdown
+        assert "顺！序读" not in brief.douyin_markdown
+        assert "PM1763" not in brief.douyin_markdown
+        assert "消耗量增，" not in brief.douyin_markdown
+        assert "最后一条，房地产垂类大模型发布" in brief.douyin_markdown
+        assert "评论区" in brief.douyin_markdown
+        assert "1 个平台同时出现" not in brief.douyin_markdown
+        assert "事件覆盖" not in brief.douyin_markdown
+        assert "成员数" not in brief.douyin_markdown
+        assert "驱动之家提到" not in brief.douyin_markdown
+        assert "事件已进入深挖池" not in brief.douyin_markdown
+        assert "来源仍偏少" not in brief.douyin_markdown
+        assert "还不确定：来源仍偏少" not in brief.douyin_markdown
+        assert "\n\n\n" not in brief.douyin_markdown
+        assert brief.workflow_mode == "traditional"
+        assert brief.brief_level == "rule"
+
+        refreshed = store._upgrade_state(store._read())
+        included_events = [item for item in refreshed["intel_events"] if item.get("brief_id") == brief.id]
+        assert len(included_events) == 5
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_create_douyin_daily_news_digest_rejects_fewer_than_five_items() -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["intel_events"] = []
+        state["event_deep_dives"] = []
+        for index in range(1, 4):
+            event_id = f"evt-douyin-short-{index}"
+            state["intel_events"].append(
+                {
+                    "id": event_id,
+                    "title": f"科技要闻 {index}",
+                    "summary": f"科技要闻 {index}。",
+                    "alert_state": "new",
+                    "entity_names": [],
+                    "entity_ids": [],
+                    "tags": ["科技"],
+                    "brief_id": None,
+                    "watchlisted": False,
+                    "ignored": False,
+                    "source_count": 1,
+                    "composite_score": 90 - index,
+                }
+            )
+            state["event_deep_dives"].append(
+                {
+                    "id": f"dd-douyin-short-{index}",
+                    "event_id": event_id,
+                    "status": "ready",
+                    "success_count": 1,
+                    "sources": [
+                        {
+                            "source_name": "Example",
+                            "canonical_link": f"https://example.com/douyin-short-{index}",
+                            "original_link": f"https://example.com/douyin-short-{index}",
+                            "title": f"科技要闻 {index}",
+                            "cleaned_full_text": f"科技要闻 {index}。",
+                            "quotes": [],
+                        }
+                    ],
+                    "facts": [f"科技要闻 {index} 的已核验事实"],
+                    "quotes": [],
+                    "timeline": [],
+                    "worthiness": {"reason": "适合纳入今日科技要闻。"},
+                    "updated_at": "2026-05-26T10:00:00+08:00",
+                }
+            )
+        store._write(state)
+
+        with pytest.raises(ValueError, match="至少需要 5 条"):
+            store.create_douyin_daily_news_digest(triggered_by="douyin")
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -625,6 +865,8 @@ def test_create_daily_digest_brief_reuses_today_digest_when_member_events_overla
             ("evt-digest-overlap-2", "OpenAI 推出新企业功能", "rising", ["OpenAI"], ["企业 AI"]),
             ("evt-digest-overlap-3", "国产芯片工具链更新", "rising", ["芯片工具链"], ["芯片"]),
             ("evt-digest-overlap-4", "机器人公司发布新产品", "rising", ["机器人公司"], ["机器人"]),
+            ("evt-digest-overlap-5", "三星 PCIe Gen6 固态硬盘上线官网", "new", ["三星"], ["存储"]),
+            ("evt-digest-overlap-6", "雷鸟发布 V4 AI 拍摄眼镜", "new", ["雷鸟"], ["AI 硬件"]),
         ]
         state["intel_events"] = []
         state["event_deep_dives"] = []
@@ -669,11 +911,23 @@ def test_create_daily_digest_brief_reuses_today_digest_when_member_events_overla
         store._write(state)
 
         first = store.create_daily_digest_brief_from_events(
-            ["evt-digest-overlap-1", "evt-digest-overlap-2", "evt-digest-overlap-3"],
+            [
+                "evt-digest-overlap-1",
+                "evt-digest-overlap-2",
+                "evt-digest-overlap-3",
+                "evt-digest-overlap-4",
+                "evt-digest-overlap-5",
+            ],
             triggered_by="dashboard",
         )
         second = store.create_daily_digest_brief_from_events(
-            ["evt-digest-overlap-2", "evt-digest-overlap-3", "evt-digest-overlap-4"],
+            [
+                "evt-digest-overlap-2",
+                "evt-digest-overlap-3",
+                "evt-digest-overlap-4",
+                "evt-digest-overlap-5",
+                "evt-digest-overlap-6",
+            ],
             triggered_by="dashboard",
         )
 
@@ -687,11 +941,13 @@ def test_create_daily_digest_brief_reuses_today_digest_when_member_events_overla
         assert events_by_id["evt-digest-overlap-2"].get("brief_id") == first.id
         assert events_by_id["evt-digest-overlap-3"].get("brief_id") == first.id
         assert events_by_id["evt-digest-overlap-4"].get("brief_id") == first.id
+        assert events_by_id["evt-digest-overlap-5"].get("brief_id") == first.id
+        assert events_by_id["evt-digest-overlap-6"].get("brief_id") == first.id
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def test_create_daily_digest_brief_requires_at_least_two_qualified_events() -> None:
+def test_create_daily_digest_brief_requires_five_qualified_events() -> None:
     store, temp_root = _make_store()
     try:
         state = store._upgrade_state(store._read())
@@ -762,9 +1018,9 @@ def test_create_daily_digest_brief_requires_at_least_two_qualified_events() -> N
                 triggered_by="scheduler",
             )
         except ValueError as exc:
-            assert "至少需要 2 条合格事件" in str(exc)
+            assert "必须由 5 条合格事件组成" in str(exc)
         else:
-            raise AssertionError("Expected daily digest generation to require two qualified events.")
+            raise AssertionError("Expected daily digest generation to require five qualified events.")
 
         refreshed = store._upgrade_state(store._read())
         assert refreshed["briefs"] == []
@@ -777,85 +1033,62 @@ def test_get_daily_digest_brief_projects_included_events() -> None:
     store, temp_root = _make_store()
     try:
         state = store._upgrade_state(store._read())
-        state["intel_events"] = [
-            {
-                "id": "evt-included-1",
-                "title": "华为发布 AI DC 全栈方案",
-                "summary": "华为发布 AI DC 数据基础设施全栈方案。",
-                "representative_link": "https://example.com/huawei-ai-dc",
-                "alert_state": "breakout",
-                "entity_names": ["华为"],
-                "entity_ids": [],
-                "brief_id": None,
-                "deep_dive_id": "dd-included-1",
-                "deep_dive_status": "ready",
-                "watchlisted": False,
-                "ignored": False,
-                "source_count": 3,
-            },
-            {
-                "id": "evt-included-2",
-                "title": "OpenAI 推出新企业功能",
-                "summary": "OpenAI 面向企业用户更新管理能力。",
-                "representative_link": "https://example.com/openai-enterprise",
-                "alert_state": "rising",
-                "entity_names": ["OpenAI"],
-                "entity_ids": [],
-                "brief_id": None,
-                "deep_dive_id": "dd-included-2",
-                "deep_dive_status": "ready",
-                "watchlisted": False,
-                "ignored": False,
-                "source_count": 2,
-            },
+        specs = [
+            ("evt-included-1", "华为发布 AI DC 全栈方案", "华为发布 AI DC 数据基础设施全栈方案。", "breakout", ["华为"], 3, "https://example.com/huawei-ai-dc"),
+            ("evt-included-2", "OpenAI 推出新企业功能", "OpenAI 面向企业用户更新管理能力。", "rising", ["OpenAI"], 2, "https://example.com/openai-enterprise"),
+            ("evt-included-3", "国产芯片工具链更新", "国产芯片工具链发布新版本。", "rising", ["芯片工具链"], 2, "https://example.com/chip-toolchain"),
+            ("evt-included-4", "三星 PCIe Gen6 固态硬盘上线官网", "三星首款 PCIe Gen6 固态硬盘 PM1743 上线官网。", "new", ["三星"], 2, "https://example.com/samsung-pcie-gen6"),
+            ("evt-included-5", "雷鸟发布 V4 AI 拍摄眼镜", "雷鸟发布 V4 AI 拍摄眼镜。", "new", ["雷鸟"], 2, "https://example.com/rayneo-v4"),
         ]
-        state["event_deep_dives"] = [
-            {
-                "id": "dd-included-1",
-                "event_id": "evt-included-1",
-                "status": "ready",
-                "sources": [
-                    {
-                        "source_name": "Example",
-                        "canonical_link": "https://example.com/huawei-ai-dc",
-                        "original_link": "https://example.com/huawei-ai-dc",
-                        "title": "华为 AI DC",
-                    }
-                ],
-                "facts": ["华为发布 AI DC 数据基础设施全栈方案"],
-                "quotes": [],
-                "timeline": [],
-                "worthiness": {"reason": "数据中心基础设施是 AI 落地的重要环节。"},
-                "updated_at": "2026-05-26T10:00:00+08:00",
-            },
-            {
-                "id": "dd-included-2",
-                "event_id": "evt-included-2",
-                "status": "ready",
-                "sources": [
-                    {
-                        "source_name": "Example",
-                        "canonical_link": "https://example.com/openai-enterprise",
-                        "original_link": "https://example.com/openai-enterprise",
-                        "title": "OpenAI enterprise",
-                    }
-                ],
-                "facts": ["OpenAI 面向企业用户更新管理能力"],
-                "quotes": [],
-                "timeline": [],
-                "worthiness": {"reason": "企业 AI 管理能力正在成为产品竞争点。"},
-                "updated_at": "2026-05-26T10:05:00+08:00",
-            },
-        ]
+        state["intel_events"] = []
+        state["event_deep_dives"] = []
+        for index, (event_id, title, summary, alert_state, entities, source_count, link) in enumerate(specs, start=1):
+            state["intel_events"].append(
+                {
+                    "id": event_id,
+                    "title": title,
+                    "summary": summary,
+                    "representative_link": link,
+                    "alert_state": alert_state,
+                    "entity_names": entities,
+                    "entity_ids": [],
+                    "brief_id": None,
+                    "deep_dive_id": f"dd-included-{index}",
+                    "deep_dive_status": "ready",
+                    "watchlisted": False,
+                    "ignored": False,
+                    "source_count": source_count,
+                }
+            )
+            state["event_deep_dives"].append(
+                {
+                    "id": f"dd-included-{index}",
+                    "event_id": event_id,
+                    "status": "ready",
+                    "sources": [
+                        {
+                            "source_name": "Example",
+                            "canonical_link": link,
+                            "original_link": link,
+                            "title": title,
+                        }
+                    ],
+                    "facts": [summary.rstrip("。")],
+                    "quotes": [],
+                    "timeline": [],
+                    "worthiness": {"reason": "该事件值得纳入今日速递。"},
+                    "updated_at": f"2026-05-26T10:0{index}:00+08:00",
+                }
+            )
         store._write(state)
 
         brief = store.create_daily_digest_brief_from_events(
-            ["evt-included-1", "evt-included-2"],
+            [item[0] for item in specs],
             triggered_by="scheduler",
         )
         detail = store.get_brief(brief.id)
 
-        assert [item.event_id for item in detail.included_events] == ["evt-included-1", "evt-included-2"]
+        assert [item.event_id for item in detail.included_events] == [item[0] for item in specs]
         assert detail.included_events[0].title == "华为发布 AI DC 全栈方案"
         assert detail.included_events[0].alert_state == "breakout"
         assert detail.included_events[0].source_count == 3
@@ -960,6 +1193,42 @@ def test_create_daily_digest_brief_marks_only_qualified_members() -> None:
                 "ignored": False,
                 "source_count": 2,
             },
+            {
+                "id": "evt-digest-good-3",
+                "title": "国产芯片工具链更新",
+                "summary": "国产芯片工具链发布新版本。",
+                "alert_state": "rising",
+                "entity_names": ["芯片工具链"],
+                "entity_ids": [],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 2,
+            },
+            {
+                "id": "evt-digest-good-4",
+                "title": "三星 PCIe Gen6 固态硬盘上线官网",
+                "summary": "三星首款 PCIe Gen6 固态硬盘 PM1743 上线官网。",
+                "alert_state": "new",
+                "entity_names": ["三星"],
+                "entity_ids": [],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 2,
+            },
+            {
+                "id": "evt-digest-good-5",
+                "title": "雷鸟发布 V4 AI 拍摄眼镜",
+                "summary": "雷鸟发布 V4 AI 拍摄眼镜。",
+                "alert_state": "new",
+                "entity_names": ["雷鸟"],
+                "entity_ids": [],
+                "brief_id": None,
+                "watchlisted": False,
+                "ignored": False,
+                "source_count": 2,
+            },
         ]
         state["event_deep_dives"] = [
             {
@@ -1013,11 +1282,78 @@ def test_create_daily_digest_brief_marks_only_qualified_members() -> None:
                 "worthiness": {"reason": "仓储机器人仍是工业自动化热点。"},
                 "updated_at": "2026-05-26T10:10:00+08:00",
             },
+            {
+                "id": "dd-digest-good-3",
+                "event_id": "evt-digest-good-3",
+                "status": "ready",
+                "sources": [
+                    {
+                        "source_name": "Example",
+                        "canonical_link": "https://example.com/chip-toolchain",
+                        "original_link": "https://example.com/chip-toolchain",
+                        "title": "国产芯片工具链",
+                        "cleaned_full_text": "国产芯片工具链发布新版本。",
+                        "quotes": [],
+                    }
+                ],
+                "facts": ["国产芯片工具链发布新版本"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {"reason": "芯片工具链影响国产生态建设。"},
+                "updated_at": "2026-05-26T10:15:00+08:00",
+            },
+            {
+                "id": "dd-digest-good-4",
+                "event_id": "evt-digest-good-4",
+                "status": "ready",
+                "sources": [
+                    {
+                        "source_name": "Example",
+                        "canonical_link": "https://example.com/samsung-pcie-gen6",
+                        "original_link": "https://example.com/samsung-pcie-gen6",
+                        "title": "三星 PCIe Gen6 固态硬盘",
+                        "cleaned_full_text": "三星首款 PCIe Gen6 固态硬盘 PM1743 上线官网。",
+                        "quotes": [],
+                    }
+                ],
+                "facts": ["三星首款 PCIe Gen6 固态硬盘 PM1743 上线官网"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {"reason": "PCIe Gen6 存储进入产品化披露阶段。"},
+                "updated_at": "2026-05-26T10:20:00+08:00",
+            },
+            {
+                "id": "dd-digest-good-5",
+                "event_id": "evt-digest-good-5",
+                "status": "ready",
+                "sources": [
+                    {
+                        "source_name": "Example",
+                        "canonical_link": "https://example.com/rayneo-v4",
+                        "original_link": "https://example.com/rayneo-v4",
+                        "title": "雷鸟 V4 AI 拍摄眼镜",
+                        "cleaned_full_text": "雷鸟发布 V4 AI 拍摄眼镜。",
+                        "quotes": [],
+                    }
+                ],
+                "facts": ["雷鸟发布 V4 AI 拍摄眼镜"],
+                "quotes": [],
+                "timeline": [],
+                "worthiness": {"reason": "AI 眼镜继续进入消费硬件场景。"},
+                "updated_at": "2026-05-26T10:25:00+08:00",
+            },
         ]
         store._write(state)
 
         brief = store.create_daily_digest_brief_from_events(
-            ["evt-digest-no-source-first", "evt-digest-good-1", "evt-digest-good-2"],
+            [
+                "evt-digest-no-source-first",
+                "evt-digest-good-1",
+                "evt-digest-good-2",
+                "evt-digest-good-3",
+                "evt-digest-good-4",
+                "evt-digest-good-5",
+            ],
             triggered_by="scheduler",
         )
 
@@ -1026,12 +1362,16 @@ def test_create_daily_digest_brief_marks_only_qualified_members() -> None:
         assert "缺少来源事件" not in brief.wechat_markdown
         assert "AI 云服务降价" in brief.wechat_markdown
         assert "机器人公司发布新产品" in brief.wechat_markdown
+        assert "雷鸟发布 V4 AI 拍摄眼镜" in brief.wechat_markdown
 
         refreshed = store._upgrade_state(store._read())
         by_id = {item["id"]: item for item in refreshed["intel_events"]}
         assert by_id["evt-digest-no-source-first"].get("brief_id") is None
         assert by_id["evt-digest-good-1"].get("brief_id") == brief.id
         assert by_id["evt-digest-good-2"].get("brief_id") == brief.id
+        assert by_id["evt-digest-good-3"].get("brief_id") == brief.id
+        assert by_id["evt-digest-good-4"].get("brief_id") == brief.id
+        assert by_id["evt-digest-good-5"].get("brief_id") == brief.id
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -1147,6 +1487,86 @@ def test_sync_brief_wechat_draft_normalizes_legacy_powershell_literal_newlines_b
         assert "<code>n</code>" not in result.wechat_html
         assert "<h2>小标题</h2>" in result.wechat_html
         assert result.stage == "synced"
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def test_publish_brief_wechat_article_stops_at_qrcode_without_marking_published(monkeypatch) -> None:
+    store, temp_root = _make_store()
+    try:
+        state = store._upgrade_state(store._read())
+        state["briefs"] = [
+            {
+                "id": "brief-publish-1",
+                "event_id": "evt-publish-1",
+                "deep_dive_id": "dd-publish-1",
+                "brief_level": "article",
+                "stage": "synced",
+                "title": "发布测试标题",
+                "summary": "这是显式摘要",
+                "one_line": "一句话",
+                "why_it_matters": "原因",
+                "facts": [],
+                "quotes": [],
+                "timeline": [],
+                "entity_names": [],
+                "source_links": [],
+                "risk_notes": [],
+                "prompt_package_markdown": "pkg",
+                "wechat_markdown": "# 发布测试标题\n\n这是一篇准备真实发表的文章正文。",
+                "wechat_html": "<section><p>旧缓存</p></section>",
+                "needs_resync": False,
+                "delivery_status": "verified",
+                "record_status": "draft_synced",
+                "updated_at": "2026-05-14T10:00:00+08:00",
+            }
+        ]
+        state["intel_events"] = [
+            {
+                "id": "evt-publish-1",
+                "title": "发布测试标题",
+                "summary": "事件摘要",
+                "alert_state": "watch",
+                "entity_names": [],
+                "entity_ids": [],
+                "brief_id": "brief-publish-1",
+                "watchlisted": True,
+                "ignored": False,
+            }
+        ]
+        state["channels"]["wechat"]["selectors_version"] = "wechat-mp-v1"
+        captured: dict[str, object] = {}
+        store._write(state)
+
+        def _fake_run_browser_action(action, browser_payload, channel, browser):
+            captured["action"] = action
+            captured["markdown"] = browser_payload.get("markdown")
+            next_browser = {
+                **browser,
+                "logged_in": True,
+                "last_error": None,
+                "verification_status": "wechat_qrcode_required",
+                "verification_message": "已到微信验证二维码，请扫码确认。",
+                "last_screenshot": "runtime/publish_artifacts/brief-publish-1/qrcode.png",
+            }
+            return next_browser, ["runtime/publish_artifacts/brief-publish-1/qrcode.png"], ["二维码已出现"]
+
+        monkeypatch.setattr(store_mixins_pkg.briefs_mixin, "run_browser_action", _fake_run_browser_action)
+
+        result = store.publish_brief_wechat_article("brief-publish-1", triggered_by="dashboard")
+
+        assert captured["action"] == "publish_wechat_article"
+        assert captured["markdown"] == "# 发布测试标题\n\n这是一篇准备真实发表的文章正文。"
+        assert result.stage == "synced"
+        assert result.record_status == "draft_synced"
+        assert result.record_exception == "pending_confirmation"
+        assert result.delivery_status == "pending_confirmation"
+        assert result.last_error == "已到微信验证二维码，请扫码确认。"
+        refreshed = store._upgrade_state(store._read())
+        task = refreshed["publish_tasks"][0]
+        assert task["action"] == "publish_wechat_article"
+        assert task["status"] == "blocked"
+        assert task["artifacts"] == ["runtime/publish_artifacts/brief-publish-1/qrcode.png"]
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 

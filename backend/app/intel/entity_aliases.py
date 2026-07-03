@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 ALIAS_MAP: dict[str, str] = {
     "apple": "Apple",
     "apple inc": "Apple",

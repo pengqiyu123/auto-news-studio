@@ -3,6 +3,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from ..content.briefing import (
+    build_douyin_article_markdown,
+    build_douyin_summary,
+    build_douyin_title,
+    should_refresh_douyin_summary,
+)
 from ..models import (
     BriefItem,
     BrowserSessionPayload,
@@ -11,12 +17,6 @@ from ..models import (
     DouyinArticleStructureSnapshot,
     DouyinChannelConfig,
 )
-from ..content.briefing import (
-    build_douyin_article_markdown,
-    build_douyin_summary,
-    build_douyin_title,
-    should_refresh_douyin_summary,
-)
 from ..publishers import (
     create_publish_task,
     ensure_douyin_channel_defaults,
@@ -24,6 +24,8 @@ from ..publishers import (
     inspect_douyin_article_structure,
     inspect_douyin_session,
     launch_douyin_dashboard,
+)
+from ..publishers import (
     open_douyin_article_publish as open_douyin_article_publish_page,
 )
 from ..store.base import UTC, parse_time
@@ -194,6 +196,13 @@ class BrowserMixin:
         douyin_title = str(brief.get("douyin_title") or "").strip()
         douyin_summary = str(brief.get("douyin_summary") or "").strip()
         douyin_markdown = str(brief.get("douyin_markdown") or "").strip()
+        is_douyin_daily_news = (
+            str(brief.get("workflow_mode") or "traditional") == "traditional"
+            and (
+                str(brief.get("title") or "").startswith("今日5条科技要闻")
+                or douyin_title.startswith("今日5条科技要闻")
+            )
+        )
         if not douyin_title:
             douyin_title = build_douyin_title(str(brief.get("title") or ""))
             brief["douyin_title"] = douyin_title
@@ -229,6 +238,13 @@ class BrowserMixin:
                 source_links=list(brief.get("source_links", [])),
             )
             brief["douyin_markdown"] = douyin_markdown
+        if is_douyin_daily_news and not (
+            douyin_title.startswith("今日5条科技要闻")
+            and "朋友们，今天咱们来盘一盘" in douyin_markdown
+            and "最后一条" in douyin_markdown
+            and "评论区" in douyin_markdown
+        ):
+            raise ValueError("抖音今日要闻必须使用固定 5 条口播短讯格式。")
 
         browser_payload = {
             "id": str(brief.get("id") or ""),

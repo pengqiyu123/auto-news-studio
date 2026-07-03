@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from datetime import datetime
-import json
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from ..store.base import UTC, parse_time
 from .models import (
     DiscoveryItemCurrentRecord,
     EventSnapshotRecord,
@@ -20,7 +21,6 @@ from .models import (
     SourceConnectorRecord,
 )
 from .session import build_session_factory
-from ..store.base import UTC, parse_time
 
 
 def _dt(value: Any) -> datetime | None:

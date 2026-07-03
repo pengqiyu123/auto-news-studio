@@ -1,38 +1,19 @@
 from __future__ import annotations
 
-from copy import deepcopy
-from datetime import datetime
-from html import escape
 import json
 import os
 import re
 import time
+import xml.etree.ElementTree as ET
+from copy import deepcopy
+from datetime import datetime
+from html import escape
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
-import xml.etree.ElementTree as ET
 
 from ..intel.normalize import normalize_raw_items
-# publishers imported lazily to avoid circular import
-from .reference_projects import write_reference_baseline
-from .base import (
-    DEFAULT_RUNTIME_INTENT,
-    DEFAULT_USER_SETTINGS,
-    MAX_RAW_ITEMS,
-    UTC,
-    _contains_synthetic_marker,
-    deepcopy_json,
-    _is_synthetic_raw_item,
-    freshness_bucket,
-    local_now,
-    now_iso,
-    parse_time,
-    read_json_file,
-    schedule_to_minutes,
-    atomic_write_json,
-)
-from .defaults import AUTOMATION_MODE_DEFINITIONS, DEFAULT_AUTOMATION_PROFILES
 from ..llm.store_llm import (
     DEFAULT_LLM_TASK_TEMPLATE,
     build_provider_from_profile,
@@ -40,6 +21,26 @@ from ..llm.store_llm import (
     infer_fallback_profile_id_from_tasks,
     merge_llm_profiles,
 )
+from .base import (
+    DEFAULT_RUNTIME_INTENT,
+    DEFAULT_USER_SETTINGS,
+    MAX_RAW_ITEMS,
+    UTC,
+    _contains_synthetic_marker,
+    _is_synthetic_raw_item,
+    atomic_write_json,
+    deepcopy_json,
+    freshness_bucket,
+    local_now,
+    now_iso,
+    parse_time,
+    read_json_file,
+    schedule_to_minutes,
+)
+from .defaults import AUTOMATION_MODE_DEFINITIONS, DEFAULT_AUTOMATION_PROFILES
+
+# publishers imported lazily to avoid circular import
+from .reference_projects import write_reference_baseline
 
 
 def _default_agent_html_targets() -> list[dict[str, Any]]:
@@ -110,7 +111,7 @@ def _migrate_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             **current,
             **task,
             "task_key": key,
-            "label": str((task.get("label") or current.get("label") or base.get("label") or key)),
+            "label": str(task.get("label") or current.get("label") or base.get("label") or key),
         }
 
     ordered: list[dict[str, Any]] = []
@@ -240,6 +241,8 @@ class StoreCoreStateMixin:
             "agent_html_event_history": [],
             "agent_html_documents": [],
             "agent_html_document_revisions": [],
+            "analysis_feedback": [],
+            "analysis_reports": [],
             "normalized_items": [],
             "publish_tasks": [],
             "jobs": [],
@@ -729,6 +732,8 @@ class StoreCoreStateMixin:
         state.setdefault("agent_html_event_history", [])
         state.setdefault("agent_html_documents", [])
         state.setdefault("agent_html_document_revisions", [])
+        state.setdefault("analysis_feedback", [])
+        state.setdefault("analysis_reports", [])
         state.setdefault("publish_tasks", [])
         state.setdefault("jobs", [])
         state.setdefault("logs", [])
@@ -1222,6 +1227,8 @@ class StoreCoreStateMixin:
         state.setdefault("event_deep_dives", [])
         state.setdefault("briefs", [])
         state.setdefault("agent_workflows", [])
+        state.setdefault("analysis_feedback", [])
+        state.setdefault("analysis_reports", [])
         settings = state.setdefault("settings", {})
         settings["max_workers"] = int(config.get("settings", {}).get("max_workers", 8) or 8)
         settings.setdefault("entity_watchlist", [])

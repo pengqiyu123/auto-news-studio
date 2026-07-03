@@ -1,132 +1,134 @@
-import { Eye, Heart, MessageCircle, Repeat2, Share2, Sparkles, ExternalLink, RefreshCcw } from "lucide-react";
+import { ExternalLink, RefreshCcw } from "lucide-react";
 
 import { formatDateTime, formatRelativeTime } from "../../lib/time";
-import type { WeChatPublishHistorySnapshot } from "../../types";
+import type { WeChatPublishHistorySnapshot, WeChatPublishRecordItem } from "../../types";
 
 interface PublishHistoryPageProps {
   history: WeChatPublishHistorySnapshot | null;
   refreshing: boolean;
+  loading?: boolean;
   onRefresh: () => Promise<void>;
 }
 
-export function PublishHistoryPage({ history, refreshing, onRefresh }: PublishHistoryPageProps) {
+function renderSkeletonCards(count = 4) {
+  return (
+    <div className="skeleton-list" aria-label="发表记录加载中">
+      {Array.from({ length: count }, (_, index) => (
+        <div key={`publish-history-skeleton-${index}`} className="skeleton-card">
+          <div className="skeleton-line skeleton-short" />
+          <div className="skeleton-line skeleton-long" />
+          <div className="skeleton-line skeleton-medium" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatCount(value?: number | null) {
+  if (typeof value !== "number") return "-";
+  return String(value);
+}
+
+function totalReads(items: WeChatPublishRecordItem[]) {
+  return items.reduce((sum, item) => sum + (item.read_count || 0), 0);
+}
+
+function bestArticle(items: WeChatPublishRecordItem[]) {
+  return items.reduce<WeChatPublishRecordItem | null>((best, item) => {
+    if (!best || (item.read_count || 0) > (best.read_count || 0)) {
+      return item;
+    }
+    return best;
+  }, null);
+}
+
+function publishKey(item: WeChatPublishRecordItem, index: number) {
+  return item.remote_key || item.appmsg_id || item.url || `${item.title}-${index}`;
+}
+
+function renderEmptyState(history: WeChatPublishHistorySnapshot | null) {
+  if (!history) {
+    return <p className="empty-state">还没抓取发表记录。</p>;
+  }
+  return <p className="empty-state">已检查，但没有发表记录。</p>;
+}
+
+export function PublishHistoryPage({ history, refreshing, loading = false, onRefresh }: PublishHistoryPageProps) {
   const items = history?.items ?? [];
-  const overview = history?.overview ?? null;
+  const totalReadCount = history?.overview ? totalReads(items) : null;
+  const topArticle = bestArticle(items);
 
   return (
     <section className="panel">
-      <div className="panel-header">
+      <div className="panel-header compact">
         <div>
           <p className="eyebrow">发表记录</p>
-          <h2>微信公众号已发表文章</h2>
-          <p className="subtle">从公众号后台实时抓取的发表记录与阅读数据，只读查看。</p>
+          <h2>查看公众号内容表现</h2>
         </div>
-        <button type="button" className="ghost-button" onClick={() => void onRefresh()}>
+        <button type="button" className="ghost-button compact" onClick={() => void onRefresh()}>
           <RefreshCcw size={16} />
-          {refreshing ? "刷新中..." : "刷新发表记录"}
+          {refreshing ? "刷新中..." : "刷新"}
         </button>
       </div>
 
-      <div className="mapping-summary-grid">
-        <article className="channel-session-stat">
+      <div className="publish-history-stats">
+        <article className="publish-history-stat">
           <span>最近检查</span>
           <strong>{formatDateTime(history?.checked_at, { fallback: "暂无" })}</strong>
           <p>{formatRelativeTime(history?.checked_at, "尚未检查")}</p>
         </article>
-        <article className="channel-session-stat">
+        <article className="publish-history-stat">
           <span>发表条数</span>
-          <strong>{history?.record_count ?? 0}</strong>
+          <strong>发表 {history?.record_count ?? 0} 条</strong>
           <p>{history?.message ?? "暂无数据"}</p>
         </article>
-        <article className="channel-session-stat">
-          <span>总用户数</span>
-          <strong>{overview ? overview.total_users : "-"}</strong>
-          <p>{overview?.stats_window_label || "暂未抓到账号总览"}</p>
+        <article className="publish-history-stat">
+          <span>总阅读</span>
+          <strong>总阅读 {formatCount(totalReadCount)}</strong>
+          <p>{history?.overview?.stats_window_label || "暂未抓到账号总览"}</p>
         </article>
-        <article className="channel-session-stat">
-          <span>昨日阅读</span>
-          <strong>{overview ? overview.yesterday_reads : "-"}</strong>
-          <p>{overview?.fetched_at ? formatRelativeTime(overview.fetched_at, "") : "暂未抓到账号总览"}</p>
-        </article>
-        <article className="channel-session-stat">
-          <span>昨日分享</span>
-          <strong>{overview ? overview.yesterday_shares : "-"}</strong>
-          <p>{overview?.stats_window_label || "暂未抓到账号总览"}</p>
-        </article>
-        <article className="channel-session-stat">
-          <span>昨日新增关注</span>
-          <strong>{overview ? overview.yesterday_new_follows : "-"}</strong>
-          <p>{overview?.stats_window_label || "暂未抓到账号总览"}</p>
+        <article className="publish-history-stat">
+          <span>最佳文章</span>
+          <strong>{topArticle ? `${topArticle.title || "未命名文章"} · 阅读 ${topArticle.read_count || 0}` : "暂无最佳文章"}</strong>
+          <p>{topArticle?.published_at || "暂无发表记录"}</p>
         </article>
       </div>
 
-      <div className="wechat-publish-list">
-        {items.length ? items.map((item, index) => {
-          const key = item.remote_key || item.appmsg_id || item.url || `${item.title}-${index}`;
-          return (
-            <article key={key} className="wechat-publish-card">
-              <div className="wechat-publish-card__body">
-                {item.thumbnail ? (
-                  <div className="wechat-publish-card__thumb">
-                    <img src={item.thumbnail} alt="" loading="lazy" />
-                  </div>
-                ) : null}
-                <div className="wechat-publish-card__content">
-                  <div className="wechat-publish-card__title-row">
-                    {item.url ? (
-                      <a className="wechat-publish-card__title" href={item.url} target="_blank" rel="noreferrer">
-                        {item.title || "未命名文章"}
-                      </a>
-                    ) : (
-                      <span className="wechat-publish-card__title">{item.title || "未命名文章"}</span>
-                    )}
-                  </div>
-                  <div className="wechat-publish-card__metrics">
-                    <span className="metric-item" title="阅读人数">
-                      <Eye size={14} />
-                      <span>{item.read_count ?? 0}</span>
-                    </span>
-                    <span className="metric-item" title="点赞人数">
-                      <Heart size={14} />
-                      <span>{item.like_count ?? 0}</span>
-                    </span>
-                    <span className="metric-item" title="分享人数">
-                      <Share2 size={14} />
-                      <span>{item.share_count ?? 0}</span>
-                    </span>
-                    {(item.recommend_count ?? 0) > 0 ? (
-                      <span className="metric-item" title="推荐人数">
-                        <Sparkles size={14} />
-                        <span>{item.recommend_count}</span>
-                      </span>
-                    ) : null}
-                    {(item.comment_count ?? 0) > 0 ? (
-                      <span className="metric-item" title="留言条数">
-                        <MessageCircle size={14} />
-                        <span>{item.comment_count}</span>
-                      </span>
-                    ) : null}
-                    {(item.reprint_count ?? 0) > 0 ? (
-                      <span className="metric-item" title="被转载次数">
-                        <Repeat2 size={14} />
-                        <span>{item.reprint_count}</span>
-                      </span>
-                    ) : null}
-                  </div>
+      <div className="publish-history-list wechat-publish-list">
+        {loading && !history ? renderSkeletonCards() : (
+          items.length ? items.map((item, index) => (
+            <article key={publishKey(item, index)} className="wechat-publish-card">
+              {item.thumbnail ? (
+                <div className="wechat-publish-card__thumb">
+                  <img src={item.thumbnail} alt="" loading="lazy" />
+                </div>
+              ) : null}
+              <div className="wechat-publish-card__content">
+                {item.url ? (
+                  <a className="wechat-publish-card__title" href={item.url} target="_blank" rel="noreferrer">
+                    {item.title || "未命名文章"}
+                  </a>
+                ) : (
+                  <span className="wechat-publish-card__title">{item.title || "未命名文章"}</span>
+                )}
+                <div className="wechat-publish-card__metrics">
+                  <span>阅读 {item.read_count || 0} · 赞 {item.like_count || 0} · 分享 {item.share_count || 0} · 留言 {item.comment_count || 0}</span>
+                  {(item.recommend_count || 0) > 0 ? <span>推荐 {item.recommend_count}</span> : null}
+                  {(item.reprint_count || 0) > 0 ? <span>转载 {item.reprint_count}</span> : null}
+                </div>
+                <div className="wechat-publish-card__footer">
+                  <span className="wechat-publish-card__time">发表于 {item.published_at || "未知时间"}</span>
+                  {item.url ? (
+                    <a className="wechat-publish-card__link" href={item.url} target="_blank" rel="noreferrer">
+                      打开原文
+                      <ExternalLink size={12} />
+                    </a>
+                  ) : null}
                 </div>
               </div>
-              <div className="wechat-publish-card__footer">
-                <span className="wechat-publish-card__time">{item.published_at || "未知时间"}</span>
-                {item.url ? (
-                  <a className="wechat-publish-card__link" href={item.url} target="_blank" rel="noreferrer">
-                    <ExternalLink size={12} />
-                    打开
-                  </a>
-                ) : null}
-              </div>
             </article>
-          );
-        }) : <p className="empty-state">暂时还没有抓到发表记录。</p>}
+          )) : renderEmptyState(history)
+        )}
       </div>
     </section>
   );

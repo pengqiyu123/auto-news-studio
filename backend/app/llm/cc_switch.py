@@ -37,7 +37,7 @@ def _extract_from_codex_config(settings: dict[str, Any]) -> tuple[str, str, str]
             base_url = str(config.get("base_url", "")).strip()
             model = str(config.get("model", "")).strip()
             # Also check model_providers section
-            for section_name, section in config.items():
+            for _section_name, section in config.items():
                 if isinstance(section, dict) and section.get("base_url"):
                     if not base_url:
                         base_url = str(section["base_url"]).strip()

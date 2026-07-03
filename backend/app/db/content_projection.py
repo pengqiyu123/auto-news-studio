@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..store.base import UTC, parse_time
 from .models import BriefRecord, DeepDiveDocumentRecord, DeepDiveRecord
 from .session import build_session_factory
-from ..store.base import parse_time, UTC
 
 
 def _dt(value: Any) -> datetime | None:
@@ -70,7 +70,7 @@ def _deep_dive_document_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
         canonical_link = str(item.get("canonical_link") or "")
         original_link = str(item.get("original_link") or canonical_link)
         import hashlib
-        row_hash = hashlib.sha256(f"{deep_dive_id}|{index}|{canonical_link or original_link}".encode("utf-8")).hexdigest()[:24]
+        row_hash = hashlib.sha256(f"{deep_dive_id}|{index}|{canonical_link or original_link}".encode()).hexdigest()[:24]
         row_id = f"{deep_dive_id}:{index}:{row_hash}"
         rows.append(
             {

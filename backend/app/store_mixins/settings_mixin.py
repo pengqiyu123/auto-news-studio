@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from copy import deepcopy
-from datetime import datetime
 import importlib
 import json
+import zipfile
+from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-import zipfile
 
 from ..intel.legacy_sources import build_legacy_rss_sources
 from ..llm import LLMService
+from ..llm.store_llm import build_provider_from_profile, build_runtime_tasks, default_llm_state, merge_llm_profiles
 from ..models import (
     AppUpdateInfo,
     AppVersionInfo,
@@ -19,7 +20,6 @@ from ..models import (
     SystemCheckItem,
     SystemDoctorResult,
 )
-from ..store.reference_projects import write_reference_baseline
 from ..sources import discover_sources
 from ..store.base import (
     BACKUP_DIR,
@@ -34,7 +34,7 @@ from ..store.base import (
     parse_time,
     schedule_to_minutes,
 )
-from ..llm.store_llm import build_provider_from_profile, build_runtime_tasks, default_llm_state, merge_llm_profiles
+from ..store.reference_projects import write_reference_baseline
 
 
 def _get_database_settings():

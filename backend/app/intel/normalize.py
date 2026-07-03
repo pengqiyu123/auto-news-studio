@@ -5,15 +5,14 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 import hashlib
 import re
+from collections import defaultdict
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
-
-UTC = timezone.utc
+UTC = UTC
 
 CORE_KEYWORDS = [
     "ai",

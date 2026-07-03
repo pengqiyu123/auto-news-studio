@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime
 import re
+from datetime import datetime
 from uuid import uuid4
 
 from ...store.base import UTC
 from ..browser_base import ARTIFACT_ROOT, _pick_selector, ensure_channel_defaults, get_selector_profile
 from ..browser_manager import WECHAT_BROWSER_MANAGER
-from .dom import extract_wechat_appmsg_id, _validate_wechat_page_identity
+from .dom import _validate_wechat_page_identity, extract_wechat_appmsg_id
 from .session import _browser_session_error_kind, _enforce_single_tab, _safe_return_home
+
 
 def _open_wechat_draft_box(page, selector_profile: dict[str, list[str] | str], step_logs: list[str]) -> bool:
     content_manage_selector = _pick_selector(page, selector_profile.get("content_manage", []), timeout=2500)

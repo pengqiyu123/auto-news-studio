@@ -9,7 +9,6 @@ from pydantic import BaseModel, ValidationError
 
 from ..store import StudioStore
 
-
 RUNTIME_DIR = Path(__file__).resolve().parents[3] / "runtime"
 _store: StudioStore | None = None
 

@@ -131,7 +131,6 @@ class DeliveryMixin:
             if isinstance(item, dict) and not bool(item.get("ignored"))
         ]
 
-        limit = max(int(plan.get("batch_limit", 3) or 3), 1)
         fallback_candidates: list[dict[str, Any]] = []
         for event in projected_events:
             if not bool(event.get("worth_to_brief")):

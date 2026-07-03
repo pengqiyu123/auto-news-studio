@@ -9,6 +9,7 @@ import type {
   DashboardResponse,
   EntityWatchlistItem,
   IntelOverviewSummary,
+  TrendSignalInfo,
 } from "../../types";
 
 interface UseOverviewStateParams {
@@ -26,6 +27,7 @@ export function useOverviewState({
 }: UseOverviewStateParams) {
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [summary, setSummary] = useState<IntelOverviewSummary | null>(null);
+  const [trends, setTrends] = useState<TrendSignalInfo[]>([]);
 
   const applyDashboardSnapshot = useCallback((dashboardData: DashboardResponse) => {
     setDashboard((current) =>
@@ -41,13 +43,21 @@ export function useOverviewState({
     onUpdateInfoChange(dashboardData.update_info);
   }, [onAppVersionChange, onBrowserSessionChange, onUpdateInfoChange]);
 
+  const loadTrends = useCallback(async () => {
+    const trendsData = await api.fetchTrends();
+    setTrends(trendsData.items ?? []);
+    return trendsData.items ?? [];
+  }, []);
+
   const refreshOverviewData = useCallback(async (includeEntityWatchlist = false, lite = false) => {
-    const [dashboardData, summaryData] = await Promise.all([
+    const [dashboardData, summaryData, trendsData] = await Promise.all([
       lite ? api.getDashboardLite() : api.getDashboard(),
       api.getIntelSummary(),
+      api.fetchTrends(),
     ]);
     applyDashboardSnapshot(dashboardData);
     setSummary(summaryData.item);
+    setTrends(trendsData.items ?? []);
     if (includeEntityWatchlist) {
       const entityWatchlistData = await api.getEntityWatchlist();
       onEntityWatchlistChange(entityWatchlistData.items);
@@ -59,7 +69,10 @@ export function useOverviewState({
     setDashboard,
     summary,
     setSummary,
+    trends,
+    setTrends,
     applyDashboardSnapshot,
+    loadTrends,
     refreshOverviewData,
   };
 }

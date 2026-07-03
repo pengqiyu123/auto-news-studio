@@ -46,6 +46,16 @@ function renderLogRow(log: LogItem) {
   );
 }
 
+function renderLogSkeleton() {
+  return (
+    <div className="skeleton-list logs-skeleton" aria-label="日志加载中">
+      {Array.from({ length: 5 }, (_, index) => (
+        <div key={`log-skeleton-${index}`} className="skeleton-card logs-skeleton-card" />
+      ))}
+    </div>
+  );
+}
+
 export function LogsPage({
   logs,
   page,
@@ -125,6 +135,7 @@ export function LogsPage({
   }, [systemLogs]);
 
   const cycleSummary = runtime.last_cycle_summary ?? null;
+  const showInitialSkeleton = loading && filteredLogs.length === 0;
 
   return (
     <section className="panel">
@@ -135,75 +146,71 @@ export function LogsPage({
         </div>
       </div>
 
-      <div className="intel-chip-filter-bar">
-        <div className="intel-chip-row">
-          {(["all", "info", "warning", "error"] as const).map((level) => (
-            <button
-              key={level}
-              type="button"
-              className={`filter-chip ${levelFilter === level ? "filter-chip-active" : ""}`}
-              onClick={() => onLevelFilterChange(level)}
-            >
-              {level === "all" ? "全部" : level}
-            </button>
-          ))}
+      <div className="logs-toolbar">
+        <div className="logs-toolbar-left">
+          <div className="intel-chip-row">
+            {(["all", "info", "warning", "error"] as const).map((level) => (
+              <button
+                key={level}
+                type="button"
+                className={`filter-chip compact ${levelFilter === level ? "filter-chip-active" : ""}`}
+                onClick={() => onLevelFilterChange(level)}
+              >
+                {level === "all" ? "全部" : level}
+              </button>
+            ))}
+          </div>
+          <label className="logs-search">
+            <input
+              value={searchQuery}
+              onChange={(e) => onSearchChange(e.target.value)}
+              placeholder="搜索日志"
+            />
+          </label>
         </div>
-      </div>
-      <div className="draft-toolbar">
-        <label className="draft-search">
-          <input
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="搜索日志内容"
-          />
-        </label>
+        <PaginationControls
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          currentCount={filteredLogs.length}
+          itemLabel="条"
+          loading={loading}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
       </div>
 
-      <PaginationControls
-        page={page}
-        pageSize={pageSize}
-        total={total}
-        currentCount={filteredLogs.length}
-        itemLabel="条日志"
-        loading={loading}
-        onPageChange={onPageChange}
-        onPageSizeChange={onPageSizeChange}
-      />
-
-      <div className="runtime-card-grid">
-        <div className="runtime-card">
-          <span>状态</span>
-          <strong>{runtime.running ? runtime.current_cycle : "已停止"}</strong>
-          <p>
-            {runtime.current_cycle_progress_label
-              ? runtime.current_cycle_progress_label
-              : `上轮耗时 ${formatDuration(runtime.last_cycle_duration_seconds, "暂无")}`}
-          </p>
-        </div>
-        <div className="runtime-card">
-          <span>今日</span>
-          <strong>{runtime.completed_cycles_today} 成功 / {runtime.failed_cycles_today} 失败</strong>
-          <p>{runtime.last_error ?? "无异常"}</p>
-        </div>
+      <div className="logs-runtime-strip">
+        <span className="logs-runtime-status">
+          {runtime.running ? runtime.current_cycle : "已停止"}
+        </span>
+        <span className="logs-runtime-detail subtle">
+          {runtime.current_cycle_progress_label
+            ? runtime.current_cycle_progress_label
+            : `上轮 ${formatDuration(runtime.last_cycle_duration_seconds, "暂无")}`}
+        </span>
+        <span className="logs-runtime-divider" />
+        <span className="logs-runtime-detail">
+          今日 {runtime.completed_cycles_today} 成功 / {runtime.failed_cycles_today} 失败
+        </span>
+        {runtime.last_error ? (
+          <span className="logs-runtime-error">异常: {runtime.last_error}</span>
+        ) : null}
       </div>
 
       {cycleSummary ? (
-        <section className="intel-runtime-section">
+        <div className="logs-summary-compact">
           <button
             type="button"
-            className="logs-group-toggle logs-summary-toggle"
+            className="logs-summary-toggle"
             onClick={() => setSourceSummaryCollapsed((value) => !value)}
           >
-            <span className="logs-group-title">
-              {sourceSummaryCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-              <strong>信息源摘要</strong>
-            </span>
-            <span className="subtle">
-              成功 {cycleSummary.success_source_count} / 失败 {cycleSummary.failed_source_count}
-            </span>
+            {sourceSummaryCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+            <span>摘要</span>
+            <span className="subtle">成功 {cycleSummary.success_source_count} / 失败 {cycleSummary.failed_source_count} / 新增 {cycleSummary.new_items_count}</span>
           </button>
           {!sourceSummaryCollapsed ? (
-            <>
+            <div className="logs-summary-detail">
               <div className="intel-score-row">
                 <span>成功来源 {cycleSummary.success_source_count}</span>
                 <span>失败来源 {cycleSummary.failed_source_count}</span>
@@ -221,59 +228,51 @@ export function LogsPage({
               ) : (
                 <p className="subtle">最近一轮没有记录到异常。</p>
               )}
-            </>
-          ) : (
-            null
-          )}
-        </section>
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
-      <section className="logs-section">
-        <div className="logs-section-head">
-          <div>
-            <p className="eyebrow">信息源日志</p>
-            <h3>来源运行记录</h3>
-          </div>
+      <div className="logs-divider">
+        <span>信息源日志</span>
+      </div>
+      {showInitialSkeleton ? (
+        renderLogSkeleton()
+      ) : sourceLogGroups.length ? (
+        <div className="logs-accordion">
+          {sourceLogGroups.map((group) => {
+            const collapsed = collapsedGroups[group.key] ?? false;
+            return (
+              <article key={group.key} className="logs-group-card">
+                <button
+                  type="button"
+                  className="logs-group-toggle"
+                  onClick={() => setCollapsedGroups((current) => ({ ...current, [group.key]: !collapsed }))}
+                >
+                  <span className="logs-group-title">
+                    {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                    <strong>{group.label}</strong>
+                  </span>
+                  <span className="subtle">{group.logs.length} 条</span>
+                </button>
+                {!collapsed ? <div className="log-plain-list">{group.logs.map(renderLogRow)}</div> : null}
+              </article>
+            );
+          })}
         </div>
-        {sourceLogGroups.length ? (
-          <div className="logs-accordion">
-            {sourceLogGroups.map((group) => {
-              const collapsed = collapsedGroups[group.key] ?? false;
-              return (
-                <article key={group.key} className="logs-group-card">
-                  <button
-                    type="button"
-                    className="logs-group-toggle"
-                    onClick={() => setCollapsedGroups((current) => ({ ...current, [group.key]: !collapsed }))}
-                  >
-                    <span className="logs-group-title">
-                      {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-                      <strong>{group.label}</strong>
-                    </span>
-                    <span className="subtle">{group.logs.length} 条</span>
-                  </button>
-                  {!collapsed ? <div className="log-plain-list">{group.logs.map(renderLogRow)}</div> : null}
-                </article>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="empty-state">暂无信息源相关日志。</p>
-        )}
-      </section>
+      ) : (
+        <p className="empty-state">暂无信息源相关日志。</p>
+      )}
 
-      <section className="logs-section">
-        <div className="logs-section-head">
-          <div>
-            <p className="eyebrow">系统日志</p>
-            <h3>系统与交付异常</h3>
-          </div>
-        </div>
+      <div className="logs-divider">
+        <span>系统日志</span>
+      </div>
+      {showInitialSkeleton ? null : (
         <div ref={systemLogListRef} className="log-plain-list">
           {systemLogs.map(renderLogRow)}
           {!systemLogs.length ? <p className="empty-state">暂无系统日志。</p> : null}
         </div>
-      </section>
+      )}
     </section>
   );
 }
